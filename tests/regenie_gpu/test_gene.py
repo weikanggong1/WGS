@@ -137,6 +137,60 @@ class MaskTests(unittest.TestCase):
 
 
 class GeneTests(unittest.TestCase):
+    def test_global_whitelist_filters_io_and_preserves_bim_column_order(self):
+        from torchwgs.gene import test_gene_based
+        y = torch.sin(torch.arange(1000, dtype=torch.float64)*.37)
+        ids = tuple((str(i), str(i)) for i in range(1000))
+        context = SimpleNamespace(y=y, sample_ids=ids)
+        variants = [SimpleNamespace(id=name, index=i, chrom="1", position=i+1,
+                                    allele1="A", allele0="G")
+                    for i, name in enumerate(("v2", "v1", "v0"))]
+        raw = torch.zeros((1000, 3), dtype=torch.float64)
+        raw[12:25, 0] = 1
+        raw[:, 1] = 2
+        raw[:12, 2] = 1
+        class Reader:
+            sample_ids, n_samples = ids, len(ids)
+            def __init__(self):
+                self.requests, self.columns = [], []
+            def find_variants(self, needed):
+                self.requests.append(set(needed))
+                return {v.id: v for v in variants if v.id in needed}
+            def read_variants(self, columns):
+                self.columns.append(tuple(columns))
+                return raw[:, columns]
+        reader = Reader()
+        annotations = [Annotation(name, "G", "A", "R")
+                       for name in ("v0", "v1", "v2", "missing")]
+        sets = [GeneSet("G", "1", 1, ("v0", "v1", "missing", "v2"))]
+        definitions = [MaskDefinition("M", frozenset(["A"]))]
+        config = GeneConfig(extract_variants={"v0", "v2", "missing"}, variant_block_size=1)
+        artifacts = []
+        with patch("torchwgs.gene.test_prepared_gene", return_value=[]):
+            list(test_gene_based(reader, context, annotations, sets, definitions,
+                                 config, artifact_callback=artifacts.append))
+        self.assertEqual(reader.requests, [{"v0", "v2", "missing"}])
+        self.assertEqual(reader.columns, [(0,), (2,)])
+        # Compare to the original semantic path: constructing masks from every
+        # input column and filtering the whitelist inside the mask builder.
+        baseline = build_gene_masks(raw, [v.id for v in variants], annotations,
+                                    definitions, config)
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(len(artifacts[0].masks), 2)
+        self.assertEqual(len(baseline), len(artifacts[0].masks))
+        for actual, expected in zip(artifacts[0].masks, baseline):
+            self.assertEqual(actual.variant_ids, ("v2", "v0"))
+            self.assertEqual(actual.variant_ids, expected.variant_ids)
+            torch.testing.assert_close(actual.burden, expected.burden, atol=0, rtol=0)
+            torch.testing.assert_close(actual.vc_genotypes, expected.vc_genotypes, atol=0, rtol=0)
+            self.assertEqual(actual.aaf, expected.aaf)
+        matrix_artifacts = []
+        with patch("torchwgs.gene.test_prepared_gene", return_value=[]):
+            list(test_gene_based(raw, context, annotations, sets, definitions, config,
+                                 variants=variants, artifact_callback=matrix_artifacts.append))
+        self.assertEqual([m.variant_ids for m in matrix_artifacts[0].masks],
+                         [m.variant_ids for m in baseline])
+
     def test_sbat_configuration_is_forwarded_to_statistical_backend(self):
         from torchwgs.gene import test_prepared_gene
         y = torch.sin(torch.arange(100, device=DEVICE, dtype=torch.float64)*.37)

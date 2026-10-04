@@ -152,22 +152,45 @@ def chi2_logsf(chisq, df=1.0):
 
 
 def chi2_isf_logp(logp, df=1.0):
-    """Inverse chi-square upper tail from -log10(P), without forming P."""
+    """Inverse chi-square upper tail from -log10(P), including extreme tails.
+
+    For df=1 and -log10(P)<=300, a float64 normal quantile gives the same
+    inverse directly. Near P=1, expm1/erfinv preserves the small lower-tail
+    probability that would be lost by subtracting from one. Other degrees
+    of freedom and stronger tails retain the stable log-tail bisection.
+    """
     lp = _tensor(logp)
     degrees = _tensor(df, lp)
     lp, degrees = torch.broadcast_tensors(lp, degrees)
     if bool(((lp < 0) | ~torch.isfinite(lp)).any()):
         raise ValueError("inverse upper tail requires finite nonnegative -log10(P)")
-    lo = torch.zeros_like(lp)
-    hi = 2.0 * lp * _LN10 + 10.0 * degrees + 100.0
-    while bool((chi2_logsf(hi, degrees) < lp).any()):
+    if bool(((degrees <= 0) | ~torch.isfinite(degrees)).any()):
+        raise ValueError("inverse upper tail requires finite positive df")
+    direct = (degrees == 1) & (lp <= 300.0)
+
+    def normal_inverse(values):
+        upper = torch.special.ndtri(torch.exp(-values * _LN10 - math.log(2.0))).square()
+        # chi2_1 CDF(x)=erf(sqrt(x/2)); no subtraction from P near one.
+        lower = 2.0 * torch.erfinv(-torch.expm1(-values.clamp(max=.1) * _LN10)).square()
+        return torch.where(values < .1, lower, upper)
+
+    if bool(direct.all()):
+        return normal_inverse(lp)
+    result = torch.empty_like(lp)
+    if bool(direct.any()):
+        result[direct] = normal_inverse(lp[direct])
+    slow_lp, slow_df = lp[~direct], degrees[~direct]
+    lo = torch.zeros_like(slow_lp)
+    hi = 2.0 * slow_lp * _LN10 + 10.0 * slow_df + 100.0
+    while bool((chi2_logsf(hi, slow_df) < slow_lp).any()):
         hi *= 2.0
     for _ in range(80):
         mid = (lo + hi) / 2.0
-        below = chi2_logsf(mid, degrees) < lp
+        below = chi2_logsf(mid, slow_df) < slow_lp
         lo = torch.where(below, mid, lo)
         hi = torch.where(below, hi, mid)
-    return torch.where(lp == 0, torch.zeros_like(lp), (lo + hi) / 2.0)
+    result[~direct] = torch.where(slow_lp == 0, torch.zeros_like(slow_lp), (lo + hi) / 2.0)
+    return result
 
 
 def acat_logp(log10ps, weights=None, dim=-1):

@@ -332,8 +332,11 @@ def test_gene_based(genotypes, context, annotation, setlist, masks,
     for record in annotations:
         by_gene[record.gene].append(record)
     reader = hasattr(genotypes, "read_variants")
+    whitelist = None if config.extract_variants is None else set(config.extract_variants)
     if reader:
         needed = {record.variant_id for record in annotations}
+        if whitelist is not None:
+            needed.intersection_update(whitelist)
         lookup = genotypes.find_variants(needed)
         sample_rows = _context_rows(genotypes, context)
     else:
@@ -342,7 +345,8 @@ def test_gene_based(genotypes, context, annotation, setlist, masks,
         matrix = torch.as_tensor(genotypes)
         if matrix.shape != (context.y.numel(), len(variants)):
             raise ValueError("Matrix rows must match context samples and columns must match variants.")
-        lookup = {variant.id: variant for variant in variants}
+        lookup = {variant.id: variant for variant in variants
+                  if whitelist is None or variant.id in whitelist}
         matrix_columns = {variant.id: j for j, variant in enumerate(variants)}
     for gene in sets:
         gene_annotations = by_gene[gene.gene]

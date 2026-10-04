@@ -1,5 +1,6 @@
 """Streaming PLINK BED reader. Dosages count BIM A1 (the default REGENIE ALT)."""
 from __future__ import annotations
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -35,8 +36,14 @@ class BedReader:
     This reader never loads the full BIM table. BED decoding is I/O work on CPU;
     association matrix operations are performed by the PyTorch CUDA kernels.
     """
-    def __init__(self, prefix, *, keep=None, remove=None, sample_ids=None):
+    def __init__(self, prefix, *, keep=None, remove=None, sample_ids=None,
+                 metadata_cache_size=100000):
+        if not isinstance(metadata_cache_size, int) or metadata_cache_size < 0:
+            raise ValueError('metadata_cache_size must be a nonnegative integer')
         self.prefix = str(prefix)
+        self.metadata_cache_size = metadata_cache_size
+        self._variant_metadata = OrderedDict()
+        self._bim_identity = None
         p = Path(prefix)
         if not Path(str(p)+'.bed').exists():
             raise FileNotFoundError(f'{p}.bed: use an uncompressed SNP-major BED file')
@@ -95,22 +102,67 @@ class BedReader:
 
     @property
     def variant_chromosomes(self):
+        self._refresh_bim_metadata()
         if self._variant_chromosomes is None:
             self._variant_chromosomes = np.fromiter(
                 (int(v.chrom) for v in self.iter_variants()), dtype=np.int16,
                 count=self.n_variants)
         return self._variant_chromosomes
 
+    def _refresh_bim_metadata(self):
+        stat = Path(self.prefix+'.bim').stat()
+        identity = (stat.st_dev, stat.st_ino, stat.st_size,
+                    stat.st_mtime_ns, stat.st_ctime_ns)
+        if identity != self._bim_identity:
+            self._variant_metadata.clear()
+            self._variant_chromosomes = None
+            self._bim_identity = identity
+        return identity
+
     def find_variants(self, ids: Iterable[str]):
+        """Find requested IDs, caching only bounded positive/negative queries.
+
+        A cached subset avoids a BIM rescan. Newly requested IDs still require
+        a complete scan, preserving detection of duplicate requested IDs.
+        No full BIM index or genotype array is retained by this cache.
+        """
         needed = set(ids)
-        result = {}
-        with open(self.prefix+'.bim') as stream:
-            for i,line in enumerate(stream):
-                f = line.split()
-                if len(f) != 6: raise ValueError(f'Malformed BIM row {i+1}')
-                if f[1] in needed:
-                    if f[1] in result: raise ValueError(f'Duplicate requested variant ID: {f[1]}')
-                    result[f[1]] = Variant(i,f[0].removeprefix('chr'),f[1],int(f[3]),f[4],f[5])
+        identity = self._refresh_bim_metadata()
+        unknown = needed.difference(self._variant_metadata)
+        result = {identifier: self._variant_metadata[identifier]
+                  for identifier in needed.intersection(self._variant_metadata)
+                  if self._variant_metadata[identifier] is not None}
+        if unknown:
+            found = {}
+            with open(self.prefix+'.bim') as stream:
+                for i,line in enumerate(stream):
+                    f = line.split()
+                    if len(f) != 6: raise ValueError(f'Malformed BIM row {i+1}')
+                    if f[1] in unknown:
+                        if f[1] in found: raise ValueError(f'Duplicate requested variant ID: {f[1]}')
+                        found[f[1]] = Variant(i,f[0].removeprefix('chr'),f[1],int(f[3]),f[4],f[5])
+            if self._refresh_bim_metadata() != identity:
+                raise RuntimeError('BIM changed while reading requested variant metadata')
+            result.update(found)
+            if self.metadata_cache_size:
+                for identifier, variant in found.items():
+                    self._variant_metadata[identifier] = variant
+                    while len(self._variant_metadata) > self.metadata_cache_size:
+                        self._variant_metadata.popitem(last=False)
+                for identifier in sorted(unknown.difference(found)):
+                    self._variant_metadata[identifier] = None
+                    while len(self._variant_metadata) > self.metadata_cache_size:
+                        self._variant_metadata.popitem(last=False)
+        # Preserve the previous public ordering: matching variants in BIM order.
+        result = dict(sorted(result.items(), key=lambda item: item[1].index))
+        for identifier in result:
+            if identifier in self._variant_metadata:
+                self._variant_metadata.move_to_end(identifier)
+        for identifier in sorted(needed.intersection(self._variant_metadata)):
+            if self._variant_metadata[identifier] is None:
+                self._variant_metadata.move_to_end(identifier)
+        while len(self._variant_metadata) > self.metadata_cache_size:
+            self._variant_metadata.popitem(last=False)
         return result
 
     def read_variants(self, indices):

@@ -48,6 +48,8 @@ null_model.export_regenie("/results/discovery/Step1/discovery")
 
 `phenotype_values`为reader顺序的`[N]`，`qc_variant_indices`为原BIM索引。可传torch/NumPy `[N,M]`矩阵，另提供`chromosomes[M]`和`sample_ids`。返回`NullModel`有sample_ids、sample_indices、loco[N有效,22]、prs[N有效]、y_scale和metadata；`save/load`保存本地缓存，`from_regenie`读取既有原格式LOCO。使用导入模型时应同时核对原cohort、表型、RINT和软件版本，原LOCO文本本身不包含完整来源记录。
 
+`BedReader(prefix, keep=None, remove=None, sample_ids=None, metadata_cache_size=100000)`只解码需要的样本/变异；`sample_ids`可指定FID/IID顺序。`metadata_cache_size`限制已查询BIM元数据与缺失ID的LRU条数，设0关闭。后续查询属于缓存子集时省去重扫；新ID仍扫描BIM，不建立整张BIM索引。BIM大小、时间或文件身份变化会清空缓存，返回顺序始终为原BIM顺序。
+
 | Step1Config参数 | 默认值与作用 |
 |---|---|
 | block_size / folds | 1000 / 5；按染色体分块，按有效样本累计构造连续fold |
@@ -125,6 +127,8 @@ with RegenieWriter("/results/discovery/gene", "24485-2.0", masks=mask_definition
 输出12类TEST：ADD、ADD-SKAT、ADD-SKATO、ADD-SKATO-ACAT、ADD-ACATO、ADD-ACATV、ADD-ACATV-ACAT、ADD-BURDEN-ACAT、ADD-BURDEN-SBAT、ADD-BURDEN-SBAT_POS、ADD-BURDEN-SBAT_NEG、GENE_P。
 
 gene的稀疏小矩阵投影与推断保持GPU float64，使用context中未丢精度的y_float64和covariates_q_float64；single仍按请求dtype计算大块。SBAT在原基因型样本位置补零，再以独立Triton kernel复现冻结Eigen/SSE2的列范数累加顺序，减少共线mask的pivot差异。CPU模式用相同递推。该兼容顺序针对本次核对的3.4.1二进制，其他ISA构建可能选择不同的等范数列。
+
+Sub的global白名单在BIM查找、BED解码和GPU传输前筛选。输出的df=1等效χ²在−log10(P)≤300时使用float64正态逆CDF，接近P=1时用expm1/erfinv；其他df和更强尾保留log域二分算法。该优化减少逐行GPU调用，不改变关联检验或尾积分预算。
 
 ## Pipeline和汇总
 

@@ -1,0 +1,637 @@
+{
+  "optimization": "df1 float64 inverse normal quantile for -log10P <=300; expm1/erfinv near P1; log bisection retained for stronger tails and other df",
+  "timing_scope": "warm fixed-LOCO gene IO/masks/tails/output; context construction excluded",
+  "precision": {
+    "context": "float32 TF32",
+    "gene_projection_and_inference": "float64",
+    "reference_regenie_3_4_1": "float64; no native full-float32 switch"
+  },
+  "gpu_shared_load": {
+    "before": "0, 26987 MiB, 37 %",
+    "after": "0, 28185 MiB, 45 %"
+  },
+  "source_sha256": "23a5d997ae9fe9e9084b10406f1986a740ae589b65023874c00ea6a415a09c1a",
+  "baseline_source_sha256": "5189e54f041003ed562f61d5f42b96183c2b3cafa851b095b8f285a075247f8c",
+  "cases": {
+    "Missense": {
+      "rows": 81,
+      "old_warm_wall_seconds": [
+        4.462089419364929,
+        5.958889529109001,
+        4.3111424297094345
+      ],
+      "new_warm_wall_seconds": [
+        1.9097860753536224,
+        2.1906345188617706,
+        2.1766405254602432
+      ],
+      "old_median_seconds": 4.462089419364929,
+      "new_median_seconds": 2.1766405254602432,
+      "all_before_after_fields_exact": true,
+      "all_three_repeat_hashes_identical": true,
+      "per_test_before_after": {
+        "ADD": {
+          "rows": 15,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATO": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT_NEG": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT_POS": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKAT": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKATO": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKATO-ACAT": {
+          "rows": 12,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "GENE_P": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        }
+      },
+      "per_test_native_difference": {
+        "ADD": {
+          "rows": 15,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATO": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0.000024000000000024002,
+            "LOG10P": 0.000008999999999981245
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 3,
+            "LOG10P": 3
+          }
+        },
+        "ADD-BURDEN-SBAT_NEG": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0.000028000000000028002,
+            "LOG10P": 0.000010999999999983245
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 2,
+            "LOG10P": 3
+          }
+        },
+        "ADD-BURDEN-SBAT_POS": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0.000018999999999991246,
+            "LOG10P": 0.000008000000000008
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 3,
+            "LOG10P": 2
+          }
+        },
+        "ADD-SKAT": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKATO": {
+          "rows": 9,
+          "max_abs_difference": {
+            "CHISQ": 0.000005000000000032756,
+            "LOG10P": 0.000002000000000002
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 3,
+            "LOG10P": 2
+          }
+        },
+        "ADD-SKATO-ACAT": {
+          "rows": 12,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "GENE_P": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 6.999999999923734e-7,
+            "LOG10P": 0.000001000000000001
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 2,
+            "LOG10P": 2
+          }
+        }
+      },
+      "synchronized_df1_inverse_old": {
+        "calls": 66,
+        "seconds": 2.410625249147415
+      },
+      "synchronized_df1_inverse_new": {
+        "calls": 66,
+        "seconds": 0.056358516216278076
+      },
+      "old_controller_seconds": 0.11524385213851929,
+      "new_controller_seconds": 0.11227700114250183,
+      "tail_counts_unchanged": true,
+      "cpu_tail_fallback_calls": 0
+    },
+    "REVEL50": {
+      "rows": 75,
+      "old_warm_wall_seconds": [
+        5.726540416479111,
+        3.5755422115325928,
+        3.4044425934553146
+      ],
+      "new_warm_wall_seconds": [
+        1.893916517496109,
+        1.983285054564476,
+        3.9895238280296326
+      ],
+      "old_median_seconds": 3.5755422115325928,
+      "new_median_seconds": 1.983285054564476,
+      "all_before_after_fields_exact": true,
+      "all_three_repeat_hashes_identical": true,
+      "per_test_before_after": {
+        "ADD": {
+          "rows": 14,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATO": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT_NEG": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT_POS": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKAT": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKATO": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKATO-ACAT": {
+          "rows": 11,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "GENE_P": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        }
+      },
+      "per_test_native_difference": {
+        "ADD": {
+          "rows": 14,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATO": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-ACATV-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-ACAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-BURDEN-SBAT": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0.00014900000000001024,
+            "LOG10P": 0.00006100000000003325
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 2,
+            "LOG10P": 2
+          }
+        },
+        "ADD-BURDEN-SBAT_NEG": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0.00008000000000008001,
+            "LOG10P": 0.000025000000000052758
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 2,
+            "LOG10P": 2
+          }
+        },
+        "ADD-BURDEN-SBAT_POS": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0.00006999999999998674,
+            "LOG10P": 0.00004300000000001525
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 2,
+            "LOG10P": 2
+          }
+        },
+        "ADD-SKAT": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "ADD-SKATO": {
+          "rows": 8,
+          "max_abs_difference": {
+            "CHISQ": 0.00006300000000003525,
+            "LOG10P": 0.000029000000000001247
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 2,
+            "LOG10P": 2
+          }
+        },
+        "ADD-SKATO-ACAT": {
+          "rows": 11,
+          "max_abs_difference": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 0,
+            "LOG10P": 0
+          }
+        },
+        "GENE_P": {
+          "rows": 3,
+          "max_abs_difference": {
+            "CHISQ": 0.00003700000000000925,
+            "LOG10P": 0.000015000000000042757
+          },
+          "six_digit_mismatches": {
+            "CHISQ": 2,
+            "LOG10P": 2
+          }
+        }
+      },
+      "synchronized_df1_inverse_old": {
+        "calls": 61,
+        "seconds": 1.7639279812574387
+      },
+      "synchronized_df1_inverse_new": {
+        "calls": 61,
+        "seconds": 0.06989441812038422
+      },
+      "old_controller_seconds": 0.06923133134841919,
+      "new_controller_seconds": 0.07829926908016205,
+      "tail_counts_unchanged": true,
+      "cpu_tail_fallback_calls": 0
+    }
+  },
+  "tests": {
+    "statistics_cases": 21,
+    "all_passed": true,
+    "cuda_seconds": 11.948
+  },
+  "dispatch": {
+    "scope": "one df1 scalar inverse on a real gene output; profiler overhead excluded from full-gene timing",
+    "methods": {
+      "before": {
+        "cudaLaunchKernel_calls": 1148,
+        "synchronized_scalar_copies": 164,
+        "chisq_six_digits": "0.5662",
+        "cuda_activity_events_filtered": 1229,
+        "cuda_activity_microseconds_filtered": 4060
+      },
+      "after": {
+        "cudaLaunchKernel_calls": 31,
+        "synchronized_scalar_copies": 3,
+        "chisq_six_digits": "0.5662",
+        "cuda_activity_events_filtered": 33,
+        "cuda_activity_microseconds_filtered": 125
+      }
+    },
+    "six_digit_equal": true,
+    "count_definition": "cudaLaunchKernel_calls is the CPU CUDA runtime dispatch count; filtered CUDA activities may include other device operations."
+  }
+}

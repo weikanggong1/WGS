@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 import gzip
+import os
+from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
 import numpy as np
@@ -16,6 +18,78 @@ import pandas as pd
 
 
 class SingleIOTests(unittest.TestCase):
+    def test_bim_cache_preserves_new_missing_ids_and_bim_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'genotype'
+            variants=[Variant(i,'1',f'v{i}',10+i,'A','G') for i in range(3)]
+            write_bed(prefix,torch.zeros((3,3)),variants,[('1','1'),('2','2'),('3','3')])
+            reader=BedReader(prefix)
+            with patch('builtins.open',wraps=open) as opened:
+                first=reader.find_variants(['v1','missing'])
+                self.assertEqual(list(first),['v1'])
+                self.assertEqual(opened.call_count,1)
+                self.assertEqual(reader.find_variants(['missing','v1']),first)
+                self.assertEqual(opened.call_count,1)
+                self.assertEqual(list(reader.find_variants(['v2'])),['v2'])
+                self.assertEqual(opened.call_count,2)
+                result=reader.find_variants(['v2','missing','v0','v1'])
+                self.assertEqual(list(result),['v0','v1','v2'])
+                self.assertEqual(opened.call_count,3)
+                self.assertEqual(list(reader.find_variants(['v0','v2'])),['v0','v2'])
+                self.assertEqual(opened.call_count,3)
+
+    def test_bim_cache_invalidates_on_size_time_and_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'genotype'
+            write_bed(prefix,torch.zeros((3,1)),[Variant(0,'1','v',10,'A','G')],
+                      [('1','1'),('2','2'),('3','3')])
+            reader=BedReader(prefix)
+            path=Path(str(prefix)+'.bim')
+            self.assertEqual(reader.find_variants(['v'])['v'].position,10)
+            before=path.stat()
+            path.write_text('1 v 0 100 A G\n')
+            os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
+            self.assertEqual(reader.find_variants(['v'])['v'].position,100)
+            # Same length, updated mtime, and a previously cached missing ID.
+            self.assertEqual(reader.find_variants(['w']),{})
+            path.write_text('1 w 0 200 A G\n')
+            before=path.stat()
+            os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns+1_000_000))
+            self.assertEqual(reader.find_variants(['v']),{})
+            self.assertEqual(reader.find_variants(['w'])['w'].position,200)
+            # Atomic replacement can preserve both size and mtime; inode/ctime
+            # must still invalidate positive and negative query results.
+            before=path.stat()
+            replacement=Path(str(prefix)+'.replacement')
+            replacement.write_text('1 v 0 300 A G\n')
+            os.utime(replacement,ns=(before.st_atime_ns,before.st_mtime_ns))
+            replacement.replace(path)
+            self.assertEqual(reader.find_variants(['v'])['v'].position,300)
+            self.assertEqual(reader.find_variants(['w']),{})
+
+    def test_bim_cache_has_bounded_positive_and_negative_storage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'genotype'
+            variants=[Variant(i,'1',f'v{i}',i+1,'A','G') for i in range(4)]
+            write_bed(prefix,torch.zeros((3,4)),variants,[('1','1'),('2','2'),('3','3')])
+            reader=BedReader(prefix,metadata_cache_size=2)
+            self.assertEqual(list(reader.find_variants(['v3','v2','v1','v0','absent'])),
+                             ['v0','v1','v2','v3'])
+            self.assertLessEqual(len(reader._variant_metadata),2)
+            self.assertEqual(list(reader.find_variants(['v0','v3'])),['v0','v3'])
+            self.assertLessEqual(len(reader._variant_metadata),2)
+
+    def test_changed_bim_still_rejects_duplicate_requested_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'genotype'
+            write_bed(prefix,torch.zeros((3,1)),[Variant(0,'1','v',1,'A','G')],
+                      [('1','1'),('2','2'),('3','3')])
+            reader=BedReader(prefix)
+            self.assertEqual(list(reader.find_variants(['v'])),['v'])
+            Path(str(prefix)+'.bim').write_text('1 v 0 1 A G\n1 v 0 2 A G\n')
+            with self.assertRaisesRegex(ValueError,'Duplicate requested variant ID'):
+                reader.find_variants(['v'])
+
     def test_bed_codes_padding_and_requested_sample_order(self):
         with tempfile.TemporaryDirectory() as d:
             prefix=Path(d)/'genotype'

@@ -6,6 +6,8 @@
 
 依据用户提供的Methods PDF，默认采用REGENIE 3.4.1。参考程序是官方tag的Centos7 MKL二进制，现场确认版本；服务器已有4.1只作历史参考，不混入本表的3.4.1对照。原软件仅在独立验证脚本执行，`torchwgs`运行时不调用它。
 
+冻结原软件的ridge、连续表型投影和VC协方差使用Eigen `MatrixXd`/`SparseMatrix<double>`，L0中间文件也写入double；没有可切换为float32的运行参数。因此下面的原程序基线为float64。PyTorch默认在Step1和single的大矩阵使用float32并开启TF32，可通过`dtype="float32", tf32=False`选择普通float32，或`dtype="float64", tf32=False`进行严格对照。Gene的投影与小矩阵保持float64：真实共线mask在float32投影下会改变SBAT选列。原实现见[Step1](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/Step1_Models.cpp)、[QT投影](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/Step2_Models.cpp)和[VC计算](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/SKAT.cpp)。
+
 discovery名单44,441人。与芯片/WGS及排除名单对齐后保留44,365人；表型`24485-2.0`有效41,538人、缺失2,827人。Step1保留原基因型行和缺失表型的mask，以复现原CV边界。实际采用覆盖完整discovery的残差表，现场发现另一个名称含discovery的旧表只覆盖32,908名名单成员，因此没有使用。
 
 硬件为共享A100 80GB；PyTorch 2.0.0+cu118、Triton 2.0、NumPy 1.26.4、SciPy 1.13.1、pandas 1.4.4。报告显存为本进程PyTorch峰值分配，未包含其他用户进程或CUDA外部分配。时间是本次观测，未控制共享机器负载。
@@ -53,11 +55,20 @@ discovery名单44,441人。与芯片/WGS及排除名单对齐后保留44,365人�
 
 带LOCO四组GPU观测耗时5.18/4.71/3.56/3.63秒，峰值约0.64GB；计时包含gene读取、mask构建、统计和输出，开始于context构建后。原程序日志为0.99/1.00/1.20/1.23秒，计时边界不同，这个小范围没有GPU提速结论。Davies CPU标量规划约占上述GPU端时间1.89–2.22%；默认CPU/SciPy尾积分fallback为0。参与者矩阵投影、eig、NNLS、Fourier积分和SBAT正交积分由GPU执行。
 
+随后针对GPU调用开销优化df=1输出逆χ²。同一真实Missense/REVEL50、固定原LOCO、开启RINT和warm状态成对测量三次，计时仍从context构建后开始：
+
+| 分析 | 旧版三次 / 秒 | 新版三次 / 秒 | 中位数旧→新 / 秒 |
+|---|---|---|---|
+| Main（81行） | 4.462 / 5.959 / 4.311 | 1.910 / 2.191 / 2.177 | 4.462→2.177 |
+| Sub（75行） | 5.727 / 3.576 / 3.404 | 1.894 / 1.983 / 3.990 | 3.576→1.983 |
+
+保留全部观测，共享负载造成明显波动。Main/Sub全部12个TEST的六位LOG10P、CHISQ及其他字段与优化前输出完全一致，原程序差异范围保持。逐次GPU同步的归因测量中，66/61次df=1逆变换累计从2.411/1.764秒降至0.056/0.070秒；Davies、Kuonen路径次数和积分项数相同。该归因计时有额外同步，不与未插桩的总耗时相加。
+
 ## 数值修复与单元验证
 
-最终使用公开CLI，经JSON配置运行完整`run_discovery`：320个真实芯片位点拟合，加164个真实PTV WGS位点和64个真实常见WGS位点，共228个WGS输入。41,538有效样本；RINT开启/关闭都输出64条single和75条gene结果。与使用同一导出LOCO的原程序比较，single最大LOG10P差1×10⁻⁶，gene最大差1.5×10⁻⁵；gene全部header、ID、NA和四种mask文件逐字节一致。
+最终使用公开CLI，经JSON配置运行完整`run_discovery`：320个真实芯片位点拟合，加164个真实PTV WGS位点和64个真实常见WGS位点，共228个WGS输入。41,538有效样本；RINT开启/关闭都输出64条single和75条gene结果。与使用同一导出LOCO的原程序比较，single最大LOG10P差1×10⁻⁶，gene最大差4.4×10⁻⁵；gene全部header、ID、NA和四种mask文件逐字节一致。
 
-`run_discovery`端到端分别10.69/11.10秒，GPU峰值322,288,128字节；single阶段0.19/0.28秒，gene阶段3.29/3.96秒，其余包括Step1和输入/汇总。重复CLI运行复用三个阶段，仅0.84/0.99秒。修改显著性阈值保留统计缓存；删除gene ID文件后只重算gene并修复ID文件。RINT关闭确实传到Step1、single和gene，不只改变配置文本。
+`run_discovery`最终重跑端到端分别10.89/12.69秒，GPU峰值322,288,128字节；single阶段0.19/0.18秒，gene阶段2.35/5.65秒，其余包括Step1和输入/汇总。重复CLI运行复用三个阶段，仅0.85/0.82秒。以上包含首次CUDA/JIT初始化且共享负载不同，不能与前面的warm成对观测直接比较。修改显著性阈值保留统计缓存；删除gene ID文件后只重算gene并修复ID文件。RINT关闭确实传到Step1、single和gene，不只改变配置文本。
 
 本轮实现和修复记录：
 
@@ -69,7 +80,11 @@ discovery名单44,441人。与芯片/WGS及排除名单对齐后保留44,365人�
 - RINT可独立设定，并提供全流程关闭开关；JSON配置往返后实际mask构建通过。
 - 缓存核对输入、实现、参数与输出身份；输出使用partial提交，Step1双文件失败时恢复旧文件。
 
-最终51个CUDA单元测试通过，覆盖独立ridge直接解、QT闭式解、加权χ²低秩解析/独立积分、冻结Davies数值/故障参考、SKAT-O极小P和缩放、SBAT约束/混合权重、PLINK码与缺失、原格式导出及异常恢复。另以30项冻结C++参考核对Davies值与故障路径。模拟/数学fixture用于回归检验，上述benchmark全部使用真实数据。
+最终58个CUDA单元测试通过，覆盖独立ridge直接解、QT闭式解、加权χ²低秩解析/独立积分、冻结Davies数值/故障参考、SKAT-O极小P和缩放、SBAT约束/混合权重、PLINK码与缺失、原格式导出及异常恢复。另以30项冻结C++参考核对Davies值与故障路径。模拟/数学fixture用于回归检验，上述benchmark全部使用真实数据。
+
+完整逆变换优化的逐TEST误差、三次计时和CUDA派发计数见[聚合JSON](../benchmarks/inverse_chi2_optimization_2026-10-04.json)。新增白名单前移与BIM缓存回归检查实际读取列数、BIM顺序、缺失ID、新ID、重复ID、容量上限及文件变化失效。
+
+白名单前移另以同一统计后端做Main/Sub×RINT开/关四组真实配对验证，每组warm后重复三次。Sub每次解码从910列降至288列，Main仍为910列；全部优化前后结果与历史PyTorch输出逐字节相同，四种mask文件也与原程序逐字节相同。每个reader首次查询扫描BIM一次，之后三次查询相同子集为0次；新ID仍需要重扫。共享负载下Main和Sub时间有不同方向的波动，不据此声称额外整体加速。全部观测及读取计数见[IO优化聚合JSON](../benchmarks/gene_io_optimization_2026-10-04.json)。
 
 ## 运行边界与输入来源
 

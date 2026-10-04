@@ -11,7 +11,9 @@ dependencies:
   - numpy=1.26
   - scipy=1.13
   - pandas>=1.4
+  - xarray>=2024.1
   - matplotlib>=3.7
   - pip
   - pip:
+      - rdata==1.1.0
       - -e .
