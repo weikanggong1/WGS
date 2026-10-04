@@ -1,0 +1,129 @@
+{
+  "version": "0.1.0",
+  "date": "2026-10-04",
+  "device": "A100",
+  "torch": "2.5.1+cu118",
+  "dtype": "float64",
+  "scope": "chr22 pilot; single imaging phenotype; native Rdata compared by original R",
+  "number_samples": 42652,
+  "absolute_tolerance": 1e-10,
+  "relative_tolerance": 1e-07,
+  "all_pass": true,
+  "jobs": {
+    "OR11H1_coding": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 4.73009315049566e-09,
+      "max_relative_error": 1.2911726391913e-08,
+      "numeric_elements": 146,
+      "object_name": "results_coding",
+      "pass": true
+    },
+    "COMT_coding": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 1.12217689030025e-08,
+      "max_relative_error": 3.59736926445636e-08,
+      "numeric_elements": 181,
+      "object_name": "results_coding",
+      "pass": true
+    },
+    "APOBEC3A_coding": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 1.73749903353837e-13,
+      "max_relative_error": 7.97621033581247e-13,
+      "numeric_elements": 181,
+      "object_name": "results_coding",
+      "pass": true
+    },
+    "OR11H1_window": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 3.19999582387709e-12,
+      "max_relative_error": 8.95171893485715e-12,
+      "numeric_elements": 37,
+      "object_name": "results_sliding_window",
+      "pass": true
+    },
+    "OR11H1_individual": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 1.08002495835535e-12,
+      "max_relative_error": 2.88036744210334e-14,
+      "numeric_elements": 198,
+      "object_name": "results_individual_analysis",
+      "pass": true
+    },
+    "COMT_noncoding": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 4.73536931888674e-10,
+      "max_relative_error": 1.07960219312966e-09,
+      "numeric_elements": 173,
+      "object_name": "results_noncoding",
+      "pass": true
+    },
+    "POTEH-AS1_ncrna": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 2.27373675443232e-13,
+      "max_relative_error": 1.17085777957486e-13,
+      "numeric_elements": 33,
+      "object_name": "results_noncoding",
+      "pass": true
+    },
+    "OR11H1_multiple_window": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 1.09139364212751e-11,
+      "max_relative_error": 9.29304145886573e-12,
+      "numeric_elements": 185,
+      "object_name": "results_sliding_window",
+      "pass": true
+    },
+    "COMT_missense_selected": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 1.70530256582424e-13,
+      "max_relative_error": 6.12684651165442e-15,
+      "numeric_elements": 41,
+      "object_name": "results_coding",
+      "pass": true
+    },
+    "COMT_disruptive_selected": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 2.1094237467878e-15,
+      "max_relative_error": 3.06581354412687e-15,
+      "numeric_elements": 35,
+      "object_name": "results_coding",
+      "pass": true
+    },
+    "COMT_UTR_selected": {
+      "schema_errors": [],
+      "numeric_failures": [],
+      "max_abs_error": 4.73536931888674e-10,
+      "max_relative_error": 1.07960219312966e-09,
+      "numeric_elements": 33,
+      "object_name": "results_noncoding",
+      "pass": true
+    }
+  },
+  "numeric_elements": 1243,
+  "full_gpu_seconds": 817.5084636807442,
+  "peak_gpu_mib": 984.203125,
+  "independent_phewas_models": {
+    "number_samples": [
+      42652,
+      42418
+    ],
+    "numeric_elements": 832,
+    "all_pass": true
+  },
+  "limitations": [
+    "Two-trait joint set test has one SKAT difference beyond the strict tolerance; see docs/multi.md.",
+    "Native mixed binary null fitting and complete binary null Rdata export are unavailable.",
+    "Full chromosome/genome batches and SCANG were not validated."
+  ]
+}

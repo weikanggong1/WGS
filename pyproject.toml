@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "staar-phewas-torch"
+version = "0.1.0"
+description = "Float64 PyTorch STAAR and MultiSTAAR PheWAS on native annotated GDS"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0-only"}
+dependencies = ["numpy>=1.26,<3", "scipy>=1.13", "torch>=2.4", "rdata==1.1.0", "xarray>=2024.1"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+staar-phewas-torch = "staar_phewas.cli:main"
+staar-phewas-prepare = "staar_phewas.prepare:main"
+
+[tool.setuptools.packages.find]
+include = ["staar_phewas*"]

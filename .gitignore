@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+private/
+runs/
+logs/
+*.gds
+*.[Rr][Dd][Aa][Tt][Aa]
+*.[Rr][Dd][Aa]
+*.[Rr][Dd][Ss]
+*.npz
+*.npy
