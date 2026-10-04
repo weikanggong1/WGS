@@ -1,0 +1,49 @@
+{
+  "reference_version": "REGENIE 3.4.1 Centos7 MKL",
+  "phenotype": "24485-2.0",
+  "hardware": "shared NVIDIA A100 80GB",
+  "participants_exported": false,
+  "cohort": {"discovery_keep": 44441, "genotype_after_exclusions": 44365, "valid_phenotype": 41538},
+  "step1_full": {
+    "qc_variants": 509468, "blocks": 521, "level0_predictors": 2605,
+    "dtype": "float32", "tf32": true, "selected_h_both": 0.25,
+    "loco_max_abs": 0.00059195390510558, "loco_rmse": 0.00012805767738467328,
+    "loco_correlation": 0.9999998686914, "cv_mse_max_abs": 0.000009976441289860638,
+    "torch_seconds": 644.7081168740988, "native_seconds": 1131.51,
+    "torch_level0_seconds": 639.3434416800737, "torch_level1_seconds": 0.7842706441879272,
+    "torch_peak_gpu_bytes": 986269184
+  },
+  "single_isolated": {
+    "variants": 320, "n": 41538, "float64_result_byte_exact": true, "ids_byte_exact": true,
+    "float32_max_abs": {"A1FREQ": 0.000001, "BETA": 0.0000001, "SE": 0, "CHISQ": 0.000001, "LOG10P": 0.000001}
+  },
+  "gene_fixed_loco": {
+    "genes": 3, "missense_input_variants": 910, "revel50_input_variants": 288,
+    "max_vc_dimension_main": 9, "max_vc_dimension_sub": 6, "cases": 4,
+    "all_metadata_exact": true, "mask_artifacts_exact": true, "qr_order_exact": true, "repeat_byte_exact": true,
+    "max_log10p_abs": {
+      "ADD": 0, "SKAT": 0, "ACATV": 0, "ACATO": 0, "SKATO-ACAT": 0,
+      "BURDEN-ACAT": 0, "ACATV-ACAT": 0, "SKATO": 0.000069,
+      "BURDEN-SBAT": 0.000061, "BURDEN-SBAT_POS": 0.000043,
+      "BURDEN-SBAT_NEG": 0.000036, "GENE_P": 0.000015
+    },
+    "torch_seconds_after_context": [5.182, 4.708, 3.563, 3.633],
+    "native_log_seconds": [0.992, 0.997, 1.204, 1.226],
+    "cpu_davies_controller_wall_fraction_range": [0.0189, 0.0222],
+    "cpu_scipy_tail_fallbacks": 0
+  },
+  "cli_pipeline_real_wgs": {
+    "step1_qc_variants": 320, "wgs_variants": 228, "single_rows": 64, "gene_rows": 75,
+    "rint_on_off_tested": true, "all_three_stage_rint_flags_verified": true,
+    "run_discovery_seconds": [10.689350754022598, 11.102632850408554],
+    "single_seconds": [0.19403618574142456, 0.27631333470344543],
+    "gene_seconds": [3.293481007218361, 3.9598631858825684],
+    "peak_gpu_bytes": 322288128,
+    "max_single_log10p_abs": 0.000001, "max_gene_log10p_abs": 0.000015,
+    "mask_artifacts_byte_exact": true, "resume_all_stages": true,
+    "summary_threshold_edit_reuses_statistics": true, "missing_gene_ids_recomputes_only_gene": true
+  },
+  "cuda_unit_tests": {"passed": 51, "failed": 0},
+  "scope": "Full array Step1; bounded real WGS Step2. No all-genome/all-gene/all-phenotype study result claim.",
+  "timing_note": "Observed on a shared GPU. Gene timing starts after context construction; no comparable gene speedup claim."
+}
