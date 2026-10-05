@@ -9,30 +9,43 @@
 
 ## REGENIE discovery
 
-`torchwgs` 用 PyTorch 计算连续单表型的完整 discovery：芯片 ridge/LOCO、全染色体 single-variant、coding/noncoding gene-based，以及显著性和 locus 汇总。运行时不调用 REGENIE、PLINK 或 R。`WGSConfig.paper()`采用核对后的论文参数，Python/JSON 可以修改；RINT 可设为 `WGSConfig.paper(apply_rint=False)`或 CLI `--no-rint`。
+`torchwgs` 用 PyTorch CUDA 执行连续单表型的完整 discovery：芯片两级 ridge/LOCO、全染色体 single-variant、coding/noncoding gene-based，以及显著性和 locus 汇总。运行时不调用 REGENIE、PLINK 或 R。
 
-`study_gene_analyses()`展开全部 14 Main + 12 Sub，共 26 组、42 个源 mask 定义，并保留每组的 domain、overall、singleton 和 AAF masks。本次交付使用 `ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)`，在 GPU 上串行完成各组；API 另支持在 mask 组或染色体层级使用独立 CUDA streams 并行。完整参数、输入格式、原软件命令和流程图见 [REGENIE指南](docs/REGENIE.md)及 [Python参数](docs/API.md)。
+`study_gene_analyses()`提供全部 14 Main + 12 Sub，共 26 组、42 个基础 mask 定义；每组保留 category、domain、overall、singleton 和 AAF masks。完整流程采用 GPU 串行配置 `ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)`，默认导出原格式关联结果和全部 mask 文件。
 
-GeneConfig 的 SKAT-O 积分默认采用原 REGENIE 的 χ² 坐标（adaptive_x），绝对/相对误差预算为 10⁻²⁵ / 2⁻¹³、最多 1,000 个区间，四个参数均可修改。平方根坐标 adaptive_sqrt 保留为可选项；真实 9 维 mask 曾出现节点漏过窄特征却报告收敛，原坐标对照及限制见 [真实验证](docs/VALIDATION.md)。
+`WGSConfig.paper()`采用核对后的论文参数，Python 和 JSON 可修改全部配置。RINT 是选项：`WGSConfig.paper(apply_rint=False)` 或 CLI `--no-rint` 可统一关闭。Step1/single 默认 float32/TF32，gene 的协方差与推断采用 float64。详见[完整流程和全部 mask](docs/REGENIE.md)、[输入与参数](docs/API.md)、[真实验证](docs/VALIDATION.md)。
 
-真实验证使用最小的 chr21：13,733,596 个 WGS 位点，41,538 名有效样本。完整 509,468 位点 Step1 已独立对照。当前全串行运行 `discovery_all26_gpu_serial_final_v5` 沿用同一份已冻结的 21 个实现模块，源码通过 SHA-256 核对一致；single 已完成全位点扫描，314,209 行格式及五项数值门槛全部通过，阶段耗时为 424.529767 秒。全部 26 组 gene 和汇总仍在验证；本轮导入已验证的完整 Step1 LOCO，整体耗时、显存与最终验收结果待运行完成后登记。
+### 安装与完整运行
 
-同源六个完整组的 GPU 串行测量已完成，共 32,842 行，进程墙钟为 6473.804485 秒，pipeline 函数计时为 6470.960217 秒，峰值分配为 6,605,298,688 字节（约 6.15 GiB）。六组结构及附属文件全部通过，严格数值为 0/6 组通过；该测量覆盖六组，不代表全部 26 组的最终串行结果。[匿名计时和显存记录](benchmarks/real_gpu_serial_resources_2026-10-05.json)、[测量图](benchmarks/gpu_serial_2026-10-05.png)仅保留串行结果。
-
-历史 v4 使用 2 workers，已完成 single、全部 26 组 gene 和汇总：single 314,209 行格式及五项数值门槛全部通过；gene 97,222 行、26/26 组结构及附属文件全部通过，严格数值仅 `Splice_splice05` 全组通过（1/26）。ADD-SKATO 38 行、ADD-SKAT 1 行仅 CHISQ 超门槛，LOG10P 均通过；SBAT/POS/NEG 和 GENE_P 仍有 LOG10P 差异。v4 统一 pipeline 函数计时为 10945.423 秒，峰值约 7.49 GiB；这些数值属于历史 2 workers 运行，详情见 [真实验证](docs/VALIDATION.md)。
-
-同一冻结源码的本地与验证服务器 111 项回归均通过，测试报告耗时分别为 119.770 和 54.939 秒。全量 GPU 串行验证尚未完成；共享资源下的不同计时范围不换算受控倍速。
-
-历史 v4 在论文阈值下两边的显著性决策一致，均无显著命中；该[匿名记录](benchmarks/real_discovery_significance_2026-10-05.json)仅覆盖本连续表型 chr21 的无命中场景，尚未验证阳性命中一致性或数值等价。v5 的汇总将随全串行运行重新核验。
-
-上一冻结版 v3 的 single 阶段耗时 225.320409 秒，314,209 行格式与数值均通过；该轮因 Pseudo 多一行 ADD-SKATO 而停止。原生条件 double 概率下溢规则修复后，v4 的 Pseudo 已与原程序同为 4,287 行。single 阶段没有独立进程墙钟或峰值记录，不与旧 CPU 计时换算加速倍数。
+需要 Linux、CUDA GPU 和 Triton；Conda 环境包含全部运行依赖。
 
 ```bash
 conda env create -f environment.yml
 conda activate torchwgs
 python -m unittest discover -s tests/regenie_gpu -v
-torchwgs --inputs discovery_inputs.json --out /results/discovery --no-rint
+
+python examples/configure_discovery.py \
+  --array-prefix /data/array/genotype_array --array-variant-include /data/array/qc.snplist \
+  --phenotype-file /data/phenotype_residuals.txt --phenotype-column trait_01 \
+  --discovery-samples /data/discovery.keep --sample-remove /data/sample_exclude.txt \
+  --wgs-prefix-template '/data/wgs/chr{chromosome}' \
+  --annotation-root /data/annotation --json-directory /results/config \
+  --max-gpu-gb 20
+torchwgs --inputs /results/config/discovery_inputs.json \
+  --config /results/config/analysis_config.json --out /results/discovery_trait_01
 ```
+
+以上配置读取 22 条常染色体的完整输入，每条染色体包含全部 26 组。先分析 chr21 时，在配置生成命令加 `--chromosomes 21`。私有表型、样本、基因型、注释和运行结果保存在分析者自己的目录；公开示例仅使用通用路径。
+
+### 当前真实验证
+
+验证范围是最小的 chr21：13,733,596 个 WGS 位点、41,538 名有效样本。完整 509,468 位点 Step1 已独立对照；当前完整 GPU 串行运行导入该 LOCO，single 已输出 314,209 行，格式和五项数值门槛全部通过，阶段耗时 424.529767 秒。全部 26 组 gene 与汇总尚未完成最终验收。
+
+同源六个完整组的 GPU 串行测量已完成，共 32,842 行，进程墙钟 6473.804485 秒，pipeline 函数计时 6470.960217 秒，峰值分配 6,605,298,688 字节（约 6.15 GiB）。六组结构和附属文件全部通过，严格数值为 **0/6 组通过**；完整 gene 数值等价尚未达到。六组测量不能代替全 26 组验收。计时属于共享 A100 环境，不换算受控 CPU/GPU 加速倍数。
+
+[匿名串行资源记录](benchmarks/real_gpu_serial_resources_2026-10-05.json)、[资源图](benchmarks/gpu_serial_2026-10-05.png)、[资源表](benchmarks/gpu_serial_2026-10-05.csv)保留实际计时、显存和验收数量。此次串行入口清理包含 21 个实现模块，本地 111 项回归全部通过，框架报告耗时 64.704 秒。上述真实测量来自已冻结的统计实现，入口清理未新增完整端到端测量；回归 fixture 用于检查算法，不替代真实 benchmark。
+
+原算法链接与参考文献见[指南](docs/REGENIE.md#数值后端与参考)。
 
 ## STAAR / MultiSTAAR PheWAS
 

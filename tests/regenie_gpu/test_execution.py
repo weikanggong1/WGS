@@ -77,16 +77,28 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'No finite aligned phenotype/LOCO samples'):
                 create_test_context(phenotype,prediction,device='cpu')
 
-    def test_order_and_worker_error_reaches_caller(self):
-        with GpuExecutor(ExecutionConfig('mask', 2), 'cpu') as executor:
-            self.assertEqual(executor.map(lambda i: i*i, [3, 1, 2]), [9, 1, 4])
-            with self.assertRaisesRegex(ValueError, 'worker failure'):
-                executor.map(lambda i: (_ for _ in ()).throw(ValueError('worker failure')), [1, 2])
-        for arguments in [('unknown', 1, 20.), ('mask', 0, 20.), ('mask', 1.5, 20.),
-                          ('mask', True, 20.), ('mask', False, 20.),
-                          ('mask', 1, float('nan')), ('mask', 1, float('inf')),
-                          ('mask', 1, -float('inf')), ('mask', 1, 0.), ('mask', 1, -1.),
-                          ('mask', 1, True), ('mask', 1, '20')]:
+    def test_serial_order_errors_and_gpu_only_contract(self):
+        from types import SimpleNamespace
+        with self.assertRaisesRegex(ValueError, 'CUDA GPU'):
+            GpuExecutor(ExecutionConfig(), 'cpu')
+        with patch('torch.cuda.is_available', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'CPU association fallback'):
+                GpuExecutor(ExecutionConfig(), 'cuda:0')
+        with patch('torch.cuda.is_available', return_value=True), \
+             patch('torch.cuda.device', return_value=nullcontext()), \
+             patch('torch.cuda.get_device_properties', return_value=SimpleNamespace(total_memory=80*1024**3)), \
+             patch('torch.cuda.set_per_process_memory_fraction') as limit:
+            with GpuExecutor(ExecutionConfig(), 'cuda:0') as executor:
+                self.assertEqual(executor.map(lambda i: i*i, [3, 1, 2]), [9, 1, 4])
+                with self.assertRaisesRegex(ValueError, 'stage failure'):
+                    executor.map(lambda i: (_ for _ in ()).throw(ValueError('stage failure')), [1, 2])
+            self.assertEqual(limit.call_args.args[0], .25)
+        for arguments in [('mask', 1, 20.), ('chromosome', 1, 20.), ('unknown', 1, 20.),
+                          ('serial', 0, 20.), ('serial', 2, 20.), ('serial', 1.5, 20.),
+                          ('serial', True, 20.), ('serial', False, 20.),
+                          ('serial', 1, float('nan')), ('serial', 1, float('inf')),
+                          ('serial', 1, -float('inf')), ('serial', 1, 0.),
+                          ('serial', 1, -1.), ('serial', 1, True), ('serial', 1, '20')]:
             with self.assertRaises(ValueError):
                 ExecutionConfig(*arguments)
 
@@ -95,7 +107,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(analyses), 26)
         self.assertTrue({'Intergenic', 'Pseudo', 'RNA'}.issubset({a.name for a in analyses}))
         config = WGSConfig.paper(apply_rint=False)
-        config.execution = ExecutionConfig('chromosome', 2, 16.)
+        config.execution = ExecutionConfig('serial', 1, 16.)
         loaded = WGSConfig.from_dict(json.loads(json.dumps(config.to_dict())))
         self.assertEqual(json.dumps(loaded.to_dict()), json.dumps(config.to_dict()))
         self.assertEqual(loaded.single_variant.maf_min, 0.)
@@ -147,8 +159,15 @@ class ExecutionTests(unittest.TestCase):
                     SignificanceConfig(excluded_locus_regions=invalid)
             self.assertEqual(path.read_bytes(),original)
 
-    def test_full_pipeline_serial_mask_and_chromosome_outputs_and_resume(self):
-        self._pipeline_equivalence('cpu')
+    def test_pipeline_rejects_cpu_before_reading_private_inputs(self):
+        with TemporaryDirectory() as directory:
+            inputs=DiscoveryInputs('/unreadable/array', '/unreadable/trait', 'trait_01',
+                                   '/unreadable/cohort', {})
+            config=WGSConfig.paper()
+            config.step1=replace(config.step1, device='cpu')
+            with self.assertRaisesRegex(ValueError, 'CUDA for Step1 and Step2'):
+                run_discovery(inputs, config=config, output_dir=Path(directory)/'result')
+            self.assertFalse((Path(directory)/'result').exists())
 
     def test_sub_whitelist_intersects_user_filter_and_header_uses_complete_annotation(self):
         from torchwgs.chromosome import _gene_job
@@ -198,8 +217,8 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(empty['rows'],0)
             self.assertEqual(empty['header_mask_definitions'],0)
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA streams require a GPU')
-    def test_cuda_streams_preserve_complete_pipeline_files(self):
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA full discovery requires a GPU')
+    def test_cuda_serial_preserves_complete_pipeline_files_and_resume(self):
         self._pipeline_equivalence('cuda')
 
     def _pipeline_equivalence(self, device):
@@ -237,7 +256,7 @@ class ExecutionTests(unittest.TestCase):
             inputs = DiscoveryInputs(prefixes['21'], str(phenotypes), 'qt', str(keep), prefixes,
                                      gene_analyses=analyses, imported_loco=str(predictions))
             results = []
-            for level in ('serial', 'mask', 'chromosome', 'mask_budget_retry', 'chromosome_budget_retry'):
+            for level in ('serial',):
                 config = WGSConfig.paper(apply_rint=False)
                 config.step1 = replace(config.step1, device=device)
                 config.single_variant.device = device
@@ -247,27 +266,10 @@ class ExecutionTests(unittest.TestCase):
                 config.single_variant.min_mac = 1
                 config.gene_based.include_domains = False
                 config.gene_based.sbat_qmc_samples = 128
-                config.execution = ExecutionConfig(level.removesuffix('_budget_retry'), 2)
+                config.execution = ExecutionConfig('serial', 1)
                 config.write_masks = True
                 out = root/level
-                from torchwgs import chromosome as chromosome_module
-                original_job=chromosome_module._gene_job
-                def budgeted_job(analysis, **arguments):
-                    if arguments['config'].execution.concurrency>1:
-                        if analysis.name=='Coding':
-                            raise MemoryError('Fixture rejects this group under the per-worker budget')
-                        raise torch.cuda.OutOfMemoryError('Fixture rejects the CUDA allocation budget')
-                    return original_job(analysis, **arguments)
-                recovery=patch.object(chromosome_module,'_gene_job',budgeted_job) if level.endswith('_budget_retry') else nullcontext()
-                with recovery:
-                    report = run_discovery(inputs, config=config, output_dir=out, resume=False)
-                if level=='mask_budget_retry':
-                    self.assertTrue(report['stages']['gene_c21_Coding']['memory_retry'])
-                    self.assertTrue(report['stages']['gene_c22_Coding']['memory_retry'])
-                    self.assertTrue(report['stages']['gene_c21_Noncoding']['memory_retry'])
-                if level=='chromosome_budget_retry':
-                    self.assertEqual(len(report['execution_memory_retries']),2)
-                    self.assertTrue(report['stages']['single_c21']['cached'])
+                report = run_discovery(inputs, config=config, output_dir=out, resume=False)
                 artifacts = {str(p.relative_to(out)):p.read_bytes() for folder in ('Single', 'Gene')
                              for p in (out/folder).iterdir() if p.suffix in ('.regenie', '.ids', '.bed', '.bim', '.fam', '.snplist')}
                 self.assertEqual(len(report['output_files']['gene']), 4)
@@ -312,7 +314,7 @@ class ExecutionTests(unittest.TestCase):
                                 {'level':level, 'stages':cached['stages']})
                 events=[json.loads(line) for line in (out/'discovery.events.jsonl').read_text().splitlines()]
                 self.assertEqual(sum(e.get('stage')=='chromosome_cached' for e in events),2)
-                if level=='serial' and device=='cpu':
+                if level=='serial':
                     # A result is complete only with its native companion log.
                     for missing_log in (out/'Single/discovery_c21.log',out/'Gene/discovery_c21_Coding.log'):
                         missing_log.unlink()
@@ -334,12 +336,9 @@ class ExecutionTests(unittest.TestCase):
                     self.assertTrue(all(not stage.get('cached',False) for name,stage in changed['stages'].items()
                                         if name.startswith(('single_','gene_'))))
                 results.append(artifacts)
-            self.assertEqual(results[0], results[1])
-            self.assertEqual(results[0], results[2])
-            self.assertEqual(results[0], results[3])
-            self.assertEqual(results[0], results[4])
-            if device=='cpu':
-                # Exercise a real small fit and repeated cache loads in the same
+            self.assertEqual(len(results), 1)
+            if device=='cuda':
+                # Exercise a small fit and repeated cache loads in the same
                 # orchestration fixture. This checks log updates do not invalidate
                 # their own manifest or pretend that cache loading re-fits ridge.
                 fitting_inputs=replace(inputs,wgs_prefixes={},gene_analyses={},imported_loco=None)

@@ -1,4 +1,4 @@
-"""Independent chromosome and mask-group jobs for the discovery scheduler."""
+"""GPU chromosome and complete mask-group stages in deterministic input order."""
 from dataclasses import asdict, replace
 from pathlib import Path
 import time
@@ -11,7 +11,6 @@ from .masks import (load_annotations, load_mask_definitions, load_variant_whitel
 from .output import RegenieWriter, write_run_manifest, write_regenie_log
 from .mask_output import MaskWriter
 from .statistics import diagnostics_scope
-from .execution import GpuExecutor
 
 
 def _add_counters(total, values):
@@ -210,46 +209,7 @@ def run_chromosome(item, *, inputs, config, destination, null, null_key,
             function = lambda a: _gene_job(a,prefix=prefix,context=gene_context,inputs=inputs,
                                             config=config,destination=destination,
                                             key=(chromosome,gene_keys[a.name]))
-            if config.execution.parallel_level == 'mask':
-                def bounded_job(analysis):
-                    attempt_start=time.perf_counter()
-                    try:
-                        return function(analysis)
-                    except (MemoryError, torch.cuda.OutOfMemoryError):
-                        # The writer removes partial artifacts. All streams
-                        # finish before retrying this group with the full cap.
-                        return analysis.name, None, {'memory_retry':True,
-                                   'failed_attempt_seconds':time.perf_counter()-attempt_start}
-                with GpuExecutor(config.execution,config.single_variant.device) as executor:
-                    results = executor.map(bounded_job,pending)
-                if any(path is None for _,path,_ in results):
-                    if context.y.is_cuda:
-                        torch.cuda.empty_cache()
-                    serial_config=replace(config,execution=replace(config.execution,
-                                          parallel_level='serial',workers=1))
-                    retry_by_name={a.name:a for a in pending}
-                    for index,(name,path,rejected) in enumerate(results):
-                        if path is None:
-                            retried=_gene_job(retry_by_name[name],prefix=prefix,context=gene_context,
-                                              inputs=inputs,config=serial_config,destination=destination,
-                                              key=(chromosome,gene_keys[name]))
-                            retried[2].update(rejected)
-                            from .pipeline import _read_manifest
-                            retry_prefix=destination/'Gene'/f'discovery_c{chromosome}_{name}'
-                            manifest_path=Path(str(retry_prefix)+'.manifest.json')
-                            cached_report=_read_manifest(manifest_path)
-                            cached_report['report']=retried[2]
-                            _association_log(retry_prefix,chromosome=chromosome,prefix=prefix,
-                                             inputs=inputs,config=serial_config,report=retried[2],
-                                             analysis=retry_by_name[name])
-                            log_path=Path(str(retry_prefix)+'.log')
-                            log_identity=_file_identity(log_path)
-                            cached_report['artifacts']=[log_identity if identity['path']==log_identity['path'] else identity
-                                                        for identity in cached_report['artifacts']]
-                            write_run_manifest(manifest_path,cached_report)
-                            results[index]=retried
-            else:
-                results = [function(a) for a in pending]
+            results = [function(analysis) for analysis in pending]
             for name,path,report in results:
                 gene_files.append(path)
                 stages[f'gene_c{chromosome}_{name}'] = report

@@ -22,18 +22,9 @@ def main():
     parser.add_argument('--json-directory',required=True)
     parser.add_argument('--chromosomes',type=int,nargs='+',default=list(range(1,23)))
     parser.add_argument('--imported-loco',help='Compatible full-chip Step1 prediction list')
-    parser.add_argument('--parallel-level',choices=['serial','mask','chromosome'],default='serial')
-    parser.add_argument('--workers',type=int,default=1)
     parser.add_argument('--max-gpu-gb',type=float,default=20.)
-    parser.add_argument('--genotype-reader',choices=['cpu','cuda_packed'],default='cuda_packed')
     parser.add_argument('--no-rint',action='store_true')
     parser.add_argument('--float64',action='store_true')
-    mask_output=parser.add_mutually_exclusive_group()
-    mask_output.add_argument('--write-masks',dest='write_masks',action='store_true',
-                             help='Write BED/BIM/FAM/snplist mask files (paper default)')
-    mask_output.add_argument('--no-write-masks',dest='write_masks',action='store_false',
-                             help='Omit BED/BIM/FAM/snplist mask files')
-    parser.set_defaults(write_masks=True)
     args=parser.parse_args()
     inputs=DiscoveryInputs(
         array_prefix=args.array_prefix,array_variant_include=args.array_variant_include,
@@ -45,10 +36,7 @@ def main():
         imported_loco=args.imported_loco,
     )
     configuration=WGSConfig.paper(apply_rint=not args.no_rint)
-    configuration.write_masks=args.write_masks
-    configuration.execution=ExecutionConfig(args.parallel_level,args.workers,args.max_gpu_gb)
-    configuration.single_variant.genotype_reader=args.genotype_reader
-    configuration.gene_based.genotype_reader=args.genotype_reader
+    configuration.execution=ExecutionConfig(max_gpu_gb=args.max_gpu_gb)
     if args.float64:
         configuration.step1=replace(configuration.step1,dtype='float64',tf32=False)
         configuration.single_variant.dtype='float64'

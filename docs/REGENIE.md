@@ -27,7 +27,7 @@ conda activate torchwgs
 python -m unittest discover -s tests/regenie_gpu -v
 ```
 
-已在 PyTorch 2.0.0/CUDA 11.8（A100）、PyTorch 2.4.1 环境测试。GPU完整运行使用Linux/CUDA和Triton。需要 GPU 的运行默认 `device="cuda"`；小规模数值审查也支持 CPU。Step1和single的大矩阵默认float32/TF32；gene的投影、协方差与推断保持float64以匹配原计算。gene的大VC协方差也保持float64。Step1/single也可设float64，或关闭TF32使用普通float32；不使用float16。原REGENIE 3.4.1核心计算为double，没有float32运行开关，对照精度见[验证记录](VALIDATION.md)。
+需要 Linux、CUDA GPU 和 Triton，完整运行使用 `device="cuda"`。真实验证采用 PyTorch 2.0.0/CUDA 11.8（A100）；Conda 示例安装 PyTorch 2.4。Step1和single的大矩阵默认float32/TF32；gene的投影、协方差与推断保持float64以匹配原计算。gene的大VC协方差也保持float64。Step1/single也可设float64，或关闭TF32使用普通float32；不使用float16。原REGENIE 3.4.1核心计算为double，没有float32运行开关，对照精度见[验证记录](VALIDATION.md)。
 
 ## Python 调用
 
@@ -35,7 +35,7 @@ python -m unittest discover -s tests/regenie_gpu -v
 
 ```python
 from dataclasses import replace
-from torchwgs import WGSConfig, DiscoveryInputs, GeneAnalysis, ExecutionConfig, run_discovery
+from torchwgs import WGSConfig, DiscoveryInputs, ExecutionConfig, study_gene_analyses, run_discovery
 
 configuration = WGSConfig.paper(apply_rint=True)  # False 可统一关闭 RINT
 configuration.step1 = replace(configuration.step1, block_size=1000, folds=5)
@@ -43,7 +43,7 @@ configuration.single_variant.maf_min = 0.0        # 原始结果保留所有满�
 configuration.single_variant.min_mac = 20
 configuration.single_variant.genotype_reader = "cuda_packed"  # 原始 BED 字节送入 GPU 解码
 configuration.significance.single_frequency_min = 0.001  # 汇总阶段筛选频率
-configuration.significance.single_frequency_field = "maf"  # 论文的 minor allele frequency；a1freq 复现旧汇总代码
+configuration.significance.single_frequency_field = "maf"  # 论文的 minor allele frequency；a1freq 对应研究源汇总代码
 configuration.significance.excluded_locus_regions = ((6, 25000000, 34000000),)  # 研究源脚本的 lead 候选排除；()可关闭
 configuration.execution = ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)
 configuration.gene_based.aaf_bins = (0.01,)
@@ -58,18 +58,7 @@ discovery_inputs = DiscoveryInputs(
     sample_remove="/data/sample_exclude.txt",
     wgs_prefixes={str(chromosome): f"/data/wgs/chr{chromosome}"
                   for chromosome in range(1, 23)},
-    gene_analyses={"5": [GeneAnalysis(
-        name="PTV",
-        annotation_file="/data/annotation/chr5_PTV.txt",
-        setlist_file="/data/annotation/chr5_PTV.setlist",
-        mask_definition_file="/data/annotation/Mask_PTV.txt",
-    ), GeneAnalysis(
-        name="Missense_REVEL50",
-        annotation_file="/data/annotation/chr5_Missense.txt",
-        setlist_file="/data/annotation/chr5_Missense.setlist",
-        mask_definition_file="/data/annotation/Mask_Missense.txt",
-        variant_whitelist_file="/data/annotation/chr5_REVEL50.txt",
-    )]},
+    gene_analyses=study_gene_analyses("/data/annotation", chromosomes=range(1, 23)),
 )
 
 run_metadata = run_discovery(
@@ -78,7 +67,7 @@ run_metadata = run_discovery(
 )
 ```
 
-`gene_analyses` 按染色体列出要分析的 Main/Sub 组合；上例只演示 chr5 两种组合。分析全部 Main/Sub 时，填入对应的全部文件，不把未提供的 mask 当成已运行。更换表型列可复用相同入口；新的表型会重拟合自己的 Step1。
+`gene_analyses` 按染色体列出完整 26 个 Main/Sub 组合，上例读取 22 条常染色体的全部文件。`study_gene_analyses()`会检查 annotation、setlist、mask 和 Sub 白名单。更换表型列使用同一入口，新的表型会拟合自己的 Step1；只验证 chr21 时将两处染色体范围均设为 `[21]`。
 
 若要使用 float64：
 
@@ -95,13 +84,11 @@ configuration.single_variant.tf32 = False
 ```bash
 torchwgs --inputs discovery_inputs.json --config analysis_config.json --out /results/discovery
 torchwgs --inputs discovery_inputs.json --out /results/discovery_no_rint --no-rint
-torchwgs --inputs discovery_inputs.json --out /results/discovery_single --single-only
-torchwgs --inputs discovery_inputs.json --out /results/discovery_gene --gene-only
 ```
 
 JSON 文件分别对应 `DiscoveryInputs` 和 `WGSConfig.to_dict()`；`gene_analyses` 中每条为 `GeneAnalysis` 的字段。配置文件可省略，使用论文默认值。`--no-rint` 统一关闭三个关联阶段和 raw 输入的分位数正态化；Python 可分别设置这些选项。
 
-`--single-only`与`--gene-only`互斥；两者仍拟合或导入Step1。默认核对缓存后复用兼容阶段，`--no-resume`强制重算。未安装CLI时可使用`python -m torchwgs.cli`加相同参数。
+命令行执行完整 single、gene 与汇总。默认核对缓存后复用兼容阶段，`--no-resume`强制重算。未安装CLI时可使用`python -m torchwgs.cli`加相同参数。
 
 已有研究注释文件布局时，可生成全部22条常染色体、14 Main和12 Sub的配置；注释、setlist、mask和评分白名单会逐一检查：
 
@@ -112,14 +99,81 @@ python examples/configure_discovery.py \
   --discovery-samples /data/discovery.keep --sample-remove /data/sample_exclude.txt \
   --wgs-prefix-template '/data/wgs/chr{chromosome}' \
   --annotation-root /data/annotation --json-directory /results/config \
-  --write-masks
+  --max-gpu-gb 20
 torchwgs --inputs /results/config/discovery_inputs.json \
   --config /results/config/analysis_config.json --out /results/discovery_trait_01
 ```
 
-配置生成器也支持`--chromosomes 21`、`--imported-loco /results/Step1/discovery_pred.list`、`--parallel-level mask --workers 2`、`--max-gpu-gb 20`、`--genotype-reader cuda_packed`、`--no-rint`和`--float64`。默认输出mask文件，`--no-write-masks`关闭，旧`--write-masks`仍可用。可直接编辑JSON修改其他参数。压缩`.bed.gz`在独立输入缓存中展开，不覆盖原文件；默认每条染色体完成后清理展开的BED，所需磁盘空间会先检查。
+配置生成器也支持`--chromosomes 21`、`--imported-loco /results/Step1/discovery_pred.list`、`--max-gpu-gb 20`、`--no-rint`和`--float64`。生成配置固定采用 CUDA 串行执行，保留完整 26 组和全部 42 个基础 mask 定义，默认导出 mask 文件。其他统计参数和 `write_masks` 可通过 Python 或生成的 JSON 修改。压缩`.bed.gz`在独立输入缓存中展开，不覆盖原文件；默认每条染色体完成后清理展开的BED，所需磁盘空间会先检查。
 
 ## 完整 mask 和 GPU 执行
+
+| 完整入口 | 基础 mask 数 |
+|---|---:|
+| PTV Main | 1 |
+| Missense Main | 1 |
+| Splice Main | 1 |
+| Inframe Main | 1 |
+| Synonymous Main | 1 |
+| Intron Main | 1 |
+| UTR_5 Main | 1 |
+| UTR_3 Main | 1 |
+| Upstream Main | 1 |
+| Downstream Main | 1 |
+| Intergenic Main | 1 |
+| Pseudo Main | 8 |
+| RNA Main | 10 |
+| nctev Main | 1 |
+| Intron_GERP2 Sub | 1 |
+| Intergenic_GERP2 Sub | 1 |
+| UTR_5_GERP2 Sub | 1 |
+| UTR_3_GERP2 Sub | 1 |
+| Upstream_GERP2 Sub | 1 |
+| Downstream_GERP2 Sub | 1 |
+| Intron_Gnocchi4 Sub | 1 |
+| Intergenic_Gnocchi4 Sub | 1 |
+| Splice_splice05 Sub | 1 |
+| Missense_REVEL50 Sub | 1 |
+| Upstream_JARVIS99 Sub | 1 |
+| Downstream_JARVIS99 Sub | 1 |
+| 合计 26 组 | 42 |
+
+下表列出 mask 文件中的全部类别映射。Main 的 30 个定义加上 12 个 Sub 的单类别定义，共 42 个；Sub 使用对应 Main 的定义及评分白名单。
+
+| 文件组 | mask 名称 | 注释类别 |
+|---|---|---|
+| PTV | `Mask1` | `PTV` |
+| Missense | `Mask1` | `Missense` |
+| Splice | `Mask1` | `Splice` |
+| Inframe | `Mask1` | `Inframe` |
+| Synonymous | `Mask1` | `Synonymous` |
+| Intron | `Mask1` | `Intron` |
+| UTR_5 | `Mask1` | `UTR_5` |
+| UTR_3 | `Mask1` | `UTR_3` |
+| Upstream | `Mask1` | `Upstream` |
+| Downstream | `Mask1` | `Downstream` |
+| Intergenic | `Mask1` | `Intergenic` |
+| Pseudo | `Mask1` | `transcribed_unprocessed_pseudogene` |
+| Pseudo | `Mask2` | `processed_pseudogene` |
+| Pseudo | `Mask3` | `transcribed_processed_pseudogene` |
+| Pseudo | `Mask4` | `unprocessed_pseudogene` |
+| Pseudo | `Mask5` | `transcribed_unitary_pseudogene` |
+| Pseudo | `Mask6` | `rRNA_pseudogene` |
+| Pseudo | `Mask7` | `unitary_pseudogene` |
+| Pseudo | `Mask8` | `translated_processed_pseudogene` |
+| RNA | `Mask1` | `ribozyme` |
+| RNA | `Mask2` | `lncRNA` |
+| RNA | `Mask3` | `miRNA` |
+| RNA | `Mask4` | `snRNA` |
+| RNA | `Mask5` | `misc_RNA` |
+| RNA | `Mask6` | `scaRNA` |
+| RNA | `Mask7` | `snoRNA` |
+| RNA | `Mask8` | `rRNA` |
+| RNA | `Mask9` | `mature_miRNA_variant` |
+| RNA | `Mask10` | `non_coding_transcript_exon_variant` |
+| nctev | `Mask10` | `non_coding_transcript_exon_variant` |
+
+每个源定义继续生成 annotation 中的 domain、overall、singleton 和 AAF=.01 masks。全部定义先读取，再按完整 annotation 与 BIM/全局及评分白名单交集注册表头；输入中没有类别的定义不进入原格式表头，类别注册发生在 setlist、所选 gene、MAC 与 AAF 筛选之前。基因数量和生成 mask 数随输入改变。
 
 `study_gene_analyses()` 读取 14 个 Main 文件：PTV、Missense、Splice、Inframe、Synonymous、Intron、UTR_5、UTR_3、Upstream、Downstream、Intergenic、Pseudo、RNA 和 nctev；再生成原脚本的 12 个 Sub 组合。26 组共包含 42 个基础 mask 定义，其中 Pseudo 的 8 个、RNA 的 10 个源定义全部读取。原格式表头按实际输入注册；chr21的活跃定义共37个，Pseudo为5/8、RNA为8/10。每组继续生成注释中的各个 domain、overall、singleton 和 AAF=.01 masks。Intergenic Main 使用已有的完整注释及 mask 文件补全分析覆盖；原 discovery 提交脚本只有 13 个 Main。
 
@@ -138,11 +192,11 @@ configuration.gene_based.genotype_reader = "cuda_packed"
 configuration.gene_based.sbat_subset_sampling = "with_replacement"
 ```
 
-`parallel_level="serial"` 顺序运行；`"mask"` 并行处理独立的 Main/Sub mask 组，每组内保留全部 mask；`"chromosome"` 并行处理染色体，各染色体内顺序处理 mask 组。使用同一进程中的独立 CUDA streams，`workers` 为并发数，默认`execution.max_gpu_gb=20`按GiB限制本进程当前GPU的PyTorch分配器；Step1估计工作区另按十进制GB检查。CUDA上下文及其他进程占用需另行观测。gene矩阵预算还受`max_matrix_bytes`及每任务预留空间限制，公式见[API](API.md#pipeline和汇总)。mask/chromosome模式仅对`MemoryError`或CUDA OOM在全部并发任务结束后按总预算串行重试一次；失败尝试和重试都计入完整流程，其他异常及重试失败继续抛出。默认串行；并行是否更快取决于读取、矩阵维数和 GPU 负载，以真实对照记录为准。
+执行参数固定为 `parallel_level="serial", workers=1`，按输入顺序在 CUDA GPU 上运行各个完整组。没有 CUDA 或传入 CPU 设备时明确报错。`execution.max_gpu_gb=20`按 GiB 限制当前 GPU 的本进程 PyTorch 分配器；Step1 估计工作区另按十进制 GB 检查。gene 矩阵预算还受 `max_matrix_bytes` 和 1 GiB 预留空间限制，公式见[API](API.md#pipeline和汇总)。CUDA 上下文与其他进程占用另行观测。
 
 稀疏 VC 路径保存折叠后的非零基因型，并通过分块 `G.T @ G - (G.T @ Q) @ (G.T @ Q).T` 计算协方差，减少多个 N×M 投影副本。M×M 协方差和特征值计算仍需要显存，程序在计算前检查每个任务的预算。可用 `vc_storage="dense", vc_score_method="residual"` 选择投影路径进行对照。
 
-`gene_based.eigen_backend="auto"` 在CUDA且VC维数≥4096时，通过特征值交错区间和secular方程计算各rho的秩一更新，减少反复稠密分解和矩阵副本；较小矩阵保持原稠密路径。`"dense"`与`"secular"`可显式选择，求根块大小、迭代次数与切换维数可改。它保留原rho、正特征值筛选和尾概率方法，真实大RNA mask的误差与分步骤耗时见[聚合记录](../benchmarks/real_rna_rank_one_2026-10-04.json)。
+`gene_based.eigen_backend="auto"` 在CUDA且VC维数≥4096时，通过特征值交错区间和secular方程计算各rho的秩一更新，减少反复稠密分解和矩阵副本；较小矩阵保持原稠密路径。`"dense"`与`"secular"`可显式选择，求根块大小、迭代次数与切换维数可改。它保留原rho、正特征值筛选和尾概率方法，当前端到端范围和数值验收见[验证记录](VALIDATION.md)。
 
 ## 原格式输出
 
@@ -187,7 +241,7 @@ Gene部分对26组分别输出。导入外部LOCO时不重拟合或另写上述S
 | Step1 | 5-fold、block 1000、两级 h=(.01,.25,.5,.75,.99)，冻结原实现 |
 | RINT | 开启；可改 `apply_rint=False` |
 | Single 原始结果 | 加性 QT score、minMAC20；默认不提前筛除 MAF，保留原 `.regenie` 的完整行 |
-| Single 汇总 | `WGSConfig.paper()`按论文筛 MAF>0.001；`single_frequency_field="a1freq"`可复现旧 验证服务器 的 A1FREQ>0.001 |
+| Single 汇总 | `WGSConfig.paper()`按论文筛 MAF>0.001；`single_frequency_field="a1freq"`可按研究源汇总代码筛 A1FREQ>0.001 |
 | Gene | AAF bins=.01+singleton，VC最大AAF=.01，mask minMAC1，VC低计数折叠≤10 |
 | Gene统计 | burden、SKAT、SKAT-O、SKAT-O-ACAT、ACAT-V、ACAT-O、跨mask ACAT、SBAT、GENE-P |
 | Single显著性 | 5e−9/831.50=6.0132291040e−12 |
@@ -196,9 +250,13 @@ Gene部分对26组分别输出。导入外部LOCO时不重拟合或另写上述S
 
 原始 WGS calling、VEP 注释和全研究的有效表型数计算属于输入来源；本包读取这些已完成 QC 的资源。annotation 的 C/R/UR 标签按文件保留，也允许显式频率域定义，不从字母猜测含义。
 
+## 当前版本与验证
+
+此次串行入口清理包含 21 个实现模块，仅支持 CUDA 完整 pipeline。本地 111 项串行清理回归全部通过，框架报告耗时 64.704 秒。真实 chr21 的完整 single 已通过格式与五项数值门槛；全 26 组 gene 和汇总仍在验证。既有六组串行测量严格数值为 0/6 组通过，实际时间与精度范围见[验证记录](VALIDATION.md)。本地回归结果不代替新完整端到端实测。
+
 ## 数值后端与参考
 
-SKAT-O 使用 rho 搜索积分，和 SKAT-O-ACAT 分别输出。gene默认`skato_integral_backend="adaptive_x"`，使用原χ²坐标及独立PyTorch GK21自适应积分，绝对/相对误差预算为1e−25 / 2⁻¹³、最多1000个区间；参数均可改。可选`adaptive_sqrt`或早期`segmented`，低层`skato_logp`数学接口仍默认segmented。真实积分比较、窄特征取样问题及退化kernel有效性规则见[验证记录](VALIDATION.md)。
+SKAT-O 使用 rho 搜索积分，和 SKAT-O-ACAT 分别输出。gene默认`skato_integral_backend="adaptive_x"`，使用原χ²坐标及独立PyTorch GK21自适应积分，绝对/相对误差预算为1e−25 / 2⁻¹³、最多1000个区间；参数均可改。可选`adaptive_sqrt`或`segmented`，低层`skato_logp`数学接口仍默认segmented。当前数值验收见[验证记录](VALIDATION.md)，退化 kernel 和下溢规则见[参数](API.md#gene-based)。
 
 默认兼容冻结3.4.1的`.999`端点：独立实现正系数中心χ²特例的Davies AS155，GPU执行Fourier求和；失败或强尾时依次走Kuonen、更严格Davies和Liu回退。误差界和迭代预算由CPU控制器规划，参与者矩阵留在GPU。`davies_controller="auto"`在谱维数≥1024时用NumPy批量计算误差界，保留有序float64累加、积分预算与故障路径；`"scalar"`保留原标量控制器，`"numpy"`可显式选择。`tail_method="exact"`提供另一个带收敛检查的积分后端，必要时用SciPy标量积分；默认后端不调用该回退。强尾使用LOG10P；gene的原生SKAT-O积分目标和最终概率遵循`10*DBL_MIN`地板，条件SF下溢保留原失败及Bonferroni回退规则。低层数学接口可用`native_validity=False`保留日志域行为，具体缺失结果规则见[API](API.md#gene-based)。诊断JSON记录各路径次数和控制器/回退耗时。
 

@@ -197,6 +197,12 @@ def run_discovery(inputs: DiscoveryInputs, *, config=None, output_dir,
     to Step2 thresholds/masks leave the compatible Step1 cache usable.
     """
     config = WGSConfig.paper() if config is None else config
+    config.execution.__post_init__()
+    if any(torch.device(value).type != 'cuda' for value in
+           (config.step1.device, config.single_variant.device)):
+        raise ValueError('Discovery association requires CUDA for Step1 and Step2')
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA is unavailable; CPU association fallback is disabled')
     if config.phenotype_mode not in ('raw','residual'):
         raise ValueError('phenotype_mode must be raw or residual')
     destination = Path(output_dir).resolve()
@@ -315,37 +321,8 @@ def run_discovery(inputs: DiscoveryInputs, *, config=None, output_dir,
                                   y_lookup=y_lookup, x_lookup=x_lookup, resume=job_resume,
                                   run_single=run_single, run_gene=run_gene)
         chromosomes = list(inputs.wgs_prefixes.items())
-        if config.execution.parallel_level == 'chromosome':
-            def bounded_chromosome(item):
-                attempt_start=time.perf_counter()
-                try:
-                    return chromosome_job(item)
-                except (MemoryError, torch.cuda.OutOfMemoryError):
-                    return {'chromosome':item[0], 'memory_retry':True,
-                            'failed_attempt_seconds':time.perf_counter()-attempt_start}
-            with GpuExecutor(config.execution, config.single_variant.device) as executor:
-                chromosome_reports = executor.map(bounded_chromosome, chromosomes)
-            rejected=[i for i,report in enumerate(chromosome_reports) if report.get('memory_retry')]
-            if rejected:
-                device=torch.device(config.single_variant.device)
-                if device.type=='cuda':
-                    with torch.cuda.device(device):torch.cuda.empty_cache()
-                serial_execution=replace(config.execution,parallel_level='serial',workers=1)
-                serial_config=replace(config,execution=serial_execution)
-                with GpuExecutor(serial_execution,config.single_variant.device):
-                    for index in rejected:
-                        failure=chromosome_reports[index]
-                        # Valid completed files from the failed chromosome are
-                        # reused; partial association/mask files were removed.
-                        chromosome_reports[index]=chromosome_job(
-                            chromosomes[index],job_config=serial_config,job_resume=True)
-                        metadata.setdefault('execution_memory_retries',[]).append({
-                            'chromosome':failure['chromosome'],
-                            'failed_attempt_seconds':failure['failed_attempt_seconds']})
-        else:
-            serial_execution=replace(config.execution,parallel_level='serial',workers=1)
-            with GpuExecutor(serial_execution, config.single_variant.device):
-                chromosome_reports = [chromosome_job(item) for item in chromosomes]
+        with GpuExecutor(config.execution, config.single_variant.device) as executor:
+            chromosome_reports = executor.map(chromosome_job, chromosomes)
         for report in chromosome_reports:
             metadata['stages'].update(report['stages'])
             single_files.extend(report['single_files'])

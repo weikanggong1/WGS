@@ -11,4 +11,4 @@ from .summary import summarize_results
 from .io import BedReader, Variant, load_phenotype
 from .study import study_gene_analyses
 
-__version__='0.1.0'
+__version__='0.2.0'
