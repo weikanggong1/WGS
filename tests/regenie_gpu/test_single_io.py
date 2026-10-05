@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from scipy.stats import chi2, rankdata, norm
-from torchwgs.io import (BedReader, Variant, write_bed, read_sample_ids, materialize_bed,
+from torchwgs.io import (BedReader, PackedBedBlock, Variant, write_bed, read_sample_ids, materialize_bed,
                          materialize_discovery_bed)
 from torchwgs.mask_output import MaskWriter
 from torchwgs.single import (create_test_context, score_genotypes,
@@ -20,6 +20,152 @@ import pandas as pd
 
 
 class SingleIOTests(unittest.TestCase):
+    def test_packed_counts_are_integer_exact_across_tiles_and_ignore_padding(self):
+        from torchwgs.single import _allele_counts, _counts_from_observed
+        with tempfile.TemporaryDirectory() as directory:
+            ids=[(str(i),str(i)) for i in range(4103)]
+            variants=[Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(13)]
+            rng=np.random.default_rng(135)
+            values=rng.integers(0,4,size=(len(ids),len(variants))).astype(float)
+            values[values==3]=np.nan
+            values[:,0]=np.nan;values[:,1]=0.;values[:,2]=2.;values[:,3]=1.
+            prefix=Path(directory)/'source';write_bed(prefix,values,variants,ids)
+            # FAM ends before the fourth call in the last byte. Deliberately
+            # populate the padding with a REF hardcall; it must never count.
+            bed=Path(str(prefix)+'.bed');raw=bytearray(bed.read_bytes())
+            stride=(len(ids)+3)//4
+            for j in range(len(variants)):raw[3+j*stride+stride-1]|=0xc0
+            bed.write_bytes(raw)
+            reader=BedReader(prefix,sample_ids=[ids[i] for i in range(4102,-1,-1)])
+            # More than two count tiles, arbitrary order, and a repeated row.
+            rows=list(range(0,4099))+[4102,0]
+            columns=[12,0,2,4,3,1,7]
+            expected=reader.read_variants(columns)[rows]
+            expected_counts=_allele_counts(expected)
+            devices=['cpu']+(['cuda'] if torch.cuda.is_available() else [])
+            for device in devices:
+                for dtype in (torch.float32,torch.float64):
+                    block=reader.read_packed_block(columns,sample_rows=rows,
+                                                  device=device,dtype=dtype)
+                    # Counting is not allowed to call either float decoder.
+                    with patch.object(PackedBedBlock,'decode',side_effect=AssertionError('full decode')):
+                        counted=block.allele_counts()
+                    self.assertTrue(all(v.dtype==torch.int64 for v in counted.values()))
+                    self.assertTrue(torch.equal(counted['N'].cpu(),expected_counts['N']))
+                    self.assertTrue(torch.equal(counted['AAC'].cpu(),torch.nan_to_num(expected).sum(0).long()))
+                    for name,value in [('N_MISSING',torch.isnan(expected)),
+                                       ('N_HOM_A1',expected==2),('N_HET',expected==1),
+                                       ('N_HOM_A0',expected==0)]:
+                        self.assertTrue(torch.equal(counted[name].cpu(),value.sum(0)))
+                    self.assertTrue(torch.equal((counted['N']+counted['N_MISSING']).cpu(),
+                                                torch.full((len(columns),),len(rows))))
+                    observed=_counts_from_observed(counted['N'],counted['AAC'])
+                    for name in expected_counts:
+                        self.assertTrue(torch.equal(observed[name].cpu(),expected_counts[name]),name)
+                    decoded=block.decode([6,2,0,2,1]).cpu()
+                    oracle=expected[:,[6,2,0,2,1]].to(dtype).contiguous()
+                    bits=torch.int32 if dtype==torch.float32 else torch.int64
+                    self.assertTrue(torch.equal(decoded.view(bits),oracle.view(bits)))
+
+    def test_packed_block_empty_selection_and_invalid_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'source'
+            write_bed(prefix,torch.tensor([[0.,2.],[1.,float('nan')],[2.,0.]]),
+                      [Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(2)],
+                      [('1','1'),('2','2'),('3','3')])
+            reader=BedReader(prefix)
+            devices=['cpu']+(['cuda'] if torch.cuda.is_available() else [])
+            for device in devices:
+                empty=reader.read_packed_block([],device=device)
+                self.assertEqual(empty.decode().shape,(3,0))
+                self.assertTrue(all(count.numel()==0 for count in empty.allele_counts().values()))
+                no_samples=reader.read_packed_block([0,1],sample_rows=[],device=device)
+                self.assertEqual(no_samples.decode().shape,(0,2))
+                self.assertTrue(all(not count.any() for count in no_samples.allele_counts().values()))
+                block=reader.read_packed_block([0,1],device=device)
+                self.assertEqual(block.decode([]).shape,(3,0))
+                for invalid in ([-1],[2],torch.tensor([0,2])):
+                    with self.assertRaises(IndexError):block.decode(invalid)
+                with self.assertRaises(ValueError):reader.read_packed_block([0],device=device,dtype='float16')
+                with self.assertRaises(ValueError):list(reader.iter_packed_variant_blocks(0,device=device))
+
+    @unittest.skipUnless(torch.cuda.is_available(),'CUDA needed for retained-column association')
+    def test_packed_single_filters_before_any_decode_and_preserves_mac_boundary(self):
+        from torchwgs.single import _score_counted_genotypes
+        with tempfile.TemporaryDirectory() as directory:
+            ids=[(str(i),str(i)) for i in range(41)]
+            variants=[Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(7)]
+            values=np.zeros((len(ids),len(variants)))
+            values[:,1]=2.;values[:,2]=np.nan
+            values[:2,3]=1.;values[:3,4]=1.;values[:4,5]=1.;values[9,5]=np.nan
+            values[:,6]=2.;values[:4,6]=1.
+            prefix=Path(directory)/'source';write_bed(prefix,values,variants,ids)
+            rows=list(range(40,-1,-1))
+            include=[6,4,3,4,5,0,2,1]
+            for dtype in ('float32','float64'):
+                context=create_test_context(np.random.default_rng(15).normal(size=len(rows)),
+                    sample_ids=[ids[i] for i in rows],device='cuda',dtype=dtype,apply_rint=False)
+                common=dict(min_mac=3,maf_min=0,block_size=3,device='cuda',dtype=dtype)
+                expected=list(iter_single_variant_results(BedReader(prefix),context,
+                    config=SingleVariantConfig(**common,genotype_reader='cpu'),variant_indices=include))
+                decoder=PackedBedBlock.decode
+                with patch.object(PackedBedBlock,'decode',autospec=True,side_effect=decoder) as decode, \
+                     patch.object(BedReader,'read_variants',side_effect=AssertionError('CPU expanded genotypes')), \
+                     patch.object(BedReader,'read_packed_variants',side_effect=AssertionError('all columns decode')), \
+                     patch('torchwgs.single._allele_counts',side_effect=AssertionError('expanded counts')), \
+                     patch('torchwgs.single._score_counted_genotypes',wraps=_score_counted_genotypes) as score:
+                    observed=list(iter_single_variant_results(BedReader(prefix),context,
+                        config=SingleVariantConfig(**common,genotype_reader='cuda_packed'),variant_indices=include))
+                self.assertEqual(observed,expected)
+                self.assertEqual([row['ID'] for row in observed],['v4','v5','v6'])
+                self.assertEqual([call.args[1] for call in decode.call_args_list],[[1,2],[0]])
+                self.assertEqual(sum(call.args[0].shape[1] for call in score.call_args_list),3)
+                self.assertEqual(observed[0]['MAC'],3.)
+                self.assertGreater(observed[2]['A1FREQ'],.5)
+
+    @unittest.skipUnless(torch.cuda.is_available(),'CUDA needed for device-local fallback')
+    def test_packed_cuda_torch_fallback_matches_fused_counts_and_decode_bits(self):
+        from torchwgs import _packed_gpu
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'source'
+            ids=[(str(i),str(i)) for i in range(2051)]
+            variants=[Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(5)]
+            values=(np.arange(len(ids)*5).reshape(len(ids),5)%4).astype(float)
+            values[values==3]=np.nan
+            write_bed(prefix,values,variants,ids)
+            reader=BedReader(prefix)
+            for dtype in (torch.float32,torch.float64):
+                block=reader.read_packed_block([4,1,0],sample_rows=list(range(2050,-1,-1)),
+                                              device='cuda',dtype=dtype)
+                expected_counts=block.allele_counts();expected=block.decode([2,0,2])
+                with patch.object(_packed_gpu,'triton',None):
+                    observed_counts=block.allele_counts();observed=block.decode([2,0,2])
+                self.assertEqual(observed.device.type,'cuda')
+                for name in expected_counts:self.assertTrue(torch.equal(observed_counts[name],expected_counts[name]))
+                bits=torch.int32 if dtype==torch.float32 else torch.int64
+                self.assertTrue(torch.equal(observed.view(bits),expected.view(bits)))
+
+    @unittest.skipUnless(torch.cuda.is_available(),'CUDA needed for dynamic-width decoder')
+    def test_packed_decode_variable_widths_preserve_calls_bits_and_duplicate_order(self):
+        # Retained MAC widths vary between blocks, including Triton scalar 1
+        # and aligned widths. Decode from the same packed calls at every width.
+        with tempfile.TemporaryDirectory() as directory:
+            ids=[(str(i),str(i)) for i in range(2049)]
+            variants=[Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(67)]
+            values=(np.arange(len(ids)*67).reshape(len(ids),67)%4).astype(float)
+            values[values==3]=np.nan
+            prefix=Path(directory)/'source';write_bed(prefix,values,variants,ids)
+            reader=BedReader(prefix)
+            rows=list(range(2048,-1,-1))
+            for dtype in (torch.float32,torch.float64):
+                block=reader.read_packed_block(range(67),sample_rows=rows,device='cuda',dtype=dtype)
+                for width in (1,2,16,17,32,63,67,129,1):
+                    columns=[(i*7)%67 for i in range(width)]
+                    expected=reader.read_variants(columns)[rows].to(dtype).contiguous()
+                    actual=block.decode(columns).cpu()
+                    bits=torch.int32 if dtype==torch.float32 else torch.int64
+                    self.assertTrue(torch.equal(actual.view(bits),expected.view(bits)))
+
     def test_packed_torch_decode_is_bit_exact_with_missing_and_sample_order(self):
         with tempfile.TemporaryDirectory() as directory:
             ids=[(str(i),str(i)) for i in range(11)]

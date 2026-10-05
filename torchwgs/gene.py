@@ -5,8 +5,9 @@ Tail algorithms live in statistics.py; no REGENIE executable is used at runtime.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
@@ -59,6 +60,79 @@ def _score_covariance(genotypes: torch.Tensor, context):
 def _trait_float64(context):
     original = getattr(context, "y_float64", None)
     return (context.y if original is None else original).to(torch.float64)
+
+
+def _product_cache_limit(config: GeneConfig) -> int:
+    """Reserve configured cache bytes within the existing total matrix budget."""
+    return min(config.product_cache_bytes, config.max_matrix_bytes // 16)
+
+
+class _GeneProductCache:
+    """Bounded, gene-local products; genotype matrices are never retained.
+
+    Only builder-provenanced, unchanged tensors may be reused. The entries are
+    unweighted products, so every mask still applies its own beta-MAF weights.
+    Burden residuals keep the original single-column projection arithmetic.
+    """
+    def __init__(self, max_bytes: int):
+        self.max_bytes = max(0, int(max_bytes))
+        self.bytes = 0
+        self.peak_bytes = 0
+        self.hits = {"vc": 0, "burden": 0}
+        self.misses = {"vc": 0, "burden": 0}
+        self._entries = OrderedDict()
+
+    def get_or_compute(self, kind, key, compute):
+        # A missing provenance/version guard always takes the original path.
+        if key is None or self.max_bytes == 0:
+            self.misses[kind] += 1
+            return compute()
+        key = (kind, key)
+        if key in self._entries:
+            self.hits[kind] += 1
+            value, size = self._entries.pop(key)
+            self._entries[key] = (value, size)
+            return value
+        self.misses[kind] += 1
+        value = compute()
+        size = sum(tensor.numel() * tensor.element_size() for tensor in value)
+        if size > self.max_bytes:
+            return value
+        while self._entries and self.bytes + size > self.max_bytes:
+            _, (_, removed) = self._entries.popitem(last=False)
+            self.bytes -= removed
+        self._entries[key] = (value, size)
+        self.bytes += size
+        self.peak_bytes = max(self.peak_bytes, self.bytes)
+        return value
+
+    def clear(self):
+        self._entries.clear()
+        self.bytes = 0
+
+
+def _context_product_guard(context):
+    """Bind products to the actual, unchanged trait and projection basis."""
+    from .masks import _vc_tensor_guard
+    y = getattr(context, "y_float64", None)
+    q = getattr(context, "covariates_q_float64", None)
+    tensors = (context.y, context.y if y is None else y,
+               context.covariates_q if q is None else q)
+    guards = tuple(_vc_tensor_guard(value) for value in tensors)
+    return None if any(guard is None for guard in guards) else guards
+
+
+def _mask_product_key(mask, context, kind):
+    from .masks import _vc_tensor_guard
+    key = getattr(mask, kind + "_reuse_key", None)
+    expected = getattr(mask, kind + "_reuse_tensor_guard", None)
+    tensor = mask.vc_genotypes if kind == "vc" else mask.burden
+    if key is None or expected is None or tensor is None:
+        return None
+    if _vc_tensor_guard(tensor) != expected:
+        return None
+    context_guard = _context_product_guard(context)
+    return None if context_guard is None else (key, context_guard)
 
 
 def _vc_score_covariance(genotypes: torch.Tensor, context, *, method="residual", block_size=256):
@@ -115,13 +189,14 @@ def _vc_score_covariance(genotypes: torch.Tensor, context, *, method="residual",
 
 def _row(gene: GeneSet, n: int, test: str, logp: torch.Tensor | float | None,
          *, mask: PreparedMask | None = None, beta=None, se=None, chisq=None,
-         df: int | None = 1, strongest: str | None = None):
-    value = None if logp is None else float(torch.as_tensor(logp).detach().cpu().item())
-    if value is not None and (value < 0 or not torch.isfinite(torch.tensor(value))):
+         df: int | None = 1, strongest: str | None = None, defer: bool = False):
+    value = (None if logp is None else torch.as_tensor(logp)) if defer else (
+        None if logp is None else float(torch.as_tensor(logp).detach().cpu().item()))
+    if not defer and value is not None and (value < 0 or not torch.isfinite(torch.tensor(value))):
         value = None
-    if chisq is None and value is not None:
+    if not defer and chisq is None and value is not None:
         chisq = float(_logp_chisq(torch.as_tensor(logp)).detach().cpu().item())
-    if chisq is not None:
+    if not defer and chisq is not None:
         chisq = float(torch.as_tensor(chisq).detach().cpu().item())
     if mask is None:
         identifier, allele0, allele1, aaf = gene.gene, None, None, None
@@ -137,9 +212,46 @@ def _row(gene: GeneSet, n: int, test: str, logp: torch.Tensor | float | None,
     return {"CHROM": gene.chrom, "GENPOS": gene.position, "ID": identifier,
             "ALLELE0": allele0, "ALLELE1": allele1, "A1FREQ": aaf,
             "N": mask.n_observed if test == "ADD" and mask is not None else n,
-            "TEST": test, "BETA": None if beta is None else float(beta),
-            "SE": None if se is None else float(se), "CHISQ": chisq,
+            "TEST": test, "BETA": beta if defer else (None if beta is None else float(beta)),
+            "SE": se if defer else (None if se is None else float(se)), "CHISQ": chisq,
             "LOG10P": value, "EXTRA": extra}
+
+
+def _materialize_gene_rows(rows):
+    """Invert reported chi-squares together and copy one gene's scalars once.
+
+    Mask/genotype tensors are released as before. Only four scalar fields per
+    result row remain on the association device until this bounded final copy.
+    Native row ordering, missing-value rules and six-digit writing are retained.
+    """
+    if not rows:
+        return rows
+    fields = ("BETA", "SE", "CHISQ", "LOG10P")
+    references = [row[field] for row in rows for field in fields
+                  if isinstance(row[field], torch.Tensor)]
+    reference = next((value for value in references if value.is_cuda),
+                     references[0] if references else None)
+    device = None if reference is None else reference.device
+    zero = torch.zeros((), device=device, dtype=torch.float64)
+    present = [[row[field] is not None for field in fields] for row in rows]
+    numbers = torch.stack([zero if row[field] is None else torch.as_tensor(
+                          row[field], device=device, dtype=torch.float64).reshape(())
+                          for row in rows for field in fields]).reshape(-1, 4)
+    logp_present = torch.tensor([item[3] for item in present], device=device)
+    valid = logp_present & (numbers[:, 3] >= 0) & torch.isfinite(numbers[:, 3].to(torch.get_default_dtype()))
+    pending = valid & torch.tensor([not item[2] for item in present], device=device)
+    numbers[pending, 2] = _logp_chisq(numbers[pending, 3])
+    copied = torch.cat((numbers, valid[:, None].to(torch.float64)), dim=1).detach().cpu().tolist()
+    for row, existence, values in zip(rows, present, copied):
+        for index, field in enumerate(fields):
+            available = existence[index] or (field == "CHISQ" and values[4] == 1.)
+            if field == "LOG10P":
+                available = values[4] == 1.
+            row[field] = values[index] if available else None
+        if row["LOG10P"] is None:
+            _, separator, rest = row["EXTRA"].partition(';')
+            row["EXTRA"] = "DF=NA" + (separator + rest if separator else '')
+    return rows
 
 
 def _independent_columns(matrix: torch.Tensor, tolerance: float,
@@ -209,86 +321,116 @@ def _independent_columns(matrix: torch.Tensor, tolerance: float,
 
 def test_prepared_gene(gene: GeneSet, prepared: Iterable[PreparedMask], context,
                        config: GeneConfig | None = None, *, qr_sample_rows=None,
-                       qr_n_samples: int | None = None) -> list[dict[str, Any]]:
+                       qr_n_samples: int | None = None,
+                       _product_cache: _GeneProductCache | None = None) -> list[dict[str, Any]]:
     """Test one gene's masks, then apply the four-component GENE-P strategy."""
     config = config or GeneConfig()
+    make_row = partial(_row, defer=True)
     n = context.y.numel()
     rows, burden_info, vc_info = [], [], []
     scale = float(context.y_scale) * float(context.residual_scale)
-    for mask in prepared:
-        score, covariance, residual = _score_covariance(mask.burden[:, None], context)
-        variance = covariance[0, 0]
-        residual_df = max(1, n - context.covariates_q.shape[1])
-        if float(variance) <= residual_df * config.genotype_scale_tolerance ** 2:
-            continue  # A constant mask has no valid ADD or corresponding VC output.
-        chisq = score[0].square() / variance
-        lp = stats.chi2_logsf(chisq)
-        burden_row = _row(gene, n, "ADD", lp, mask=mask, beta=score[0] * scale / variance,
-                          se=scale / variance.sqrt(), chisq=chisq)
-        summary_mask = replace(mask, vc_genotypes=None, vc_mafs=None)
-        burden_info.append((summary_mask, lp, residual[:, 0]))
-        if mask.vc_genotypes is None:
+    # Public materialized-mask callers have not reserved extra working memory.
+    # The streaming entry point supplies a cache only after reducing the
+    # builder's allocation budget by exactly this cache's maximum capacity.
+    product_cache = _product_cache or _GeneProductCache(0)
+    product_cache.clear()
+    previous_counts = {(kind, event): getattr(product_cache, event)[kind]
+                       for kind in ("vc", "burden") for event in ("hits", "misses")}
+    try:
+        for mask in prepared:
+            burden_key = _mask_product_key(mask, context, "burden") if product_cache.max_bytes else None
+            score, covariance, residual = product_cache.get_or_compute(
+                "burden", burden_key,
+                lambda: _score_covariance(mask.burden[:, None], context))
+            variance = covariance[0, 0]
+            residual_df = max(1, n - context.covariates_q.shape[1])
+            if float(variance) <= residual_df * config.genotype_scale_tolerance ** 2:
+                mask = None
+                continue  # A constant mask has no valid ADD or corresponding VC output.
+            chisq = score[0].square() / variance
+            lp = stats.chi2_logsf(chisq)
+            burden_row = make_row(gene, n, "ADD", lp, mask=mask, beta=score[0] * scale / variance,
+                              se=scale / variance.sqrt(), chisq=chisq)
+            summary_mask = replace(mask, vc_genotypes=None, vc_mafs=None)
+            burden_info.append((summary_mask, lp, residual[:, 0]))
+            if mask.vc_genotypes is None:
+                rows.append(burden_row)
+                continue
+            vc_key = _mask_product_key(mask, context, "vc") if product_cache.max_bytes else None
+            if vc_key is not None:
+                vc_key = (vc_key, config.vc_score_method, config.vc_score_block_size)
+            vc_score, vc_cov = product_cache.get_or_compute("vc", vc_key,
+                lambda: _vc_score_covariance(mask.vc_genotypes, context,
+                                             method=config.vc_score_method,
+                                             block_size=config.vc_score_block_size))
+            usable = vc_cov.diag() > torch.finfo(torch.float64).eps
+            if not bool(usable.any()):
+                rows.append(burden_row)
+                mask = summary_mask
+                continue
+            if not bool(usable.all()):
+                # Full-chromosome noncoding genes can have thousands of VC sites.
+                # Avoid two complete M x M copies when every site is already usable.
+                vc_score, vc_cov = vc_score[usable], vc_cov[usable][:, usable]
+            weights = mask.vc_weights.to(vc_score.device)[usable]
+            acat_weights = mask.acat_weights.to(vc_score.device)[usable]
+            single_logps = stats.chi2_logsf(vc_score.square() / vc_cov.diag())
+            acatv = stats.acat_logp(single_logps, weights=acat_weights)
+            kernel_tests = stats.skato_logp(vc_score, vc_cov, weights=weights,
+                                           rhos=config.skato_rhos, tail_method=config.tail_method,
+                                          eigen_backend=config.eigen_backend,
+                                          davies_controller=config.davies_controller,
+                                          davies_fourier_backend=config.davies_fourier_backend,
+                                           secular_min_size=config.secular_min_size,
+                                           secular_root_chunk=config.secular_root_chunk,
+                                           secular_iterations=config.secular_iterations,
+                                           native_validity=True,
+                                           integral_backend=config.skato_integral_backend,
+                                           integral_epsabs=config.skato_integral_epsabs,
+                                           integral_epsrel=config.skato_integral_epsrel,
+                                           integral_max_intervals=config.skato_integral_max_intervals)
+            if not kernel_tests["kernel_valid"]:
+                # REGENIE keeps ACAT-V when get_ztz_evals/get_skato_mom fails,
+                # but omits ACAT-O, SKAT and both SKAT-O tests for this mask.
+                rows.append(make_row(gene, n, "ADD-ACATV", acatv, mask=mask))
+                rows.append(burden_row)
+                vc_info.append((summary_mask, acatv, None))
+                mask = summary_mask
+                continue
+            rho_logps = kernel_tests["rho_log10ps"]
+            rhos = torch.as_tensor(kernel_tests["rhos"], device=vc_score.device)
+            if vc_score.numel() == 1:
+                # Native one-site masks bypass ACAT's P≈1 clipping entirely.
+                acatv = single_logps[0]
+                acato = single_logps[0]
+                kernel_tests = dict(kernel_tests)
+                for test in ("SKAT", "SKATO", "SKATO-ACAT"):
+                    kernel_tests[test] = single_logps[0]
+            elif config.acato_full:
+                acato = stats.acat_logp(torch.cat([acatv.reshape(1), rho_logps.reshape(-1)]))
+            else:
+                # Multi-rho REGENIE internally caps the upper rho at 0.999.
+                endpoint = (rhos == rhos.min()) | (rhos == rhos.max())
+                acato = stats.acat_logp(torch.cat([acatv.reshape(1), rho_logps[endpoint]]))
+            tests = {"ACATO": acato, "ACATV": acatv,
+                     "SKAT": kernel_tests["SKAT"], "SKATO": kernel_tests["SKATO"],
+                     "SKATO-ACAT": kernel_tests["SKATO-ACAT"]}
+            for name, pvalue in tests.items():
+                if pvalue is not None:
+                    rows.append(make_row(gene, n, "ADD-" + name, pvalue, mask=mask))
             rows.append(burden_row)
-            continue
-        vc_score, vc_cov = _vc_score_covariance(mask.vc_genotypes, context,
-                                               method=config.vc_score_method,
-                                               block_size=config.vc_score_block_size)
-        usable = vc_cov.diag() > torch.finfo(torch.float64).eps
-        if not bool(usable.any()):
-            rows.append(burden_row)
-            continue
-        if not bool(usable.all()):
-            # Full-chromosome noncoding genes can have thousands of VC sites.
-            # Avoid two complete M x M copies when every site is already usable.
-            vc_score, vc_cov = vc_score[usable], vc_cov[usable][:, usable]
-        weights = mask.vc_weights.to(vc_score.device)[usable]
-        acat_weights = mask.acat_weights.to(vc_score.device)[usable]
-        single_logps = stats.chi2_logsf(vc_score.square() / vc_cov.diag())
-        acatv = stats.acat_logp(single_logps, weights=acat_weights)
-        kernel_tests = stats.skato_logp(vc_score, vc_cov, weights=weights,
-                                       rhos=config.skato_rhos, tail_method=config.tail_method,
-                                      eigen_backend=config.eigen_backend,
-                                      davies_controller=config.davies_controller,
-                                       secular_min_size=config.secular_min_size,
-                                       secular_root_chunk=config.secular_root_chunk,
-                                       secular_iterations=config.secular_iterations,
-                                       native_validity=True,
-                                       integral_backend=config.skato_integral_backend,
-                                       integral_epsabs=config.skato_integral_epsabs,
-                                       integral_epsrel=config.skato_integral_epsrel,
-                                       integral_max_intervals=config.skato_integral_max_intervals)
-        if not kernel_tests["kernel_valid"]:
-            # REGENIE keeps ACAT-V when get_ztz_evals/get_skato_mom fails,
-            # but omits ACAT-O, SKAT and both SKAT-O tests for this mask.
-            rows.append(_row(gene, n, "ADD-ACATV", acatv, mask=mask))
-            rows.append(burden_row)
-            vc_info.append((summary_mask, acatv, None))
-            continue
-        rho_logps = kernel_tests["rho_log10ps"]
-        rhos = torch.as_tensor(kernel_tests["rhos"], device=vc_score.device)
-        if vc_score.numel() == 1:
-            # Native one-site masks bypass ACAT's P≈1 clipping entirely.
-            acatv = single_logps[0]
-            acato = single_logps[0]
-            kernel_tests = dict(kernel_tests)
-            for test in ("SKAT", "SKATO", "SKATO-ACAT"):
-                kernel_tests[test] = single_logps[0]
-        elif config.acato_full:
-            acato = stats.acat_logp(torch.cat([acatv.reshape(1), rho_logps.reshape(-1)]))
-        else:
-            # Multi-rho REGENIE internally caps the upper rho at 0.999.
-            endpoint = (rhos == rhos.min()) | (rhos == rhos.max())
-            acato = stats.acat_logp(torch.cat([acatv.reshape(1), rho_logps[endpoint]]))
-        tests = {"ACATO": acato, "ACATV": acatv,
-                 "SKAT": kernel_tests["SKAT"], "SKATO": kernel_tests["SKATO"],
-                 "SKATO-ACAT": kernel_tests["SKATO-ACAT"]}
-        for name, pvalue in tests.items():
-            if pvalue is not None:
-                rows.append(_row(gene, n, "ADD-" + name, pvalue, mask=mask))
-        rows.append(burden_row)
-        vc_info.append((summary_mask, acatv, kernel_tests["SKATO-ACAT"]))
+            vc_info.append((summary_mask, acatv, kernel_tests["SKATO-ACAT"]))
+            mask = summary_mask
+    finally:
+        # Release VC products before combined burden/SBAT, and on failures.
+        # Each call has its own cache: products never cross genes or traits.
+        product_cache.clear()
+        for kind in ("vc", "burden"):
+            for event in ("hits", "misses"):
+                stats._DIAGNOSTICS["gene_" + kind + "_product_cache_" + event] += (
+                    getattr(product_cache, event)[kind] - previous_counts[kind, event])
     if not config.gene_p or not burden_info:
-        return rows
+        return _materialize_gene_rows(rows)
     groups = {"": {m.base_name for m, _, _ in burden_info}}
     if config.gene_p_groups:
         groups = {str(name): set(names) for name, names in config.gene_p_groups.items()}
@@ -301,7 +443,7 @@ def test_prepared_gene(gene: GeneSet, prepared: Iterable[PreparedMask], context,
         components = []
         burden_acat = stats.acat_logp(torch.stack([p for _, p, _ in burden]))
         components.append(burden_acat)
-        rows.append(_row(gene, n, "ADD-BURDEN-ACAT" + suffix, burden_acat, df=len(burden)))
+        rows.append(make_row(gene, n, "ADD-BURDEN-ACAT" + suffix, burden_acat, df=len(burden)))
         if config.run_sbat:
             matrix = torch.stack([r for _, _, r in burden], 1)
             # REGENIE projects and normalizes each ADD genotype before QR.
@@ -343,7 +485,7 @@ def test_prepared_gene(gene: GeneSet, prepared: Iterable[PreparedMask], context,
                                           subset_sampling=config.sbat_subset_sampling)
                     components.append(sbat["SBAT"])
                     for name in ("SBAT", "SBAT_POS", "SBAT_NEG"):
-                        rows.append(_row(gene, n, "ADD-BURDEN-" + name + suffix,
+                        rows.append(make_row(gene, n, "ADD-BURDEN-" + name + suffix,
                                          sbat[name], df=len(independent)))
         if vc:
             for test, position in (("ACATV-ACAT", 1), ("SKATO-ACAT", 2)):
@@ -352,15 +494,22 @@ def test_prepared_gene(gene: GeneSet, prepared: Iterable[PreparedMask], context,
                     continue
                 pvalue = stats.acat_logp(torch.stack(available))
                 components.append(pvalue)
-                rows.append(_row(gene, n, "ADD-" + test + suffix, pvalue, df=len(available)))
+                rows.append(make_row(gene, n, "ADD-" + test + suffix, pvalue, df=len(available)))
         overall = stats.acat_logp(torch.stack(components))
         strongest_candidates = [(m.base_name, p) for m, p, _ in burden]
         strongest_candidates += [(m.base_name, p) for m, a, s in vc for p in (a, s)
                                  if p is not None]
-        candidate_name, candidate_logp = max(strongest_candidates, key=lambda pair: float(pair[1]))
-        strongest = candidate_name if float(candidate_logp) > 0 else None
-        rows.append(_row(gene, n, "GENE_P" + suffix, overall, df=len(components), strongest=strongest))
-    return rows
+        candidate_values = torch.stack([pair[1] for pair in strongest_candidates])
+        # Python max ignores later NaNs but keeps a first NaN. Preserve that
+        # rule while selecting among all finite candidates on the device.
+        candidate_index = torch.where(torch.isnan(candidate_values),
+                                      -torch.inf, candidate_values).argmax()
+        candidate_index = int(torch.where(torch.isnan(candidate_values[0]),
+                                         torch.zeros_like(candidate_index), candidate_index))
+        strongest = (strongest_candidates[candidate_index][0]
+                     if float(candidate_values[candidate_index]) > 0 else None)
+        rows.append(make_row(gene, n, "GENE_P" + suffix, overall, df=len(components), strongest=strongest))
+    return _materialize_gene_rows(rows)
 
 
 def _normalize_annotations(annotation, genes) -> list[Annotation]:
@@ -450,8 +599,10 @@ def test_gene_based(genotypes, context, annotation, setlist, masks,
                          key=lambda variant: variant.index)
         if not present:
             continue
+        cache_bytes = _product_cache_limit(config)
+        builder_config = replace(config, max_matrix_bytes=config.max_matrix_bytes-cache_bytes)
         builder = GeneMaskBuilder(gene_annotations, definitions, context.y.numel(),
-                                  context.y.device, torch.float64, config)
+                                  context.y.device, torch.float64, builder_config)
         for start in range(0, len(present), config.variant_block_size):
             block = present[start:start + config.variant_block_size]
             if reader:
@@ -477,9 +628,11 @@ def test_gene_based(genotypes, context, annotation, setlist, masks,
                     # copies after their association tests have completed.
                     artifact_masks.append(replace(mask, vc_genotypes=None, vc_mafs=None))
                 yield mask
+                mask = None  # Do not retain a tested VC matrix during the next yield.
         rows = test_prepared_gene(gene, prepared_masks(), context, config,
                                  qr_sample_rows=sample_rows if reader else None,
-                                 qr_n_samples=genotypes.n_samples if reader else None)
+                                 qr_n_samples=genotypes.n_samples if reader else None,
+                                 _product_cache=_GeneProductCache(cache_bytes))
         if artifact_callback is not None:
             artifact_callback(GeneArtifacts(gene, artifact_masks))
         yield from rows

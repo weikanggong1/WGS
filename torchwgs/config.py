@@ -58,6 +58,11 @@ class WGSConfig:
     split_by_pheno: bool = True
     write_masks: bool = False
     keep_uncompressed_inputs: bool = False
+    bim_index_enabled: bool = True
+
+    def __post_init__(self):
+        if not isinstance(self.bim_index_enabled, bool):
+            raise ValueError('bim_index_enabled must be a boolean.')
 
     @classmethod
     def paper(cls, *, apply_rint=True):
@@ -72,6 +77,7 @@ class WGSConfig:
         result.gene_based.vc_score_method = 'crossproduct'
         result.gene_based.genotype_reader = 'cuda_packed'
         result.gene_based.eigen_backend = 'auto'
+        result.gene_based.skato_integral_backend = 'qags_x'
         result.significance.single_frequency_field = 'maf'
         result.phenotype_quantile_normalize = apply_rint
         result.write_masks = True

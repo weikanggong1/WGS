@@ -56,7 +56,7 @@ null_model.export_regenie("/results/discovery/Step1/discovery")
 
 `NullModel.export_regenie(prefix, phenotype_name=None, sort_ids=True, pheno_index=1, n_chromosomes=23, compressed=False)`返回LOCO与pred.list两个路径；表型名默认取模型metadata，`sort_ids`控制FID_IID排序，`pheno_index`控制LOCO文件数字后缀，`n_chromosomes`控制输出染色体行数，`compressed=True`压缩LOCO。`NullModel.from_regenie(path, phenotype_name="phenotype", sample_ids=None, chromosomes=None, y_scale=1.)`返回导入模型；`sample_ids`指定对齐顺序，`chromosomes`选择输入行，`y_scale`仅记录来源尺度，不缩放已标准化预测。
 
-`BedReader(prefix, keep=None, remove=None, sample_ids=None, metadata_cache_size=100000)`只解码需要的样本/变异；`sample_ids`可指定FID/IID顺序。`metadata_cache_size`限制已查询BIM元数据与缺失ID的LRU条数，设0关闭。后续查询属于缓存子集时省去重扫；新ID仍扫描BIM，不建立整张BIM索引。BIM大小、时间或文件身份变化会清空缓存，返回顺序始终为原BIM顺序。
+`BedReader(prefix, keep=None, remove=None, sample_ids=None, metadata_cache_size=100000, bim_index_path=None, bim_index_query_size=500)`只解码需要的样本/变异；`sample_ids`可指定FID/IID顺序。`metadata_cache_size`限制已查询BIM元数据与缺失ID的LRU条数，设0关闭。`bim_index_path`指定私有SQLite缓存路径，默认None保留流式查找；启用索引时新ID采用SQL查询，`bim_index_query_size`限制每次查询的ID数。后续查询属于缓存子集时省去重扫。BIM大小、时间或文件身份变化会清空缓存，返回顺序始终为原BIM顺序。完整流程在一条染色体内让 single 与各 gene 组共用一个 reader，复用有界元数据缓存和最多四份 GPU 样本映射；每组仍独立查询自己的候选 ID。进入 gene 组前核对 BED/FAM、keep/remove 文件身份及 context 的 FID/IID 顺序，变化时停止。
 
 | Step1Config参数 | 默认值与作用 |
 |---|---|
@@ -89,7 +89,7 @@ single_result_file = test_single_variant(
 )
 ```
 
-context包含规范化残差、y尺度、LOCO后残差尺度、协变量basis、样本顺序与有效索引。QT score统计用原n−q归一化，输出χ²1尾概率，不改成普通OLS的Student-t。`SingleVariantConfig`有block_size=1000、maf_min=0（严格大于）、min_mac=20、apply_rint=True、device="cuda"、dtype="float32"、tf32=True、genotype_reader="cpu"。`genotype_reader="cuda_packed"`将原packed BED字节传入GPU解码，按有效样本行直接选取，保留缺失值与FAM顺序；`"cpu"`使用原CPU解码路径。MAC和频率先用未插补的有效基因型计数，在协变量投影前剔除不合格列；默认原结果保留所有MAC20位点，频率阈值留给汇总。低层函数收到已构建context时使用context的RINT/dtype设置；这些配置在pipeline负责构建context。无output_path时返回DataFrame，只适合有界结果，全基因组应流式写文件。
+context包含规范化残差、y尺度、LOCO后残差尺度、协变量basis、样本顺序与有效索引。QT score统计用原n−q归一化，输出χ²1尾概率，不改成普通OLS的Student-t。`SingleVariantConfig`有block_size=1000、maf_min=0（严格大于）、min_mac=20、apply_rint=True、device="cuda"、dtype="float32"、tf32=True、genotype_reader="cpu"。`genotype_reader="cuda_packed"`将原packed BED字节传入GPU解码，按有效样本行直接选取，保留缺失值与FAM顺序；`"cpu"`使用原CPU解码路径。cuda_packed 先在原 packed 字节上计算整数基因型计数，只解码通过 MAC/MAF 的列，再投影。MAC和频率先用未插补的有效基因型计数，在协变量投影前剔除不合格列；默认原结果保留所有MAC20位点，频率阈值留给汇总。低层函数收到已构建context时使用context的RINT/dtype设置；这些配置在pipeline负责构建context。single 每块合并回传浮点统计与有效标记，样本计数 N 单独按整数回传。无output_path时返回DataFrame，只适合有界结果，全基因组应流式写文件。
 
 `test_single_variant(..., variant_indices=None)`默认扫描全部BIM位点；传原BIM索引序列可限定读取范围，仍执行配置的MAC/频率筛选。指定`output_path`时返回写出的文件路径。
 
@@ -118,7 +118,7 @@ with RegenieWriter("/results/discovery/gene", "trait_01", masks=header_masks,
         result_writer.write(result_row)
 ```
 
-`test_gene_based`的`genotypes`可为BedReader，也可为与context有效样本对齐的`[N,M]`矩阵；矩阵输入须传`variants`，每列对应一个`Variant(index, chrom, id, position, allele1, allele0)`。`annotation/setlist/masks`均接受原文本路径或解析后的记录。`variant_lookup=None`让reader自行查BIM；传`{ID: Variant}`可复用已完成的查询。`artifact_callback=None`可接收每个gene的`GeneArtifacts(gene, masks)`，其中mask保留成员与burden、移除VC矩阵，供另行写mask文件；函数自身仍逐行返回关联dict。
+`test_gene_based`的`genotypes`可为BedReader，也可为与context有效样本对齐的`[N,M]`矩阵；矩阵输入须传`variants`，每列对应一个`Variant(index, chrom, id, position, allele1, allele0)`。`annotation/setlist/masks`均接受原文本路径或解析后的记录。`variant_lookup=None`让reader自行查BIM；传`{ID: Variant}`可复用已完成的查询。`artifact_callback=None`可接收每个gene的`GeneArtifacts(gene, masks)`，其中mask保留成员与burden、移除VC矩阵，供另行写mask文件；函数自身仍逐行返回关联dict。mask 的六个逐变异计数/频率向量合并回传；整数计数在可无损表示的范围内暂存为 float64，超出范围沿用整数独立回传。成员选择、单例定义和 AAF/MAC 边界保持原规则。
 
 `MaskDefinition(name, categories, extract_variants=None, score=None, category_order=None)`的`categories`为注释类别集合，`extract_variants`限定成员白名单，`score`记录评分名称；`category_order`控制原格式表头类别顺序，未指定时按类别排序。`FrequencyDomain(lower=0., upper=1., lower_inclusive=True, upper_inclusive=True)`显式设置MAF区间与两端是否包含，放入`GeneConfig.domain_mapping`按域名使用。
 
@@ -134,6 +134,7 @@ with RegenieWriter("/results/discovery/gene", "trait_01", masks=header_masks,
 | extract_variants / extract_genes | None；白名单，Sub评分筛选或限定验证基因 |
 | variant_block_size | 1000；大gene的流式读取块 |
 | max_matrix_bytes | 8GiB；gene矩阵/协方差工作空间上限，同时受本次GPU总预算与预留空间限制 |
+| product_cache_bytes | 256MiB；同一gene中完全相同的未加权产品采用有界LRU复用，0关闭。实际预留为min(product_cache_bytes, max_matrix_bytes//16)，从builder矩阵预算中扣除 |
 | vc_storage / vc_score_method | dense / residual；可设 sparse / crossproduct 进行稀疏分块交叉乘积计算，减少 N×M 投影副本 |
 | genotype_reader | cpu；cuda_packed在GPU解码原BED位，按有效样本直接选行。paper预设cuda_packed |
 | vc_score_block_size | 256；稀疏协方差乘积的列块大小 |
@@ -141,9 +142,10 @@ with RegenieWriter("/results/discovery/gene", "trait_01", masks=header_masks,
 | skato_rhos | (0,.01,.04,.09,.16,.25,.5,1)；内部按冻结原版clip最高端点 |
 | tail_method | regenie；兼容强尾/回退策略，也可设exact进行数学审查 |
 | davies_controller | auto；谱维数≥1024时用NumPy向量化误差界控制器，其余保留scalar。scalar/numpy可显式选择；Fourier积分始终在tensor设备执行，误差预算与故障路径保持 |
+| davies_fourier_backend | torch；默认保留原张量路径。auto在NVIDIA CUDA且Triton可用时使用融合float64 Fourier求和，CPU或不支持的设备用torch；fused要求NVIDIA CUDA/Triton，否则报错 |
 | eigen_backend | dense；逐个rho计算完整特征值，可设secular或auto。paper预设auto，仅CUDA且维数达到secular_min_size时启用秩一更新 |
 | secular_min_size / secular_root_chunk / secular_iterations | 4096 / 256 / 64；auto切换维数、同时求根数量和二分次数。保持原正特征值筛选与rho端点定义 |
-| skato_integral_backend | adaptive_x；独立PyTorch GK21自适应积分，使用原 REGENIE 的 χ² 坐标。可选adaptive_sqrt（平方根变量变换）或segmented；低层skato_logp数学接口默认segmented |
+| skato_integral_backend | 独立GeneConfig默认adaptive_x，WGSConfig.paper()默认qags_x。qags_x使用原χ²坐标的GK21与QAGS误差排序、Wynn外推和停止协议；adaptive_x保留原逐区间细分，可选adaptive_sqrt或segmented。低层skato_logp默认segmented |
 | skato_integral_epsabs | 1e-25；原版SKAT-O绝对误差预算 |
 | skato_integral_epsrel | 2**-13（0.0001220703125）；原版相对误差预算 |
 | skato_integral_max_intervals | 1000；自适应区间预算，耗尽时按原版Bonferroni规则回退 |
@@ -166,7 +168,15 @@ with RegenieWriter("/results/discovery/gene", "trait_01", masks=header_masks,
 
 gene的稀疏小矩阵投影与推断保持GPU float64，使用context中未丢精度的y_float64和covariates_q_float64；single仍按请求dtype计算大块。SBAT在原基因型样本位置补零，再以独立Triton kernel复现冻结Eigen/SSE2的列范数累加顺序，减少共线mask的pivot差异。该兼容顺序针对本次核对的3.4.1二进制，其他ISA构建可能选择不同的等范数列。
 
-Sub的评分白名单与调用者的global白名单取交集，在BIM查找、BED解码和GPU传输前筛选。输出的df=1等效χ²在−log10(P)≤300时使用float64正态逆CDF，接近P=1时用expm1/erfinv；其他df和更强尾保留log域二分算法。该优化减少逐行GPU调用，不改变关联检验或尾积分预算。
+Sub的评分白名单与调用者的global白名单取交集，在BIM查找、BED解码和GPU传输前筛选。输出的df=1等效χ²在−log10(P)≤300时使用float64正态逆CDF，接近P=1时用expm1/erfinv；其他df和更强尾保留log域二分算法。等效 χ² 按 gene 批量求值并回传，保留原输出舍入、NA 及最强结果的顺序。该优化减少逐行GPU调用，不改变关联检验或尾积分预算。
+
+Davies 对同一固定谱复用排序、矩与误差界准备结果，每个统计量仍使用独立积分计划和故障状态。融合 Fourier 后端把频率与谱的计算放在同一float64 Triton kernel中，减少中间矩阵和逐操作GPU调用；该尾概率计算不使用TF32或低精度。低层`davies_logsf(..., fourier_backend=...)`与`skat_logp/skato_logp(..., davies_fourier_backend=...)`和gene配置均默认`torch`。共享A100的四个真实mask交替对照未显示融合后端普遍更快，因此融合后端保留为选项，测量范围见[验证记录](VALIDATION.md)。
+
+`qags_x`的面积、误差和外推表在张量设备上计算，CPU只处理区间选择与收敛元数据；每次细分合并回传三个控制标记与两个新区间误差。旧`adaptive_x`仍合并回传GK21面积/误差。每个mask保留自己的容差、区间预算、错误和回退状态，尚未把独立积分合成批次。固定seed的SBAT Sobol点使用最多64MiB、128条目的只读LRU缓存，seed=None仍重新抽样。
+
+`product_cache_bytes`只复用同一gene中具有完全相同普通VC列顺序和超稀有合并成员的未加权score/covariance，以及成员完全相同的burden投影。不同权重仍重新计算kernel；一般相交mask的Gram子块没有复用。缓存由builder身份、成员顺序、context与张量身份/版本守卫绑定，替换或常规原位修改后不复用。流式入口先预留缓存预算，按字节限制进行LRU淘汰；缓存中不保存VC基因型矩阵，未预留预算的外部materialized mask接口不自动启用缓存。
+
+`MaskWriter(prefix, sample_ids, sample_sex)` 的三个输入分别为输出前缀、按 BED 行序排列的 FID/IID 二元组列表、同序 sex 列表。`GeneArtifacts` 回调优先使用未插补的 raw_burden，CUDA 上按 half-up 舍入编码 0/1/2 和缺失，再把四个样本合成一个 BED 字节；末尾补位为 00。每次最多缓存八个 packed mask，通常不超过 1 MiB；一条超大 mask 单独处理。回传包含 packed 字节和非法剂量标记，不回传完整浮点 burden；CPU 编码保留独立 NumPy 实现。BIM/FAM/snplist 及 mask 顺序保持原格式。
 
 ## Pipeline和汇总
 
@@ -181,16 +191,18 @@ Sub的评分白名单与调用者的global白名单取交集，在BIM查找、BE
 | array_variant_include | None | 芯片QC变异白名单；None使用全部芯片变异 |
 | sample_remove | None | 从discovery名单中排除样本 |
 | gene_analyses | 空dict | `{染色体: [GeneAnalysis,...]}`；每条染色体列出完整Main/Sub入口 |
-| covariates | None | 通过Python接口传入CPU `torch.Tensor`，形状`[N,C]`，N为keep/remove后的芯片行数；raw模式用于残差回归，residual模式作为关联协变量 |
+| covariates | None | Python 接口可传 CPU `torch.Tensor` 或可转为数值张量的 `[N,C]` 数组，CLI 的私有输入 JSON 可用同形二维数值数组；统一转换为 float64，N为keep/remove后的芯片行数；raw模式用于残差回归，residual模式作为关联协变量 |
 | imported_loco | None | 已核对来源的`.loco`或`_pred.list`；导入时跳过Step1拟合，仍按芯片身份对齐 |
 
 每个`GeneAnalysis`含`name`（同染色体唯一的输出组名）、`annotation_file`、`setlist_file`和`mask_definition_file`四个必填字符串，以及可选`variant_whitelist_file=None`。Sub评分白名单由最后一项指定，与`gene_based.extract_variants`取交集。
 
-输入JSON含本地路径，应存放在自己的私有目录。当前CLI不转换JSON中的协变量数组；需要协变量时，通过Python接口传入上述CPU张量。CLI可读取已完成协变量回归的残差表型，默认不再提供协变量。配置和输入JSON不能作为公开示例发布。
+输入JSON含本地路径，应存放在自己的私有目录。CLI 将 JSON 的协变量数值数组转换为 float64 张量，行序必须对应 keep/remove 后的芯片 FAM；需要大量协变量时可通过 Python 接口传入上述 CPU 张量。CLI也可读取已完成协变量回归的残差表型，默认不再提供协变量。配置和输入JSON不能作为公开示例发布。
 
 已有研究注释文件布局可调用`study_gene_analyses(annotation_root)`构造每条染色体14 Main和12 Sub入口（42个基础mask定义），返回`{染色体字符串: [GeneAnalysis,...]}`，默认检查所有文件存在。`main_types`、`sub_combinations`、`chromosomes`均可改；`require_files=False`允许生成配置时暂不检查文件，实际分析仍需提供输入。评分名字代表输入白名单，不推测JARVIS等未核对数值阈值。完整mask列表与Table S24的一致性应由注释生成来源确认。
 
-`WGSConfig`含step1、single_variant、gene_based、significance和execution五组参数，以及phenotype_mode、phenotype_quantile_normalize、phenotype_outlier_sd、gzip_output、write_samples、print_pheno_name、split_by_pheno、write_masks、keep_uncompressed_inputs。`print_pheno_name=True`给.ids写原脚本所用的表型标签首行。`WGSConfig.paper()`默认`write_masks=True`，输出原脚本启用的BED/BIM/FAM/snplist；可显式关闭，直接`WGSConfig()`仍默认False。paper另预设single和gene的cuda_packed解码、gene的sparse/crossproduct、auto特征值后端和with_replacement抽样。配置生成器默认采用 CUDA 串行执行并写 mask；`write_masks` 可通过 Python 配置或生成的 JSON 修改。完整执行使用 CUDA；`genotype_reader="cpu"`仅表示在 CPU 解码 BED，关联计算仍在 GPU，paper 默认采用 `cuda_packed`。
+`WGSConfig`含step1、single_variant、gene_based、significance和execution五组参数，以及phenotype_mode、phenotype_quantile_normalize、phenotype_outlier_sd、gzip_output、write_samples、print_pheno_name、split_by_pheno、write_masks、keep_uncompressed_inputs和bim_index_enabled。`print_pheno_name=True`给.ids写原脚本所用的表型标签首行。`WGSConfig.paper()`默认`write_masks=True`，输出原脚本启用的BED/BIM/FAM/snplist；可显式关闭，直接`WGSConfig()`仍默认False。paper另预设single和gene的cuda_packed解码、gene的sparse/crossproduct、auto特征值后端、qags_x积分和with_replacement抽样；gene的Davies Fourier默认torch。配置生成器默认采用 CUDA 串行执行并写 mask；`write_masks` 可通过 Python 配置或生成的 JSON 修改。完整执行使用 CUDA；`genotype_reader="cpu"`仅表示在 CPU 解码 BED，关联计算仍在 GPU，paper 默认采用 `cuda_packed`。
+
+`bim_index_enabled=True`时，pipeline在私有`InputCache/bim_c{chromosome}.sqlite`中保存BIM的原行索引、染色体、ID、位置与等位基因，仅用于查找输入；该数据库不是REGENIE结果文件。源路径及device/inode/size/mtime/ctime改变时重建，索引以完整临时文件原子替换；SQL查询与reader缓存均有边界。每次准备和实际查询连接都重新校验SQLite的schema、来源和完成标记。源BIM使用stat身份判定，保持全部身份字段不变的内容改写无法由该判定识别；运行期间须保持输入固定。原BIM行序、requested duplicate/位置错误及malformed行的错误顺序保持，未请求ID的重复仍允许。`bim_index_c{chromosome}`阶段记录`enabled/built/rows/indexed_rows/valid_bim/seconds`；`valid_bim`只表示行宽检查。首次建索引发生在Single计时之前，但包含在完整pipeline墙钟中；只做single或全部gene组已缓存时不准备索引。
 
 `configuration.to_dict()`返回全部配置字段的字典；`WGSConfig.from_dict(overrides)`以paper预设补全缺省字段，并合并各参数组的局部覆盖。`gene_based.domain_mapping`中的字典会恢复为`FrequencyDomain`对象；CLI的`--config`使用同一规则。
 
@@ -203,6 +215,7 @@ Sub的评分白名单与调用者的global白名单取交集，在BIM查找、BE
 | split_by_pheno | True；False使用Y1列后缀与`.regenie.Ydict` |
 | write_masks | paper为True，直接WGSConfig为False；输出构建后的BED/BIM/FAM/snplist |
 | keep_uncompressed_inputs | False；染色体完成后清理InputCache中展开的BED |
+| bim_index_enabled | True；为有待运行gene组的染色体构建/复用InputCache中的私有SQLite BIM ID索引。False保留原逐次流式查找；首次构建时间单独记录并计入端到端耗时 |
 
 `run_discovery(inputs, config=None, output_dir=..., run_single=True, run_gene=True, resume=True)`返回与`run_manifest.json`相同的dict，包含配置、输入身份、每阶段报告、结果路径、汇总计数、数值诊断、总耗时和按CUDA设备记录的峰值。`config=None`采用paper预设；`resume=False`重新计算。完整流程保持`run_single=True, run_gene=True`，拟合或导入Step1后执行两类关联与汇总。gene使用`single_variant.device`建立context，其矩阵推断保持float64。
 
@@ -210,7 +223,7 @@ Sub的评分白名单与调用者的global白名单取交集，在BIM查找、BE
 
 `ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)`定义完整GPU串行执行：`parallel_level`仅接受`serial`，`workers`仅接受1，`max_gpu_gb`为可修改的正数GiB预算（每单位2³⁰字节）。CPU设备或CUDA不可用时明确报错。pipeline入口设置当前GPU的PyTorch分配器预算；Step1估计工作区使用step1.max_gpu_gb与execution.max_gpu_gb数值的较小值，仍按十进制GB检查。组内全部category/domain/AAF/singleton masks均保留，结果按输入组顺序汇总。CUDA上下文与其他进程占用另行观测。
 
-gene矩阵预算为`min(gene_based.max_matrix_bytes, int(max(.25, max_gpu_gb - 1) * 1024**3))`字节，预留1GiB供其他阶段使用；矩阵预算和分配器预算分别检查。阶段失败向调用者报告，未完成文件不会提交为有效缓存。
+gene矩阵预算为`min(gene_based.max_matrix_bytes, int(max(.25, max_gpu_gb - 1) * 1024**3))`字节，预留1GiB供其他阶段使用；矩阵预算和分配器预算分别检查。流式gene入口再从矩阵预算扣除`min(product_cache_bytes, max_matrix_bytes//16)`，给产品缓存留出同等容量。阶段失败向调用者报告，未完成文件不会提交为有效缓存。
 
 `SignificanceConfig`公开effective_phenotypes=831.50、n_genes=17863、variant_alpha=5e−9、gene_alpha=.05、lead_window_bp=500000、locus_merge_bp=1000000。另有single_frequency_min=.001和single_frequency_field="a1freq"，在完整原格式输出之后筛选频率。`WGSConfig.paper()`选择field="maf"，按论文的minor allele frequency筛选；field="a1freq"匹配研究源汇总代码。运行一个表型时仍用论文全研究阈值；修改这些参数只重汇总。缓存核对输入身份、运行参数和实现hash：改MAF/MAC重single；改annotation/mask/白名单重gene；改样本、表型、芯片QC、RINT或ridge重Step1。
 

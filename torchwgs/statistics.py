@@ -6,7 +6,7 @@ PyTorch, including on CUDA.  Default association tails use central positive
 Davies AS155 Fourier summation on the tensor device, with scalar CPU error
 bound planning, then the original Kuonen/stringent-Davies/Liu hierarchy.
 The optional exact backend uses checked exponentially tilted inversion;
-only that backend can take a scalar SciPy quadrature fallback.  Backend
+its scalar SciPy quadrature fallback is available only for CPU inputs. Backend
 counts and controller/fallback elapsed time are recorded explicitly.
 
 SKAT-O is the rho-search integral with the moment/variance correction used by
@@ -27,6 +27,7 @@ import math
 import time
 import warnings
 import threading
+from collections import OrderedDict
 from collections.abc import MutableMapping
 from contextlib import contextmanager
 from functools import lru_cache
@@ -41,10 +42,15 @@ DEFAULT_RHOS = (0.0, 0.01, 0.04, 0.09, 0.16, 0.25, 0.5, 1.0)
 _DIAGNOSTIC_DEFAULTS = {"gpu_tail_calls": 0, "cpu_tail_fallback_calls": 0,
                 "torch_cpu_tail_calls": 0,
                 "davies_tail_values": 0, "davies_failure_values": 0,
+                "davies_spectrum_preparations": 0,
+                "davies_fused_rules": 0, "davies_torch_rules": 0,
+                "gene_vc_product_cache_hits": 0, "gene_vc_product_cache_misses": 0,
+                "gene_burden_product_cache_hits": 0, "gene_burden_product_cache_misses": 0,
                 "davies_integration_terms": 0, "davies_controller_seconds": 0.0,
                 "kuonen_tail_values": 0, "liu_fallback_values": 0,
                 "cpu_tail_fallback_seconds": 0.0, "orthant_qmc_calls": 0,
                 "orthant_plackett_calls": 0,
+                "orthant_sobol_cache_hits": 0, "orthant_sobol_cache_misses": 0,
                 "skato_integral_calls": 0, "skato_quadrature_values": 0,
                 "skato_quadrature_intervals": 0, "skato_integral_failures": 0,
                 "secular_eigen_calls": 0, "dense_rho_eigen_calls": 0}
@@ -114,6 +120,21 @@ def numerical_diagnostics(reset: bool = False) -> dict:
 def _tensor(value, reference=None):
     return torch.as_tensor(value, dtype=torch.float64,
                            device=None if reference is None else reference.device)
+
+
+def _mixture_device(q, eigenvalues):
+    """Keep any CUDA input on CUDA; a CUDA statistic selects its own device."""
+    if isinstance(q, torch.Tensor) and q.is_cuda:
+        return q.device
+    if isinstance(eigenvalues, torch.Tensor) and eigenvalues.is_cuda:
+        return eigenvalues.device
+    return None
+
+
+def _mixture_spectrum(q, eigenvalues):
+    device = _mixture_device(q, eigenvalues)
+    return (eigenvalues if device is None else
+            torch.as_tensor(eigenvalues, dtype=torch.float64, device=device))
 
 
 def eigen_compatible_column_norm(matrix, *, squared=False):
@@ -405,7 +426,9 @@ def _small_rank_integral(q, ev, order):
 
 
 def _fourier_tail_scalar(q, ev, rtol):
-    """Checked scalar Fourier quadrature; called only after GPU rejection."""
+    """Checked scalar Fourier quadrature for explicitly CPU inputs only."""
+    if q.is_cuda or ev.is_cuda:
+        raise ArithmeticError("CPU integrand fallback is disabled for CUDA inputs")
     import numpy as np
     from scipy.integrate import IntegrationWarning, quad
     beginning = time.perf_counter()
@@ -448,10 +471,11 @@ def weighted_chi2_logsf(q, eigenvalues, *, rtol=1e-5, max_order=8192,
 
     Rank one and equal eigenvalues are exact chi-square tails. Ranks two to
     four use positive angular integrals. Other ranks use tilted inversion on the
-    tensor's device, followed by explicitly counted scalar Fourier fallback
-    if needed.  The output shape is the shape of ``q``.
+    tensor's device. CPU inputs may use an explicitly counted scalar Fourier
+    fallback; CUDA inputs report nonconvergence without a CPU integrand.
+    The output shape is the shape of ``q``.
     """
-    ev = _positive_eigenvalues(eigenvalues)
+    ev = _positive_eigenvalues(_mixture_spectrum(q, eigenvalues))
     statistic = _tensor(q, ev)
     if bool(((statistic < 0) | ~torch.isfinite(statistic)).any()):
         raise ValueError("weighted chi-square statistic must be finite and nonnegative")
@@ -502,8 +526,9 @@ def weighted_chi2_logsf(q, eigenvalues, *, rtol=1e-5, max_order=8192,
                     break
             previous = logsf
         if bool((~accepted).any()):
-            if not allow_cpu_fallback:
-                raise ArithmeticError("GPU weighted chi-square quadrature did not converge")
+            if statistic.is_cuda or not allow_cpu_fallback:
+                raise ArithmeticError("weighted chi-square quadrature did not converge; "
+                                      "CPU integrand fallback is disabled for this input")
             for index in torch.where(~accepted)[0].tolist():
                 current[index] = -_fourier_tail_scalar(qq[index], ev, rtol) * _LN10
         values = torch.zeros_like(chunk)
@@ -519,7 +544,7 @@ def kuonen_logsf(q, eigenvalues):
     <=1e-5.  Invalid/central saddlepoints return NaN so that the caller can
     take a checked exact fallback.  It is not an exact chi-square mixture.
     """
-    ev = _positive_eigenvalues(eigenvalues)
+    ev = _positive_eigenvalues(_mixture_spectrum(q, eigenvalues))
     statistic = _tensor(q, ev)
     if not ev.numel() or bool(((statistic < 0) | ~torch.isfinite(statistic)).any()):
         raise ValueError("Kuonen requires positive eigenvalues and finite nonnegative q")
@@ -567,6 +592,16 @@ def _liu_logsf(q, eigenvalues):
     return chi2_logsf(transformed, df)
 
 
+class _DaviesSpectrum:
+    """Read-only spectrum invariants, shared by independent statistic plans."""
+    def __init__(self, spectrum):
+        self.spectrum = tuple(sorted(spectrum))
+        # Keep the original Python left-to-right sums and sqrt arithmetic.
+        self.mean = sum(self.spectrum)
+        self.sd = math.sqrt(2*sum(x*x for x in self.spectrum))
+        self.numpy_weights = None
+
+
 class _DaviesPlan:
     """Scalar error bounds for the positive, central AS155 special case.
 
@@ -579,12 +614,14 @@ class _DaviesPlan:
     translation or inclusion of the general upstream qfc implementation.
     """
     def __init__(self, spectrum, statistic, accuracy, limit):
-        self.spectrum = tuple(sorted(spectrum))
+        self._spectrum_state = (spectrum if isinstance(spectrum, _DaviesSpectrum)
+                                else _DaviesSpectrum(spectrum))
+        self.spectrum = self._spectrum_state.spectrum
         self.statistic = statistic
         self.accuracy = accuracy
         self.limit = limit
-        self.mean = sum(self.spectrum)
-        self.sd = math.sqrt(2*sum(x*x for x in self.spectrum))
+        self.mean = self._spectrum_state.mean
+        self.sd = self._spectrum_state.sd
         self.gaussian_variance = 0.0
         self.bound_evaluations = 0
         self.rules = []
@@ -731,7 +768,50 @@ class _DaviesPlan:
             return None
 
 
-def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000, controller="auto"):
+class _PreparedDaviesSpectrum:
+    """Mask-local device/host state; mutable budget state stays in each plan."""
+    def __init__(self, eigenvalues, controller, fourier_backend="torch"):
+        if controller not in {"auto", "scalar", "numpy"}:
+            raise ValueError("Davies controller must be auto, scalar or numpy")
+        self.controller = controller
+        if fourier_backend not in {"torch", "fused", "auto"}:
+            raise ValueError("Fourier backend must be torch, fused or auto")
+        self.fourier_backend = fourier_backend
+        self.eigenvalues = _positive_eigenvalues(eigenvalues)
+        self.maximum = (self.eigenvalues.max() if self.eigenvalues.numel()
+                        else self.eigenvalues.new_tensor(1.))
+        self.normalized = self.eigenvalues/self.maximum
+        self.spectrum = _DaviesSpectrum(self.normalized.detach().cpu().tolist())
+        self.plan_class = _DaviesPlan
+        if controller == "numpy" or (controller == "auto" and len(self.spectrum.spectrum) >= 1024):
+            from ._davies_bounds import NumpyDaviesPlan
+            self.plan_class = NumpyDaviesPlan
+
+
+def _prepare_davies_spectrum(eigenvalues, controller, fourier_backend="torch"):
+    """Prepare one immutable spectrum without reusing statistic-specific rules."""
+    start = time.perf_counter()
+    prepared = _PreparedDaviesSpectrum(eigenvalues, controller, fourier_backend)
+    _DIAGNOSTICS["davies_spectrum_preparations"] += 1
+    _DIAGNOSTICS["davies_controller_seconds"] += time.perf_counter()-start
+    return prepared
+
+
+def _davies_spectrum_for_inputs(q, eigenvalues, controller, prepared, fourier_backend="torch"):
+    if prepared is None:
+        return _prepare_davies_spectrum(_mixture_spectrum(q, eigenvalues), controller, fourier_backend)
+    if prepared.controller != controller:
+        raise ValueError("Prepared Davies spectrum uses a different controller")
+    if prepared.fourier_backend != fourier_backend:
+        raise ValueError("Prepared Davies spectrum uses a different Fourier backend")
+    device = _mixture_device(q, eigenvalues)
+    if device is not None and prepared.eigenvalues.device != device:
+        return _prepare_davies_spectrum(prepared.eigenvalues.to(device), controller, fourier_backend)
+    return prepared
+
+
+def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000, controller="auto", fourier_backend="torch",
+                 _prepared_spectrum=None):
     """Davies AS155 tails for positive central chi-square(1) mixtures.
 
     Return ``(-log10(P), ifault)`` tensors.  NaN and a nonzero fault mark a
@@ -746,25 +826,20 @@ def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000, controller="auto
     """
     if controller not in {"auto", "scalar", "numpy"}:
         raise ValueError("Davies controller must be auto, scalar or numpy")
-    ev = _positive_eigenvalues(eigenvalues)
+    prepared = _davies_spectrum_for_inputs(q, eigenvalues, controller, _prepared_spectrum, fourier_backend)
+    ev = prepared.eigenvalues
     statistic = _tensor(q, ev)
     if accuracy <= 0 or limit < 1 or bool(((statistic < 0) | ~torch.isfinite(statistic)).any()):
         raise ValueError("Davies needs finite nonnegative q, accuracy>0 and limit>=1")
     if not ev.numel():
         return weighted_chi2_logsf(statistic, ev), torch.zeros_like(statistic, dtype=torch.int64)
-    maximum = ev.max()
-    normalized = ev/maximum
-    scaled = (statistic/maximum).flatten()
+    normalized = prepared.normalized
+    scaled = (statistic/prepared.maximum).flatten()
     start = time.perf_counter()
-    spectrum = normalized.detach().cpu().tolist()
     scalar_q = scaled.detach().cpu().tolist()
-    plan_class = _DaviesPlan
-    if controller == "numpy" or (controller == "auto" and len(spectrum) >= 1024):
-        from ._davies_bounds import NumpyDaviesPlan
-        plan_class = NumpyDaviesPlan
     jobs, probabilities, fault_codes = [], [], []
     for i, point in enumerate(scalar_q):
-        plan = plan_class(spectrum, point, accuracy, limit)
+        plan = prepared.plan_class(prepared.spectrum, point, accuracy, limit)
         try:
             known_probability = plan.build()
             fault_code = 0
@@ -782,7 +857,11 @@ def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000, controller="auto
     integral, absolute = torch.zeros_like(scaled), torch.zeros_like(scaled)
     # Batch rules with different spacing and Gaussian factors.  Keep the
     # frequency/eigenvalue workspace under about one million doubles.
-    batch_size = max(1, min(64, 1048576//(4096*ev.numel())))
+    from ._fourier_gpu import available as fused_available, fourier_rules
+    use_fused = fourier_backend != "torch" and fused_available(ev.device)
+    if fourier_backend == "fused" and not use_fused:
+        raise RuntimeError("Fused Davies Fourier requires NVIDIA CUDA and Triton")
+    batch_size = 64 if use_fused else max(1, min(64, 1048576//(4096*ev.numel())))
     for batch_start in range(0, len(jobs), batch_size):
         batch = jobs[batch_start:batch_start+batch_size]
         indices = torch.tensor([job[0] for job in batch], dtype=torch.int64, device=ev.device)
@@ -793,27 +872,33 @@ def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000, controller="auto
         extra = _tensor([0. if job[4] is None else job[4] for job in batch], ev)[:, None]
         point = scaled[indices, None]
         batch_integral, batch_absolute = torch.zeros_like(terms), torch.zeros_like(terms)
-        for first in range(0, max(job[1] for job in batch)+1, 4096):
-            offsets = torch.arange(first, min(first+4096, max(job[1] for job in batch)+1),
-                                   dtype=torch.float64, device=ev.device)
-            frequency = (offsets+.5)*spacing
-            active = offsets <= terms[:, None]
-            arguments = 2*frequency[:, :, None]*normalized
-            angles = arguments.atan()
-            phase = -point*frequency+angles.sum(-1)/2
-            log_magnitude = -gaussian*frequency.square()/2
-            log_magnitude -= arguments.square().log1p().sum(-1)/4
-            magnitude = torch.where(active & (log_magnitude >= -50), log_magnitude.exp(), 0.)
-            amplitudes = (spacing/math.pi)*magnitude/frequency
-            damping = extra*frequency.square()/2
-            factor = torch.where(damping > 50, 1., -torch.expm1(-damping))
-            amplitudes *= torch.where(auxiliary, factor, 1.)
-            batch_integral += (phase.sin()*amplitudes).sum(-1)
-            batch_absolute += ((point*frequency+angles.abs().sum(-1)/2)*amplitudes).sum(-1)
+        if use_fused:
+            batch_integral, batch_absolute = fourier_rules(
+                normalized, point[:, 0], terms, spacing[:, 0], gaussian[:, 0],
+                extra[:, 0], auxiliary[:, 0], maximum_terms=max(job[1] for job in batch))
+        else:
+            for first in range(0, max(job[1] for job in batch)+1, 4096):
+                offsets = torch.arange(first, min(first+4096, max(job[1] for job in batch)+1),
+                                       dtype=torch.float64, device=ev.device)
+                frequency = (offsets+.5)*spacing
+                active = offsets <= terms[:, None]
+                arguments = 2*frequency[:, :, None]*normalized
+                angles = arguments.atan()
+                phase = -point*frequency+angles.sum(-1)/2
+                log_magnitude = -gaussian*frequency.square()/2
+                log_magnitude -= arguments.square().log1p().sum(-1)/4
+                magnitude = torch.where(active & (log_magnitude >= -50), log_magnitude.exp(), 0.)
+                amplitudes = (spacing/math.pi)*magnitude/frequency
+                damping = extra*frequency.square()/2
+                factor = torch.where(damping > 50, 1., -torch.expm1(-damping))
+                amplitudes *= torch.where(auxiliary, factor, 1.)
+                batch_integral += (phase.sin()*amplitudes).sum(-1)
+                batch_absolute += ((point*frequency+angles.abs().sum(-1)/2)*amplitudes).sum(-1)
         integral.index_add_(0, indices, batch_integral)
         absolute.index_add_(0, indices, batch_absolute)
         integrated[indices] = True
         _DIAGNOSTICS["davies_integration_terms"] += sum(job[1]+1 for job in batch)
+        _DIAGNOSTICS["davies_fused_rules" if use_fused else "davies_torch_rules"] += len(batch)
     probability = torch.where(integrated, .5+integral, probability)
     rounding_lost = integrated & (absolute+accuracy/10 == absolute)
     faults = torch.where(rounding_lost, 2, faults)
@@ -826,7 +911,7 @@ def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000, controller="auto
 
 
 def _association_tail(q, eigenvalues, tail_method, *, rank_one_exact=True,
-                      davies_controller="auto"):
+                      davies_controller="auto", fourier_backend="torch", _prepared_spectrum=None):
     """Davies(1e-6/10000) -> Kuonen -> Davies(1e-9/1e6) -> Liu.
 
     The Kuonen branch is also taken after a Davies budget/rounding failure,
@@ -835,14 +920,23 @@ def _association_tail(q, eigenvalues, tail_method, *, rank_one_exact=True,
     """
     if tail_method not in ("regenie", "exact"):
         raise ValueError("tail_method must be 'regenie' or 'exact'")
-    ev = _positive_eigenvalues(eigenvalues)
+    if _prepared_spectrum is None:
+        ev = _positive_eigenvalues(_mixture_spectrum(q, eigenvalues))
+    else:
+        _prepared_spectrum = _davies_spectrum_for_inputs(q, eigenvalues,
+                                                       davies_controller, _prepared_spectrum, fourier_backend)
+        ev = _prepared_spectrum.eigenvalues
     qq = _tensor(q, ev)
     if tail_method == "exact" or (rank_one_exact and ev.numel() <= 1):
         return weighted_chi2_logsf(qq, ev)
     if not ev.numel():
         return weighted_chi2_logsf(qq, ev)
+    if _prepared_spectrum is None:
+        _prepared_spectrum = _prepare_davies_spectrum(ev, davies_controller, fourier_backend)
     flat = qq.flatten()
-    output, faults = davies_logsf(flat, ev, controller=davies_controller)
+    output, faults = davies_logsf(flat, ev, controller=davies_controller,
+                                 fourier_backend=fourier_backend,
+                                 _prepared_spectrum=_prepared_spectrum)
     need_spa = (faults != 0) | ~torch.isfinite(output) | (output >= 5)
     output[need_spa] = torch.nan
     if bool(need_spa.any()):
@@ -854,7 +948,9 @@ def _association_tail(q, eigenvalues, tail_method, *, rank_one_exact=True,
     failed = ~torch.isfinite(output)
     if bool(failed.any()):
         strict, strict_fault = davies_logsf(flat[failed], ev, accuracy=1e-9, limit=1000000,
-                                           controller=davies_controller)
+                                           controller=davies_controller,
+                                           fourier_backend=fourier_backend,
+                                           _prepared_spectrum=_prepared_spectrum)
         valid_strict = (strict_fault == 0) & torch.isfinite(strict)
         indices = torch.where(failed)[0]
         output[indices[valid_strict]] = strict[valid_strict]
@@ -884,17 +980,18 @@ def _weighted_inputs(score, covariance, weights=None):
 
 
 def skat_logp(score_vec, cov_mat, weights=None, *, tail_method="regenie",
-              davies_controller="auto"):
+              davies_controller="auto", davies_fourier_backend="torch"):
     """SKAT score form, using the source's small-P Kuonen rule by default."""
     u, k = _weighted_inputs(score_vec, cov_mat, weights)
     eigenvalues = _positive_eigenvalues(torch.linalg.eigvalsh(k), 1e-5)
     return _association_tail(u.square().sum(), eigenvalues, tail_method,
-                             davies_controller=davies_controller)
+                             davies_controller=davies_controller, fourier_backend=davies_fourier_backend)
 
 
 def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-4,
               tail_method="regenie", eigen_backend="dense", secular_min_size=4096,
               secular_root_chunk=256, secular_iterations=64, davies_controller="auto",
+              davies_fourier_backend="torch",
               native_validity=False, integral_backend="segmented",
               integral_epsabs=1e-25, integral_epsrel=2.**-13,
               integral_max_intervals=1000):
@@ -914,9 +1011,10 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
     separate test and remains available to the gene caller. The default
     retains the mathematical API's treatment of degenerate kernels.
     ``integral_backend`` is segmented (the original mathematical API),
-    adaptive_x (original chi-square coordinate), or adaptive_sqrt (remove
-    the density singularity). Adaptive backends use independent device-side
-    Gauss-Kronrod 21 rules with an absolute/relative error budget. An unmet
+    adaptive_x (original chi-square coordinate), adaptive_sqrt (remove
+    the density singularity), or qags_x (original coordinate with QAGS
+    error selection and Wynn extrapolation). These backends use independent
+    device-side Gauss-Kronrod 21 rules with an absolute/relative error budget. An unmet
     budget uses REGENIE's Bonferroni fallback, or returns SKATO=None when
     that fallback is unavailable. Native validity also preserves the
     conditional probability underflow failure and the 10*DBL_MIN probability
@@ -924,9 +1022,9 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
     Other kernel tests remain valid.
     """
     from ._rank_one import rank_one_eigvalsh
-    from ._quadrature import integrate_log_gk21, validate_quadrature_parameters
-    if integral_backend not in {"segmented", "adaptive_x", "adaptive_sqrt"}:
-        raise ValueError("SKAT-O integral backend must be segmented, adaptive_x or adaptive_sqrt")
+    from ._quadrature import integrate_log_gk21, integrate_log_qags, validate_quadrature_parameters
+    if integral_backend not in {"segmented", "adaptive_x", "adaptive_sqrt", "qags_x"}:
+        raise ValueError("SKAT-O integral backend must be segmented, adaptive_x, adaptive_sqrt or qags_x")
     validate_quadrature_parameters(integral_epsabs, integral_epsrel, integral_max_intervals)
     if davies_controller not in {"auto", "scalar", "numpy"}:
         raise ValueError("Davies controller must be auto, scalar or numpy")
@@ -989,8 +1087,10 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
     q = (1 - rho) * qskat + rho * qburden
     rho_eigenvalues = []
     lp = []
+    zero_rho_tail = None
     for ri, qi in zip(rho, q):
-        if float(ri) == 0:
+        is_zero_rho = float(ri) == 0
+        if is_zero_rho:
             values = skat_eigenvalues
         elif float(ri) == 1:
             values = v.square().sum().reshape(1)
@@ -1009,9 +1109,15 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
             values = _positive_eigenvalues(torch.linalg.eigvalsh(transformed), 1e-5)
             del transformed
         rho_eigenvalues.append(values)
-        lp.append(_association_tail(qi, values, tail_method, davies_controller=davies_controller))
+        rho_tail = _association_tail(qi, values, tail_method, davies_controller=davies_controller,
+                                     fourier_backend=davies_fourier_backend)
+        lp.append(rho_tail)
+        if is_zero_rho and zero_rho_tail is None:
+            zero_rho_tail = rho_tail
     rho_lp = torch.stack(lp)
-    skat = _association_tail(qskat, skat_eigenvalues, tail_method, davies_controller=davies_controller)
+    skat = (zero_rho_tail if zero_rho_tail is not None else
+            _association_tail(qskat, skat_eigenvalues, tail_method, davies_controller=davies_controller,
+                              fourier_backend=davies_fourier_backend))
     burden = chi2_logsf(qburden / gamma1) if float(gamma1) > 0 else u.new_tensor(0.)
     result = {"SKAT": skat, "BURDEN": burden, "SKATO-ACAT": acat_logp(rho_lp),
               "rho_log10ps": rho_lp, "rhos": rho, "kernel_valid": True}
@@ -1071,6 +1177,8 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
     if float(upper) <= 0:
         result["SKATO"] = u.new_tensor(0.)
         return result
+    conditional_spectrum = (_prepare_davies_spectrum(residual_ev, davies_controller, davies_fourier_backend)
+                            if tail_method == "regenie" else None)
     if integral_backend != "segmented":
         _DIAGNOSTICS["skato_integral_calls"] += 1
 
@@ -1082,7 +1190,9 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
                         (1-rho[:, None])).amin(0)
             threshold = ((envelope-mu)*correction+mu).clamp_min(0)
             conditional_lp = _association_tail(threshold, residual_ev, tail_method,
-                                              rank_one_exact=False, davies_controller=davies_controller)
+                                              rank_one_exact=False, davies_controller=davies_controller,
+                                              fourier_backend=davies_fourier_backend,
+                                              _prepared_spectrum=conditional_spectrum)
             log_survival = -conditional_lp*_LN10
             active = (threshold > 0) & (envelope <= mu*1e4)
             # IEEE float64 rounds half the smallest subnormal to zero.
@@ -1099,7 +1209,8 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
 
         integration_upper = upper.sqrt() if integral_backend == "adaptive_sqrt" else upper
         try:
-            log_integral, integral_info = integrate_log_gk21(log_integrand, integration_upper,
+            integrator = integrate_log_qags if integral_backend == "qags_x" else integrate_log_gk21
+            log_integral, integral_info = integrator(log_integrand, integration_upper,
                 epsabs=integral_epsabs, epsrel=integral_epsrel, max_intervals=integral_max_intervals)
         except ArithmeticError:
             integral_info = {"converged": False, "status": "integrand_failure",
@@ -1148,7 +1259,9 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
             envelope = (intercept[:, None] - slope[:, None] * t.square()).amin(0)
             threshold = ((envelope - mu) * correction + mu).clamp_min(0)
             conditional_lp = _association_tail(threshold, residual_ev, tail_method,
-                                              rank_one_exact=False, davies_controller=davies_controller)
+                                              rank_one_exact=False, davies_controller=davies_controller,
+                                              fourier_backend=davies_fourier_backend,
+                                              _prepared_spectrum=conditional_spectrum)
             log_survival = -conditional_lp*_LN10
             active = (threshold > 0) & (envelope <= mu*1e4)
             if native_validity and bool((active & (log_survival <= -1075*math.log(2.))).any()):
@@ -1253,6 +1366,64 @@ def _normal_orthant_four(correlation, *, absolute_tolerance=2e-10):
     raise ArithmeticError("four-dimensional orthant integral failed its convergence check")
 
 
+_SOBOL_UNIFORM_CACHE_LIMIT_BYTES = 64*1024*1024
+_SOBOL_UNIFORM_CACHE_MAX_ENTRIES = 128
+_SOBOL_UNIFORM_CACHE = OrderedDict()
+_SOBOL_UNIFORM_CACHE_BYTES = 0
+_SOBOL_UNIFORM_CACHE_LOCK = threading.Lock()
+
+
+def _sobol_uniform(dimension, samples, seed, reference):
+    """Read-only, byte-bounded constants with the original Sobol draw order.
+
+    An unspecified seed preserves the original fresh random scramble. CUDA
+    events and record_stream also keep cached constants valid for callers
+    using different streams, without a device-wide synchronization.
+    """
+    global _SOBOL_UNIFORM_CACHE_BYTES
+
+    def draw():
+        engine = torch.quasirandom.SobolEngine(dimension, scramble=True, seed=seed)
+        return engine.draw(samples, dtype=torch.float64).to(reference.device)
+
+    if seed is None or not isinstance(seed, Integral) or not isinstance(samples, Integral):
+        _DIAGNOSTICS["orthant_sobol_cache_misses"] += 1
+        return draw()
+    size_bytes = dimension*samples*8  # The cached draw always uses float64.
+    if not 0 < size_bytes <= _SOBOL_UNIFORM_CACHE_LIMIT_BYTES:
+        _DIAGNOSTICS["orthant_sobol_cache_misses"] += 1
+        return draw()
+    key = (dimension, samples, int(seed), str(reference.device), torch.float64)
+    with _SOBOL_UNIFORM_CACHE_LOCK:
+        if key in _SOBOL_UNIFORM_CACHE:
+            uniform, event = _SOBOL_UNIFORM_CACHE.pop(key)
+            _SOBOL_UNIFORM_CACHE[key] = (uniform, event)
+            if event is not None:
+                stream = torch.cuda.current_stream(reference.device)
+                stream.wait_event(event)
+                uniform.record_stream(stream)
+            _DIAGNOSTICS["orthant_sobol_cache_hits"] += 1
+            return uniform
+        _DIAGNOSTICS["orthant_sobol_cache_misses"] += 1
+        # Release retained entries before allocating the next draw. Failed
+        # draws do not register a cache entry or increase the byte ledger.
+        while (_SOBOL_UNIFORM_CACHE_BYTES+size_bytes > _SOBOL_UNIFORM_CACHE_LIMIT_BYTES
+               or len(_SOBOL_UNIFORM_CACHE) >= _SOBOL_UNIFORM_CACHE_MAX_ENTRIES):
+            _, (old_uniform, _) = _SOBOL_UNIFORM_CACHE.popitem(last=False)
+            _SOBOL_UNIFORM_CACHE_BYTES -= old_uniform.numel()*old_uniform.element_size()
+            del old_uniform
+        uniform = draw()
+        event = None
+        if uniform.is_cuda:
+            stream = torch.cuda.current_stream(reference.device)
+            event = torch.cuda.Event()
+            event.record(stream)
+            uniform.record_stream(stream)
+        _SOBOL_UNIFORM_CACHE[key] = (uniform, event)
+        _SOBOL_UNIFORM_CACHE_BYTES += size_bytes
+        return uniform
+
+
 def normal_orthant_probability(covariance, *, qmc_samples=8192, seed=0):
     """Zero-mean positive orthant probability, analytic for dimension<=3.
 
@@ -1281,8 +1452,7 @@ def normal_orthant_probability(covariance, *, qmc_samples=8192, seed=0):
         return _normal_orthant_four(corr)
     _DIAGNOSTICS["orthant_qmc_calls"] += 1
     chol = torch.linalg.cholesky((corr + corr.T) / 2)
-    sobol = torch.quasirandom.SobolEngine(n - 1, scramble=True, seed=seed)
-    uniform = sobol.draw(qmc_samples, dtype=torch.float64).to(cov.device)
+    uniform = _sobol_uniform(n-1, qmc_samples, seed, cov)
     z = torch.zeros((qmc_samples, n), dtype=torch.float64, device=cov.device)
     log_product = torch.zeros(qmc_samples, dtype=torch.float64, device=cov.device)
     for index in range(n):

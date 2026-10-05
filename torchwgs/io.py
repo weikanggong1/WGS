@@ -4,8 +4,19 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
+import itertools
+import json
+import os
+import sqlite3
+import tempfile
+import time
 import numpy as np
 import torch
+
+
+_BIM_INDEX_SCHEMA = 1
+_BIM_INDEX_APPLICATION_ID = 0x57475342
+_BIM_INDEX_INSERT_ROWS = 8192
 
 
 @dataclass(frozen=True)
@@ -16,6 +27,43 @@ class Variant:
     position: int
     allele1: str
     allele0: str
+
+
+@dataclass
+class PackedBedBlock:
+    """One uploaded BED block; count hardcalls before decoding retained sites."""
+    packed: torch.Tensor
+    sample_bytes: torch.Tensor
+    sample_shifts: torch.Tensor
+    lookup: torch.Tensor
+
+    def allele_counts(self):
+        """Exact integer counts in the selected analysis-sample order."""
+        from ._packed_gpu import packed_genotype_counts
+        missing, hom_a1, het, hom_a0 = packed_genotype_counts(
+            self.packed, self.sample_bytes, self.sample_shifts)
+        return {'N': hom_a1 + het + hom_a0, 'AAC': 2 * hom_a1 + het,
+                'N_MISSING': missing, 'N_HOM_A1': hom_a1,
+                'N_HET': het, 'N_HOM_A0': hom_a0}
+
+    def decode(self, columns=None):
+        """Decode block-column indices, preserving their supplied order.
+
+        ``columns=None`` decodes every site. Indices are validated on CPU;
+        the single-variant path reuses its metadata selection for this check.
+        """
+        from ._packed_gpu import decode_packed_columns
+        if columns is None:
+            selected = torch.arange(self.packed.shape[0], device=self.packed.device)
+        else:
+            if isinstance(columns, torch.Tensor):
+                columns = columns.detach().cpu().numpy()
+            indices = np.asarray(columns, dtype=np.int64).reshape(-1)
+            if np.any(indices < 0) or np.any(indices >= self.packed.shape[0]):
+                raise IndexError('Variant column outside packed block')
+            selected = torch.as_tensor(indices, device=self.packed.device)
+        return decode_packed_columns(self.packed, self.sample_bytes,
+                                     self.sample_shifts, selected, self.lookup)
 
 
 def read_sample_ids(path):
@@ -35,13 +83,31 @@ class BedReader:
 
     This reader never loads the full BIM table. Blocks can be decoded on CPU,
     or transferred in their original packed representation and decoded on GPU.
+    ``bim_index_path`` optionally stores a private SQLite ID index on disk.
+    ``None`` keeps the original streaming lookup. Both paths retain BIM order
+    and reject duplicates only when their ID is requested. SQL requests use
+    bounded chunks; the positive/negative metadata cache stays bounded too.
     """
     def __init__(self, prefix, *, keep=None, remove=None, sample_ids=None,
-                 metadata_cache_size=100000):
+                 metadata_cache_size=100000, bim_index_path=None,
+                 bim_index_query_size=500):
         if not isinstance(metadata_cache_size, int) or metadata_cache_size < 0:
             raise ValueError('metadata_cache_size must be a nonnegative integer')
+        if (isinstance(bim_index_query_size, bool) or not isinstance(bim_index_query_size, int)
+                or not 1 <= bim_index_query_size <= 900):
+            raise ValueError('bim_index_query_size must be an integer from 1 to 900')
         self.prefix = str(prefix)
         self.metadata_cache_size = metadata_cache_size
+        self.bim_index_path = None if bim_index_path is None else Path(bim_index_path)
+        if self.bim_index_path is not None:
+            for suffix in ('.bed', '.bim', '.fam'):
+                source = Path(str(prefix)+suffix)
+                same = self.bim_index_path.resolve() == source.resolve()
+                if not same and self.bim_index_path.exists() and source.exists():
+                    same = os.path.samefile(self.bim_index_path, source)
+                if same:
+                    raise ValueError('BIM disk index must not overwrite a source BED/BIM/FAM file')
+        self.bim_index_query_size = bim_index_query_size
         self._variant_metadata = OrderedDict()
         self._packed_decoder_cache = OrderedDict()
         self._bim_identity = None
@@ -124,12 +190,198 @@ class BedReader:
             self._bim_identity = identity
         return identity
 
+    def _bim_index_source(self, identity):
+        return json.dumps({'path': str(Path(self.prefix+'.bim').resolve()),
+                           'stat': identity}, sort_keys=True, separators=(',', ':'))
+
+    def _bim_index_connection(self):
+        # A reader never mutates a committed index. Concurrent builders publish
+        # complete files by replacement; an open connection keeps its own inode.
+        return sqlite3.connect(self.bim_index_path.resolve().as_uri()+'?mode=ro', uri=True)
+
+    @staticmethod
+    def _validated_bim_index_metadata(connection, source):
+        if connection.execute('PRAGMA application_id').fetchone()[0] != _BIM_INDEX_APPLICATION_ID:
+            return None
+        if connection.execute('PRAGMA user_version').fetchone()[0] != _BIM_INDEX_SCHEMA:
+            return None
+        metadata = dict(connection.execute('SELECT name, value FROM metadata'))
+        if metadata.get('source') != source or metadata.get('complete') != '1':
+            return None
+        rows, indexed, malformed = (int(metadata[name]) for name in
+                                     ('rows', 'indexed_rows', 'first_malformed_row'))
+        if (rows < 0 or not 0 <= indexed <= rows
+                or not (malformed == -1 or 0 <= malformed < rows)):
+            return None
+        connection.execute('SELECT ordinal, chrom, identifier, position, allele1, allele0 FROM variants LIMIT 0')
+        return rows, indexed, malformed
+
+    def _read_bim_index_metadata(self, source):
+        if not self.bim_index_path.is_file():
+            return None
+        try:
+            connection = self._bim_index_connection()
+            try:
+                return self._validated_bim_index_metadata(connection, source)
+            finally:
+                connection.close()
+        except (sqlite3.DatabaseError, ValueError, KeyError, OSError):
+            # An interrupted/unrelated index is rebuilt, never used as a proof
+            # that a requested ID is absent from the original BIM.
+            return None
+
+    def _build_bim_index(self, identity, source):
+        path = self.bim_index_path
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary = tempfile.mkstemp(prefix='.'+path.name+'.', suffix='.partial', dir=path.parent)
+        os.close(descriptor)
+        temporary = Path(temporary)
+        connection = None
+        try:
+            connection = sqlite3.connect(str(temporary))
+            # Only an unpublished private temp file uses these write settings.
+            # A failed build cannot alter an existing committed database.
+            connection.execute('PRAGMA journal_mode=OFF')
+            connection.execute('PRAGMA synchronous=OFF')
+            connection.execute('PRAGMA temp_store=FILE')
+            connection.execute('PRAGMA cache_size=-8192')
+            connection.execute(f'PRAGMA application_id={_BIM_INDEX_APPLICATION_ID}')
+            connection.execute(f'PRAGMA user_version={_BIM_INDEX_SCHEMA}')
+            connection.execute('CREATE TABLE variants (ordinal INTEGER PRIMARY KEY, chrom TEXT NOT NULL, '
+                               'identifier TEXT NOT NULL, position TEXT NOT NULL, allele1 TEXT NOT NULL, allele0 TEXT NOT NULL)')
+            connection.execute('CREATE TABLE metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            connection.execute('BEGIN')
+            rows, indexed, malformed, batch = 0, 0, -1, []
+            with open(self.prefix+'.bim') as stream:
+                for ordinal, line in enumerate(stream):
+                    rows += 1
+                    fields = line.split()
+                    if len(fields) != 6:
+                        # A lookup's first failure must stay in original row
+                        # order. In particular a later malformed, unrequested
+                        # row must not hide an earlier requested duplicate.
+                        if malformed < 0:
+                            malformed = ordinal
+                        continue
+                    batch.append((ordinal, fields[0].removeprefix('chr'), fields[1],
+                                  fields[3], fields[4], fields[5]))
+                    indexed += 1
+                    if len(batch) == _BIM_INDEX_INSERT_ROWS:
+                        connection.executemany('INSERT INTO variants VALUES (?, ?, ?, ?, ?, ?)', batch)
+                        batch.clear()
+                if batch:
+                    connection.executemany('INSERT INTO variants VALUES (?, ?, ?, ?, ?, ?)', batch)
+            # ID is deliberately non-unique: duplicate unrequested IDs were
+            # legal in the old lookup and must remain legal in this one.
+            connection.execute('CREATE INDEX variants_identifier ON variants(identifier)')
+            connection.executemany('INSERT INTO metadata VALUES (?, ?)',
+                [('source', source), ('complete', '1'), ('rows', str(rows)),
+                 ('indexed_rows', str(indexed)), ('first_malformed_row', str(malformed))])
+            connection.commit()
+            connection.close()
+            connection = None
+            if self._refresh_bim_metadata() != identity:
+                raise RuntimeError('BIM changed while building its disk index')
+            # Persist the completed file before the atomic publication. The
+            # database and any SQLite temporary pages contain private metadata.
+            with temporary.open('rb') as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            return rows, indexed, malformed
+        finally:
+            if connection is not None:
+                connection.close()
+            temporary.unlink(missing_ok=True)
+
+    def prepare_bim_index(self):
+        """Build/reuse the optional disk index; return anonymous preparation timing.
+
+        Metadata binds the canonical BIM path and device/inode/size/mtime/ctime
+        identity. The build streams rows in small batches, and atomically
+        publishes a complete private file. No ID table is retained in RAM.
+        Positions remain text until requested, matching the streaming parser.
+        A malformed row is recorded so lookup errors retain original order;
+        ``valid_bim`` checks row width only; requested positions are parsed by
+        lookup. This report does not export the input's identifiers or paths.
+        """
+        start = time.perf_counter()
+        if self.bim_index_path is None:
+            return {'enabled': False, 'built': False, 'rows': None,
+                    'indexed_rows': None, 'valid_bim': None, 'seconds': time.perf_counter()-start}
+        identity = self._refresh_bim_metadata()
+        source = self._bim_index_source(identity)
+        built = False
+        # Shared filesystems can return unchanged stat fields after an in-place
+        # SQLite update. They do not prove the schema/source/completion record
+        # is unchanged. Reopen the tiny metadata table on every prepare; this
+        # never scans the BIM or loads the disk index into process memory.
+        metadata = self._read_bim_index_metadata(source)
+        if metadata is None:
+            metadata = self._build_bim_index(identity, source)
+            built = True
+        if self._refresh_bim_metadata() != identity:
+            raise RuntimeError('BIM changed while preparing its disk index')
+        rows, indexed, malformed = metadata
+        return {'enabled': True, 'built': built, 'rows': rows, 'indexed_rows': indexed,
+                'valid_bim': malformed < 0, 'seconds': time.perf_counter()-start}
+
+    def _find_indexed_variants(self, unknown, identity):
+        self.prepare_bim_index()
+        connection = self._bim_index_connection()
+        found = {}
+        try:
+            # Validate the actual query connection too: between prepare and
+            # this open, another builder may atomically replace the database.
+            metadata = self._validated_bim_index_metadata(connection, self._bim_index_source(identity))
+            if metadata is None:
+                raise RuntimeError('BIM disk index changed while opening requested metadata')
+            _, _, malformed = metadata
+            error_ordinal = None if malformed < 0 else malformed
+            error = None if malformed < 0 else ValueError(f'Malformed BIM row {malformed+1}')
+            # SQLite TEXT affinity can equate an integer 12 with text '12'.
+            # The streaming reader compares string IDs in Python, so ignore
+            # non-string queries rather than widening that public equality.
+            identifiers = (identifier for identifier in unknown if isinstance(identifier, str))
+            while True:
+                batch = list(itertools.islice(identifiers, self.bim_index_query_size))
+                if not batch:
+                    break
+                slots = ','.join('?' for _ in batch)
+                query = ('SELECT ordinal, chrom, identifier, position, allele1, allele0 '
+                         f'FROM variants WHERE identifier IN ({slots})')
+                arguments = batch
+                if malformed >= 0:
+                    query += ' AND ordinal < ?'
+                    arguments = [*batch, malformed]
+                cursor = connection.execute(query+' ORDER BY ordinal', arguments)
+                while True:
+                    rows = cursor.fetchmany(self.bim_index_query_size)
+                    if not rows:
+                        break
+                    for ordinal, chrom, identifier, position, allele1, allele0 in rows:
+                        if error_ordinal is not None and ordinal >= error_ordinal:
+                            continue
+                        try:
+                            if identifier in found:
+                                raise ValueError(f'Duplicate requested variant ID: {identifier}')
+                            found[identifier] = Variant(ordinal, chrom, identifier, int(position), allele1, allele0)
+                        except ValueError as failure:
+                            error_ordinal, error = ordinal, failure
+                cursor.close()
+            if self._refresh_bim_metadata() != identity:
+                raise RuntimeError('BIM changed while reading requested variant metadata')
+            if error is not None:
+                raise error
+            return found
+        finally:
+            connection.close()
+
     def find_variants(self, ids: Iterable[str]):
         """Find requested IDs, caching only bounded positive/negative queries.
 
-        A cached subset avoids a BIM rescan. Newly requested IDs still require
-        a complete scan, preserving detection of duplicate requested IDs.
-        No full BIM index or genotype array is retained by this cache.
+        A cached subset avoids a BIM rescan. With a disk index, new IDs use
+        bounded SQL queries; otherwise they use the original complete scan.
+        Neither path retains a full BIM index or genotype array in RAM.
         """
         needed = set(ids)
         identity = self._refresh_bim_metadata()
@@ -138,14 +390,17 @@ class BedReader:
                   for identifier in needed.intersection(self._variant_metadata)
                   if self._variant_metadata[identifier] is not None}
         if unknown:
-            found = {}
-            with open(self.prefix+'.bim') as stream:
-                for i,line in enumerate(stream):
-                    f = line.split()
-                    if len(f) != 6: raise ValueError(f'Malformed BIM row {i+1}')
-                    if f[1] in unknown:
-                        if f[1] in found: raise ValueError(f'Duplicate requested variant ID: {f[1]}')
-                        found[f[1]] = Variant(i,f[0].removeprefix('chr'),f[1],int(f[3]),f[4],f[5])
+            if self.bim_index_path is None:
+                found = {}
+                with open(self.prefix+'.bim') as stream:
+                    for i,line in enumerate(stream):
+                        f = line.split()
+                        if len(f) != 6: raise ValueError(f'Malformed BIM row {i+1}')
+                        if f[1] in unknown:
+                            if f[1] in found: raise ValueError(f'Duplicate requested variant ID: {f[1]}')
+                            found[f[1]] = Variant(i,f[0].removeprefix('chr'),f[1],int(f[3]),f[4],f[5])
+            else:
+                found = self._find_indexed_variants(unknown, identity)
             if self._refresh_bim_metadata() != identity:
                 raise RuntimeError('BIM changed while reading requested variant metadata')
             result.update(found)
@@ -180,9 +435,9 @@ class BedReader:
         dosage = np.asarray([2., np.nan, 1., 0.], dtype=np.float32)[codes]
         return torch.from_numpy(dosage.T.copy())
 
-    def read_packed_variants(self, indices, *, sample_rows=None, device='cuda',
-                             dtype=torch.float32):
-        """Transfer original packed BED bytes and decode using PyTorch kernels.
+    def read_packed_block(self, indices, *, sample_rows=None, device='cuda',
+                          dtype=torch.float32):
+        """Upload original BED bytes once for counts and selected-site decoding.
 
         The transferred block has B x ceil(N_source/4) bytes, rather than an
         expanded N_analysis x B float matrix.  Optional sample_rows refers to
@@ -222,9 +477,13 @@ class BedReader:
         # contiguous CPU buffer.  No expanded participant matrix exists on CPU.
         raw = np.ascontiguousarray(self._bed[idx,:])
         packed = torch.from_numpy(raw).to(target_device)
-        codes = torch.bitwise_right_shift(packed[:,sample_bytes],sample_shifts[None,:])
-        codes.bitwise_and_(3)
-        return lookup[codes.long()].T.contiguous()
+        return PackedBedBlock(packed, sample_bytes, sample_shifts, lookup)
+
+    def read_packed_variants(self, indices, *, sample_rows=None, device='cuda',
+                             dtype=torch.float32):
+        """Decode an uploaded BED block directly into sample-major genotypes."""
+        return self.read_packed_block(indices, sample_rows=sample_rows,
+                                      device=device, dtype=dtype).decode()
 
     def iter_blocks(self, block_size=1000, indices=None):
         if block_size < 1:
@@ -239,20 +498,9 @@ class BedReader:
         if chunk:
             yield torch.tensor(chunk, dtype=torch.int64), self.read_variants(chunk)
 
-    def iter_variant_blocks(self, block_size=1000, indices=None, *,
-                            genotype_reader='cpu', sample_rows=None, device='cuda',
-                            dtype=torch.float32):
+    def _iter_variant_metadata_blocks(self, block_size, indices):
         if block_size<1:
             raise ValueError('block_size must be positive')
-        if genotype_reader not in ('cpu','cuda_packed'):
-            raise ValueError('genotype_reader must be cpu or cuda_packed')
-        def decode(variants):
-            indices = [v.index for v in variants]
-            if genotype_reader=='cuda_packed':
-                return self.read_packed_variants(indices,sample_rows=sample_rows,
-                                                device=device,dtype=dtype)
-            values = self.read_variants(indices)
-            return values if sample_rows is None else values[sample_rows]
         selected = None if indices is None else set(map(int, indices))
         chunk = []
         for v in self.iter_variants():
@@ -260,10 +508,35 @@ class BedReader:
                 continue
             chunk.append(v)
             if len(chunk) == block_size:
-                yield chunk, decode(chunk)
+                yield chunk
                 chunk = []
         if chunk:
-            yield chunk, decode(chunk)
+            yield chunk
+
+    def iter_packed_variant_blocks(self, block_size=1000, indices=None, *,
+                                   sample_rows=None, device='cuda', dtype=torch.float32):
+        """Stream BIM metadata with uploaded blocks, without expanding hardcalls."""
+        for variants in self._iter_variant_metadata_blocks(block_size, indices):
+            yield variants, self.read_packed_block([v.index for v in variants],
+                sample_rows=sample_rows, device=device, dtype=dtype)
+
+    def iter_variant_blocks(self, block_size=1000, indices=None, *,
+                            genotype_reader='cpu', sample_rows=None, device='cuda',
+                            dtype=torch.float32):
+        if block_size < 1:
+            raise ValueError('block_size must be positive')
+        if genotype_reader not in ('cpu','cuda_packed'):
+            raise ValueError('genotype_reader must be cpu or cuda_packed')
+        for variants in self._iter_variant_metadata_blocks(block_size, indices):
+            indices = [v.index for v in variants]
+            if genotype_reader == 'cuda_packed':
+                values = self.read_packed_variants(indices, sample_rows=sample_rows,
+                                                   device=device, dtype=dtype)
+            else:
+                values = self.read_variants(indices)
+                if sample_rows is not None:
+                    values = values[sample_rows]
+            yield variants, values
 
 
 def load_phenotype(path, column, sample_ids, *, missing_values=(-9,)):

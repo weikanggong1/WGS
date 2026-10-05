@@ -21,7 +21,11 @@ class NumpyDaviesPlan(FrozenDaviesPlan):
     """Preserve ordered sums and original bracketing/budget/fault decisions."""
     def __init__(self, spectrum, statistic, accuracy, limit):
         super().__init__(spectrum, statistic, accuracy, limit)
-        self._weights = np.asarray(self.spectrum, dtype=np.float64)
+        if self._spectrum_state.numpy_weights is None:
+            weights = np.asarray(self.spectrum, dtype=np.float64)
+            weights.setflags(write=False)
+            self._spectrum_state.numpy_weights = weights
+        self._weights = self._spectrum_state.numpy_weights
 
     def truncation_error(self, frequency, extra_variance=0.0):
         self._count()

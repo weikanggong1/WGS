@@ -2,7 +2,7 @@
 
 `torchwgs` 实现连续单表型的两级 ridge/LOCO、single-variant 与 gene-based discovery 分析。基因型投影、得分与协方差、ridge、特征值、NNLS 和正态正交概率积分由 PyTorch 执行，支持 CUDA。运行时不调用 REGENIE、PLINK 或其他遗传关联软件。
 
-默认统计参数按研究 Methods 和冻结 REGENIE 3.4.1 核对；参数通过 Python dataclass 开放。`WGSConfig.paper()`默认启用GPU packed解码、稀疏VC交叉乘积、大矩阵的秩一特征值更新，以及原高维SBAT的有放回子集抽样。定量性状是本版本范围。二分类、生存、多表型联合检验不在本版本范围。
+默认统计参数按研究 Methods 和冻结 REGENIE 3.4.1 核对；参数通过 Python dataclass 开放。`WGSConfig.paper()`默认启用GPU packed解码、稀疏VC交叉乘积、大矩阵的秩一特征值更新，原高维SBAT的有放回子集抽样，以及原坐标QAGS积分和私有BIM磁盘索引，Davies融合float64求和可选。定量性状是本版本范围。二分类、生存、多表型联合检验不在本版本范围。
 
 ```mermaid
 flowchart LR
@@ -29,6 +29,8 @@ python -m unittest discover -s tests/regenie_gpu -v
 
 需要 Linux、CUDA GPU 和 Triton，完整运行使用 `device="cuda"`。真实验证采用 PyTorch 2.0.0/CUDA 11.8（A100）；Conda 示例安装 PyTorch 2.4。Step1和single的大矩阵默认float32/TF32；gene的投影、协方差与推断保持float64以匹配原计算。gene的大VC协方差也保持float64。Step1/single也可设float64，或关闭TF32使用普通float32；不使用float16。原REGENIE 3.4.1核心计算为double，没有float32运行开关，对照精度见[验证记录](VALIDATION.md)。
 
+CUDA执行中，Step1将QC block的packed BED传入GPU解码；single先计数和筛选，再解码通过MAC/MAF的列。解码器动态接收保留列数，避免为每种MAC筛选宽度重新编译。gene复用固定谱准备结果及完全相同的未加权产品，按gene合并统计结果回传，mask BED在GPU编码后分批写出。同一染色体复用reader的有界缓存和私有SQLite BIM索引。全部组仍按输入顺序串行执行，TF32设置及原积分容差、预算不变；QAGS和Fourier新路径保留float64。当前完整染色体端到端时间和全部26组数值对照尚未验收，见[验证记录](VALIDATION.md)。
+
 ## Python 调用
 
 下面的路径表示本地输入文件位置，替换成自己的数据即可。`discovery_samples` 必须明确指定；不同染色体的样本顺序通过 FID/IID 对齐。
@@ -48,6 +50,10 @@ configuration.significance.excluded_locus_regions = ((6, 25000000, 34000000),)  
 configuration.execution = ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)
 configuration.gene_based.aaf_bins = (0.01,)
 configuration.gene_based.vc_max_aaf = 0.01
+configuration.gene_based.skato_integral_backend = "qags_x"  # paper默认；adaptive_x保留旧积分路径
+configuration.gene_based.davies_fourier_backend = "torch"  # 默认；auto或fused可选择融合float64
+configuration.gene_based.product_cache_bytes = 256 * 1024**2  # 未加权产品缓存上限；0关闭
+configuration.bim_index_enabled = True  # 私有BIM索引；首次构建计入完整流程耗时
 
 discovery_inputs = DiscoveryInputs(
     array_prefix="/data/array/genotype_array",           # .bed/.bim/.fam 前缀
@@ -196,6 +202,10 @@ configuration.gene_based.sbat_subset_sampling = "with_replacement"
 
 稀疏 VC 路径保存折叠后的非零基因型，并通过分块 `G.T @ G - (G.T @ Q) @ (G.T @ Q).T` 计算协方差，减少多个 N×M 投影副本。M×M 协方差和特征值计算仍需要显存，程序在计算前检查每个任务的预算。可用 `vc_storage="dense", vc_score_method="residual"` 选择投影路径进行对照。
 
+`gene_based.product_cache_bytes`默认256MiB，0关闭。流式gene入口从矩阵预算预留`min(product_cache_bytes, max_matrix_bytes//16)`，用有界LRU复用完全相同的未加权VC score/covariance和burden投影。普通VC列顺序与超稀有合并成员必须相同；不同权重仍重新构造kernel。builder、context与张量版本守卫阻止跨输入或修改后的复用；一般重叠mask的Gram子块尚未复用。
+
+`bim_index_enabled=True`默认启用私有`InputCache/bim_c{chromosome}.sqlite`。有待运行的gene组时，首次构建顺序读取BIM并建ID索引，后续查询采用有界SQL分块，输出仍按原BIM行序。源文件身份变化时重建，关闭参数恢复流式BIM查找。索引不是关联结果文件；准备阶段记录独立耗时，首次建索引也包含在完整pipeline墙钟中，不能从冷输入总时长扣除。只做single或全部gene组已缓存时不准备索引。
+
 `gene_based.eigen_backend="auto"` 在CUDA且VC维数≥4096时，通过特征值交错区间和secular方程计算各rho的秩一更新，减少反复稠密分解和矩阵副本；较小矩阵保持原稠密路径。`"dense"`与`"secular"`可显式选择，求根块大小、迭代次数与切换维数可改。它保留原rho、正特征值筛选和尾概率方法，当前端到端范围和数值验收见[验证记录](VALIDATION.md)。
 
 ## 原格式输出
@@ -244,6 +254,9 @@ Gene部分对26组分别输出。导入外部LOCO时不重拟合或另写上述S
 | Single 汇总 | `WGSConfig.paper()`按论文筛 MAF>0.001；`single_frequency_field="a1freq"`可按研究源汇总代码筛 A1FREQ>0.001 |
 | Gene | AAF bins=.01+singleton，VC最大AAF=.01，mask minMAC1，VC低计数折叠≤10 |
 | Gene统计 | burden、SKAT、SKAT-O、SKAT-O-ACAT、ACAT-V、ACAT-O、跨mask ACAT、SBAT、GENE-P |
+| SKAT-O积分 | paper默认qags_x；原坐标、epsabs=1e−25、epsrel=2⁻¹³、最多1000区间；未满足预算保留原回退 |
+| Davies Fourier | gene默认torch；auto在NVIDIA CUDA/Triton选择融合float64，CPUauto使用torch；fused显式要求CUDA/Triton |
+| 产品缓存 / BIM索引 | 256MiB有界产品缓存、0关闭；bim_index_enabled=True保存私有索引并计入首建耗时 |
 | Single显著性 | 5e−9/831.50=6.0132291040e−12 |
 | Gene显著性 | .05/(831.50×17863)=3.3663041505e−9 |
 | Locus | ±500kb递归选择lead，再按选出lead的≤1Mb距离归并 |
@@ -252,13 +265,15 @@ Gene部分对26组分别输出。导入外部LOCO时不重拟合或另写上述S
 
 ## 当前版本与验证
 
-此次串行入口清理包含 21 个实现模块，仅支持 CUDA 完整 pipeline。本地 111 项串行清理回归全部通过，框架报告耗时 64.704 秒。真实 chr21 的完整 single 已通过格式与五项数值门槛；全 26 组 gene 和汇总仍在验证。既有六组串行测量严格数值为 0/6 组通过，实际时间与精度范围见[验证记录](VALIDATION.md)。本地回归结果不代替新完整端到端实测。
+本次优化已实现QAGS积分、融合float64 Davies Fourier、完全相同产品的有界复用和私有BIM磁盘索引，完整pipeline仍使用CUDA串行执行。原v7的177项本地回归通过、框架耗时70.824秒属于前一版记录；既有冻结基线的真实chr21 single通过格式与五项数值门槛。本次优化的真实完整Step1、single、26组gene和汇总尚未完成端到端验收；当前完整范围和严格数值结果见[验证记录](VALIDATION.md)。实现与聚焦测试通过不能替代完整数值或速度对照。
 
 ## 数值后端与参考
 
-SKAT-O 使用 rho 搜索积分，和 SKAT-O-ACAT 分别输出。gene默认`skato_integral_backend="adaptive_x"`，使用原χ²坐标及独立PyTorch GK21自适应积分，绝对/相对误差预算为1e−25 / 2⁻¹³、最多1000个区间；参数均可改。可选`adaptive_sqrt`或`segmented`，低层`skato_logp`数学接口仍默认segmented。当前数值验收见[验证记录](VALIDATION.md)，退化 kernel 和下溢规则见[参数](API.md#gene-based)。
+SKAT-O使用rho搜索积分，和SKAT-O-ACAT分别输出。`WGSConfig.paper()`默认`skato_integral_backend="qags_x"`，在原χ²坐标上使用独立张量GK21规则，以及QAGS的误差排序、Wynn外推和停止协议；面积、误差与外推表留在设备上。绝对/相对误差预算为1e−25 / 2⁻¹³、最多1000个区间，未收敛、roundoff或条件概率失败继续使用原Bonferroni/NA规则；参数均可改。直接`GeneConfig()`仍默认`adaptive_x`，低层`skato_logp()`仍默认`segmented`，另可选`adaptive_sqrt`。这些入口的默认值分别保留，当前数值验收见[验证记录](VALIDATION.md)。
 
-默认兼容冻结3.4.1的`.999`端点：独立实现正系数中心χ²特例的Davies AS155，GPU执行Fourier求和；失败或强尾时依次走Kuonen、更严格Davies和Liu回退。误差界和迭代预算由CPU控制器规划，参与者矩阵留在GPU。`davies_controller="auto"`在谱维数≥1024时用NumPy批量计算误差界，保留有序float64累加、积分预算与故障路径；`"scalar"`保留原标量控制器，`"numpy"`可显式选择。`tail_method="exact"`提供另一个带收敛检查的积分后端，必要时用SciPy标量积分；默认后端不调用该回退。强尾使用LOG10P；gene的原生SKAT-O积分目标和最终概率遵循`10*DBL_MIN`地板，条件SF下溢保留原失败及Bonferroni回退规则。低层数学接口可用`native_validity=False`保留日志域行为，具体缺失结果规则见[API](API.md#gene-based)。诊断JSON记录各路径次数和控制器/回退耗时。
+`gene_based.davies_fourier_backend="torch"`默认保留原张量实现；共享A100交替对照未显示融合普遍更快。`"auto"`在NVIDIA CUDA且Triton可用时执行融合float64 Fourier求和，CPU或不支持的设备使用PyTorch路径；`"fused"`要求NVIDIA CUDA/Triton，否则报错。融合后端减少频率×谱的中间矩阵与逐操作调用，保持Davies控制器规划的项数、误差预算和故障分支，不以TF32或半精度计算尾概率。独立低层数学接口的Fourier后端仍默认`torch`，见[参数](API.md#gene-based)。
+
+默认兼容冻结3.4.1的`.999`端点：独立实现正系数中心χ²特例的Davies AS155，GPU执行Fourier求和；失败或强尾时依次走Kuonen、更严格Davies和Liu回退。误差界和迭代预算由CPU控制器规划，参与者矩阵留在GPU。`davies_controller="auto"`在谱维数≥1024时用NumPy批量计算误差界，保留有序float64累加、积分预算与故障路径；`"scalar"`保留原标量控制器，`"numpy"`可显式选择。`tail_method="exact"`提供另一个带收敛检查的积分后端，CUDA 积分未收敛时明确报错；独立 CPU 数学接口可用 SciPy 标量积分复核。强尾使用LOG10P；gene的原生SKAT-O积分目标和最终概率遵循`10*DBL_MIN`地板，条件SF下溢保留原失败及Bonferroni回退规则。低层数学接口可用`native_validity=False`保留日志域行为，具体缺失结果规则见[API](API.md#gene-based)。诊断JSON记录各路径次数和控制器/回退耗时。
 
 SBAT实现正/负NNLS和chi-bar权重；GPU上的独立Triton范数kernel复现冻结Eigen/SSE2的累加顺序，以兼容共线mask选列。高维正态正交概率与chi-bar权重使用数值近似，精度边界见验证记录。没有搬运上游原软件源码。
 

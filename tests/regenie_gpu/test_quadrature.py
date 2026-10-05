@@ -1,6 +1,7 @@
 """Analytic CPU/CUDA checks for the independent positive-integral engine."""
 import math
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -13,6 +14,40 @@ if torch.cuda.is_available():
 
 
 class QuadratureTests(unittest.TestCase):
+    def test_callback_stays_on_device_and_only_interval_totals_are_transferred(self):
+        original_tolist = torch.Tensor.tolist
+        for device in DEVICES:
+            callback_shapes, transfers = [], []
+            def log_integrand(x):
+                self.assertEqual(x.device, device)
+                self.assertEqual(x.dtype, torch.float64)
+                callback_shapes.append(tuple(x.shape))
+                return -.5*x.log()
+            def record_transfer(value):
+                transfers.append((value.device, value.dtype, tuple(value.shape)))
+                return original_tolist(value)
+            with self.subTest(device=device), patch.object(torch.Tensor, "tolist", record_transfer):
+                integral, info = integrate_log_gk21(log_integrand,
+                    torch.tensor(1., device=device, dtype=torch.float64), epsabs=0., epsrel=1e-6)
+            self.assertTrue(info["converged"])
+            self.assertAlmostEqual(float(integral), math.log(2.), delta=1e-6)
+            self.assertGreater(len(callback_shapes), 1)
+            self.assertEqual(callback_shapes[0], (21,))
+            self.assertEqual(len(transfers), len(callback_shapes))
+            for callback_shape, transfer in zip(callback_shapes, transfers):
+                self.assertEqual(transfer, (device, torch.float64, (callback_shape[0]//21, 2)))
+
+    def test_nonfinite_integrand_is_rejected_but_zero_density_is_valid(self):
+        for device in DEVICES:
+            upper = torch.tensor(1., device=device, dtype=torch.float64)
+            with self.subTest(device=device):
+                for value in (math.nan, math.inf):
+                    with self.assertRaisesRegex(ArithmeticError, "Nonfinite quadrature integrand"):
+                        integrate_log_gk21(lambda x: torch.full_like(x, value), upper)
+                integral, info = integrate_log_gk21(lambda x: torch.full_like(x, -math.inf), upper)
+                self.assertTrue(info["converged"])
+                self.assertTrue(bool(torch.isneginf(integral)))
+
     def test_singular_endpoint_and_gaussian_density_match_analytic_integrals(self):
         for device in DEVICES:
             with self.subTest(device=device):

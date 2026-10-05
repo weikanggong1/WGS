@@ -18,6 +18,51 @@ def _add_counters(total, values):
         total[key] = total.get(key, 0) + value
 
 
+def _reader_file_stamp(path):
+    path = Path(path).resolve()
+    stat = path.stat()
+    return str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _reader_selection_stamp(selection):
+    if selection is None:
+        return None
+    if isinstance(selection, (str, Path)):
+        return ('file', _reader_file_stamp(selection))
+    return ('ids', frozenset(tuple(item) if isinstance(item, (tuple, list)) else item
+                             for item in selection))
+
+
+def _reader_scope(prefix, inputs):
+    # Small stat records bind one live memmap to its BED/FAM and sample filters.
+    # BIM cache invalidation and duplicate checks remain BedReader's job.
+    return (str(Path(prefix).resolve()), _reader_file_stamp(str(prefix)+'.bed'),
+            _reader_file_stamp(str(prefix)+'.fam'),
+            _reader_selection_stamp(inputs.discovery_samples),
+            _reader_selection_stamp(inputs.sample_remove))
+
+
+def _chromosome_reader(prefix, inputs, *, bim_index_path=None):
+    scope = _reader_scope(prefix, inputs)
+    reader = BedReader(prefix, keep=inputs.discovery_samples, remove=inputs.sample_remove,
+                       bim_index_path=bim_index_path)
+    if _reader_scope(prefix, inputs) != scope:
+        raise RuntimeError('BED/FAM or sample filters changed while creating the chromosome reader')
+    reader._gene_reader_scope = scope
+    return reader
+
+
+def _validate_gene_reader(reader, prefix, inputs, context):
+    if (str(Path(reader.prefix).resolve()) != str(Path(prefix).resolve())
+            or getattr(reader, '_gene_reader_scope', None) != _reader_scope(prefix, inputs)):
+        raise ValueError('Shared gene reader must match this chromosome, BED/FAM and keep/remove inputs')
+    indices = context.sample_indices.tolist()
+    if (len(indices) != len(context.y) or any(i < 0 or i >= reader.n_samples for i in indices)
+            or (context.sample_ids and [reader.sample_ids[i] for i in indices] != list(context.sample_ids))):
+        raise ValueError('Shared gene reader and analysis context sample order differ')
+    return [reader.sample_sex[i] for i in indices]
+
+
 def _association_log(output, *, chromosome, prefix, inputs, config, report, analysis=None):
     gene=analysis is not None
     params=config.gene_based if gene else config.single_variant
@@ -44,16 +89,20 @@ def _association_log(output, *, chromosome, prefix, inputs, config, report, anal
                         'write-mask':config.write_masks,'write-mask-snplist':config.write_masks})
         settings.update(vc_storage=params.vc_storage,vc_score_method=params.vc_score_method,
                         davies_controller=params.davies_controller,
+                        davies_fourier_backend=params.davies_fourier_backend,
+                        product_cache_bytes=params.product_cache_bytes,
                         skato_integral_backend=params.skato_integral_backend)
     write_regenie_log(str(output)+'.log',phenotype=inputs.phenotype_column,
                       analysis='gene-based '+analysis.name if gene else 'single-variant association',
                       options=options,settings=settings,report=report)
 
 
-def _gene_job(analysis, *, prefix, context, inputs, config, destination, key):
+def _gene_job(analysis, *, prefix, context, inputs, config, destination, key, reader=None):
     from .pipeline import _write_stage_cache
     start = time.perf_counter()
-    reader = BedReader(prefix, keep=inputs.discovery_samples, remove=inputs.sample_remove)
+    if reader is None:
+        reader = _chromosome_reader(prefix, inputs)
+    active_sex = _validate_gene_reader(reader, prefix, inputs, context)
     gene_config = replace(config.gene_based)
     # Dense working sets and masks share one process-wide 20 GiB allocator cap.
     per_job = config.execution.max_gpu_gb / config.execution.concurrency
@@ -72,7 +121,6 @@ def _gene_job(analysis, *, prefix, context, inputs, config, destination, key):
     definitions = load_mask_definitions(analysis.mask_definition_file)
     header_definitions=effective_mask_definitions(definitions,annotations,variant_lookup)
     output = destination / 'Gene' / f'discovery_c{key[0]}_{analysis.name}'
-    active_sex = [reader.sample_sex[i] for i in context.sample_indices.tolist()]
     mask_writer = MaskWriter(output, context.sample_ids, active_sex) if config.write_masks else None
     status_path=Path(str(output)+'.progress.json')
     write_run_manifest(status_path, {'status':'running','rows':0,'mask_definitions':len(definitions)})
@@ -133,7 +181,7 @@ def run_chromosome(item, *, inputs, config, destination, null, null_key,
     single_prefix = destination/'Single'/f'discovery_c{chromosome}'
     single_key = _fingerprint({'null':null_key, 'source':source_identity,
                               'parameters':asdict(config.single_variant), 'output':settings,
-                              'implementation':_implementation_identity(['single','io','statistics','output','chromosome'])})
+                              'implementation':_implementation_identity(['single','io','_packed_gpu','statistics','output','chromosome'])})
     single_cached = _stage_cache(single_prefix, single_key) if resume and run_single else None
     analyses = inputs.gene_analyses.get(str(chromosome), []) if run_gene else []
     gene_keys, gene_caches = {}, {}
@@ -148,7 +196,7 @@ def run_chromosome(item, *, inputs, config, destination, null, null_key,
                 'device':config.single_variant.device,'dtype':config.single_variant.dtype,
                 'tf32':config.single_variant.tf32}, 'output':{**settings,'write_masks':config.write_masks},
             'implementation':_implementation_identity(['gene','masks','single','io','statistics',
-                                                       '_norm_gpu','_rank_one','_davies_bounds','_quadrature',
+                                                       '_packed_gpu','_norm_gpu','_rank_one','_davies_bounds','_quadrature','_fourier_gpu',
                                                        'output','mask_output','chromosome'])})
         gene_caches[analysis.name] = _stage_cache(
             destination/'Gene'/f'discovery_c{chromosome}_{analysis.name}',
@@ -168,7 +216,19 @@ def run_chromosome(item, *, inputs, config, destination, null, null_key,
         return dict(chromosome=chromosome,cached=True,stages=stages,
                     single_files=single_files,gene_files=gene_files,numerics=numerics)
     prefix = materialize_bed(original_prefix, destination/'InputCache')
-    reader = BedReader(prefix, keep=inputs.discovery_samples, remove=inputs.sample_remove)
+    index_path = None
+    if pending and config.bim_index_enabled:
+        # This directory contains private variant metadata, just like the
+        # existing materialized inputs. It is never a public result artifact.
+        input_cache = destination/'InputCache'
+        input_cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+        input_cache.chmod(0o700)
+        index_path = input_cache/f'bim_c{chromosome}.sqlite'
+    reader = _chromosome_reader(prefix, inputs, bim_index_path=index_path)
+    if index_path is not None:
+        # First-build IO is inside run_discovery/driver wall, before Single;
+        # recording it separately must not remove it from end-to-end timing.
+        stages[f'bim_index_c{chromosome}'] = reader.prepare_bim_index()
     phenotype = torch.tensor([y_lookup.get(sid,float('nan')) for sid in reader.sample_ids],dtype=torch.float64)
     covariates = None
     if x_lookup is not None:
@@ -208,7 +268,7 @@ def run_chromosome(item, *, inputs, config, destination, null, null_key,
                 dtype=config.single_variant.dtype,tf32=config.single_variant.tf32)
             function = lambda a: _gene_job(a,prefix=prefix,context=gene_context,inputs=inputs,
                                             config=config,destination=destination,
-                                            key=(chromosome,gene_keys[a.name]))
+                                            key=(chromosome,gene_keys[a.name]),reader=reader)
             results = [function(analysis) for analysis in pending]
             for name,path,report in results:
                 gene_files.append(path)

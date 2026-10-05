@@ -82,6 +82,7 @@ class GeneConfig:
     skato_rhos: tuple[float, ...] = (0., .01, .04, .09, .16, .25, .5, 1.)
     tail_method: str = "regenie"
     davies_controller: str = "auto"
+    davies_fourier_backend: str = "torch"
     eigen_backend: str = "dense"
     secular_min_size: int = 4096
     secular_root_chunk: int = 256
@@ -101,15 +102,18 @@ class GeneConfig:
     rank_tolerance: float = 1e-7
     qr_tie_tolerance: float = 0.0
     genotype_scale_tolerance: float = 1e-6
+    product_cache_bytes: int = 256 * 1024**2
 
     def __post_init__(self):
         from ._quadrature import validate_quadrature_parameters
-        if self.skato_integral_backend not in {"segmented", "adaptive_x", "adaptive_sqrt"}:
-            raise ValueError("SKAT-O integral backend must be segmented, adaptive_x or adaptive_sqrt.")
+        if self.skato_integral_backend not in {"segmented", "adaptive_x", "adaptive_sqrt", "qags_x"}:
+            raise ValueError("SKAT-O integral backend must be segmented, adaptive_x, adaptive_sqrt or qags_x.")
         validate_quadrature_parameters(self.skato_integral_epsabs, self.skato_integral_epsrel,
                                        self.skato_integral_max_intervals)
         if self.davies_controller not in {"auto", "scalar", "numpy"}:
             raise ValueError("davies_controller must be auto, scalar or numpy.")
+        if self.davies_fourier_backend not in {"auto", "torch", "fused"}:
+            raise ValueError("davies_fourier_backend must be auto, torch or fused.")
         # JSON serializes tuples as lists. Normalize at the public config
         # boundary so both CLI JSON and direct Python calls build the same masks.
         try:
@@ -130,6 +134,10 @@ class GeneConfig:
             raise ValueError("Beta weight parameters must be finite and positive.")
         if self.variant_block_size < 1 or self.max_matrix_bytes < 1:
             raise ValueError("Block size and matrix memory limit must be positive.")
+        if (isinstance(self.product_cache_bytes, bool)
+                or not isinstance(self.product_cache_bytes, Integral)
+                or self.product_cache_bytes < 0):
+            raise ValueError("product_cache_bytes must be a nonnegative integer (0 disables caching).")
         if self.vc_score_method not in {"residual", "crossproduct"}:
             raise ValueError("vc_score_method must be residual or crossproduct.")
         if self.vc_storage not in {"dense", "sparse"}:
@@ -308,6 +316,12 @@ class PreparedMask:
     raw_burden: torch.Tensor | None = None
     beta_a: float = 1.
     beta_b: float = 25.
+    # Internal trusted builder provenance. External masks default to no reuse.
+    # The identity guard binds each token to its original, unmodified tensor.
+    vc_reuse_key: tuple | None = field(default=None, repr=False, compare=False)
+    vc_reuse_tensor_guard: tuple | None = field(default=None, repr=False, compare=False)
+    burden_reuse_key: tuple | None = field(default=None, repr=False, compare=False)
+    burden_reuse_tensor_guard: tuple | None = field(default=None, repr=False, compare=False)
 
     @property
     def vc_weights(self):
@@ -318,6 +332,30 @@ class PreparedMask:
         if self.vc_mafs is None:
             return None
         return self.vc_weights.square() * self.vc_mafs * (1.0 - self.vc_mafs)
+
+
+def _vc_tensor_guard(tensor: torch.Tensor | None) -> tuple | None:
+    """Metadata-only identity/version guard for a cached matrix or vector.
+
+    Dense strides and sparse component pointers/versions are included without
+    transferring numerical data. Inference tensors have no version counter;
+    unsupported layouts and uncoalesced COO inputs are conservatively uncached.
+    """
+    if tensor is None:
+        return None
+    try:
+        identity = (id(tensor), tensor._version, tensor.layout, tuple(tensor.shape),
+                    tensor.device, tensor.dtype)
+        if tensor.layout == torch.strided:
+            return identity + (tensor.data_ptr(), tuple(tensor.stride()), tensor.storage_offset())
+        if tensor.layout == torch.sparse_coo and tensor.is_coalesced():
+            indices, values = tensor.indices(), tensor.values()
+            return identity + (indices.data_ptr(), indices._version, tuple(indices.shape),
+                               values.data_ptr(), values._version, tuple(values.shape))
+    except RuntimeError:
+        # Inference-mode tensors deliberately omit mutation version counters.
+        return None
+    return None
 
 
 @dataclass
@@ -368,6 +406,29 @@ def _concatenate_vc_chunks(chunks: Sequence[torch.Tensor], *, sparse=False) -> t
                                   dtype=chunks[0].dtype).coalesce()
 
 
+def _copy_mask_variant_metadata(aaf: torch.Tensor, maf: torch.Tensor,
+                                mac: torch.Tensor, ac: torch.Tensor,
+                                counts: torch.Tensor, singletons: torch.Tensor,
+                                *, max_count: int) -> list[list]:
+    """Copy computed variant metadata once, without rounding its original values."""
+    values = (aaf, maf, mac, ac, counts, singletons)
+    # Float64 holds every float32 value and counts up to 2**53 exactly. Keep
+    # full int64 count semantics even for a theoretical larger sample set.
+    if max_count > 2**53:
+        return [value.detach().cpu().tolist() for value in values]
+    copied = torch.stack([value.to(torch.float64) for value in values]).detach().cpu().tolist()
+    copied[4] = [int(value) for value in copied[4]]
+    copied[5] = [bool(value) for value in copied[5]]
+    return copied
+
+
+def _copy_mask_frequency(ac: torch.Tensor, n: int) -> list[float]:
+    # Retain the original Python-scalar denominator after n.item(): replacing
+    # it with a device tensor can change floating-point division rounding.
+    return torch.stack((ac / (2 * max(n, 1)),
+                        torch.minimum(ac, 2 * n - ac))).detach().cpu().tolist()
+
+
 @dataclass
 class _State:
     definition: MaskDefinition
@@ -378,6 +439,9 @@ class _State:
     raw_minor_rare: torch.Tensor
     variant_ids: list[str] = field(default_factory=list)
     vc_chunks: list[_VCSelection] = field(default_factory=list)
+    raw_member_ordinals: list[int] = field(default_factory=list)
+    vc_regular_ordinals: list[int] = field(default_factory=list)
+    vc_rare_ordinals: list[int] = field(default_factory=list)
 
 
 class GeneMaskBuilder:
@@ -415,6 +479,10 @@ class GeneMaskBuilder:
         self.whitelist = None if self.config.extract_variants is None else set(self.config.extract_variants)
         self.retained_bytes = 0
         self.finished = False
+        # An opaque namespace prevents equal member positions in different
+        # genes/builders/sample contexts from sharing a products cache entry.
+        self._reuse_namespace = object()
+        self._next_variant_ordinal = 0
 
     def _eligible_annotation(self, variant_id: str, state: _State, maf: float) -> bool:
         if self.whitelist is not None and variant_id not in self.whitelist:
@@ -436,6 +504,8 @@ class GeneMaskBuilder:
         raw = torch.as_tensor(genotypes, device=self.device, dtype=self.dtype)
         if raw.ndim != 2 or raw.shape != (self.n_samples, len(variant_ids)):
             raise ValueError("Genotype block must have shape [analysis samples, variants].")
+        ordinal_base = self._next_variant_ordinal
+        self._next_variant_ordinal += len(variant_ids)
         valid = torch.isfinite(raw) & (raw >= 0) & (raw <= 2)
         raw = torch.where(valid, raw, -1.)
         counts = valid.sum(0)
@@ -445,7 +515,8 @@ class GeneMaskBuilder:
         mac = torch.minimum(ac, 2 * counts - ac)
         # Frozen 3.4.1 marks singletons from AAC before minor-allele flipping.
         singletons = ((raw >= .5) & valid).sum(0) == 1 if self.config.singleton_carrier else (ac + .5).floor() == 1
-        aafs, mafs, macs, aacs, ns, single = [t.detach().cpu().tolist() for t in (aaf, maf, mac, ac, counts, singletons)]
+        aafs, mafs, macs, aacs, ns, single = _copy_mask_variant_metadata(
+            aaf, maf, mac, ac, counts, singletons, max_count=self.n_samples)
         minor = torch.where((aaf > .5)[None, :] & valid, 2.0 - raw, raw)
         # Several masks and domains can include the same ordinary VC sites.
         # Keep one imputed block and cheap column selections until each mask
@@ -458,6 +529,7 @@ class GeneMaskBuilder:
             if not indices:
                 continue
             state.variant_ids.extend(variant_ids[j] for j in indices)
+            state.raw_member_ordinals.extend(ordinal_base+j for j in indices)
             selected = torch.tensor(indices, device=self.device)
             state.raw_alt = torch.maximum(state.raw_alt, raw[:, selected].amax(1))
             if state.upper != self.config.vc_max_aaf:
@@ -466,10 +538,12 @@ class GeneMaskBuilder:
             # requested AAF <= 1% analysis.  Ordinary VC columns are flipped below.
             rare = [j for j in indices if 0 < aacs[j] <= self.config.collapse_mac]
             if rare:
+                state.vc_rare_ordinals.extend(ordinal_base+j for j in rare)
                 state.raw_minor_rare = torch.maximum(state.raw_minor_rare,
                                                     minor[:, rare].amax(1))
             regular = [j for j in indices if aacs[j] > self.config.collapse_mac]
             if regular:
+                state.vc_regular_ordinals.extend(ordinal_base+j for j in regular)
                 if shared is None:
                     # Only sites eligible for at least one mask need storage.
                     reusable = [j for j, vid in enumerate(variant_ids)
@@ -516,13 +590,12 @@ class GeneMaskBuilder:
             observed = state.raw_alt >= 0
             n = int(observed.sum().item())
             ac = torch.where(observed, state.raw_alt, 0.).sum()
-            af = float((ac / (2 * max(n, 1))).item())
-            mac = float(torch.minimum(ac, 2 * n - ac).item())
+            af, mac = _copy_mask_frequency(ac, n)
             if n == 0 or mac < self.config.min_mac:
                 self._release_vc(state)
                 continue
             burden = torch.where(observed, state.raw_alt, 2 * af)
-            vc, mafs = None, None
+            vc, mafs, vc_key = None, None, None
             if state.upper == self.config.vc_max_aaf:
                 chunks, maf_chunks = [], []
                 rare_observed = state.raw_minor_rare >= 0
@@ -555,6 +628,8 @@ class GeneMaskBuilder:
                 if chunks:
                     vc = _concatenate_vc_chunks(chunks, sparse=self.config.vc_storage == "sparse")
                     mafs = torch.cat(maf_chunks).to(torch.float64)
+                    vc_key = (self._reuse_namespace, tuple(state.vc_regular_ordinals),
+                              tuple(state.vc_rare_ordinals) if has_rare else ())
                 # Free an imputed input block as soon as its last selection is
                 # materialized. The concatenated output owns independent data.
                 self._release_vc(state)
@@ -565,7 +640,10 @@ class GeneMaskBuilder:
                                state.upper, tuple(dict.fromkeys(state.variant_ids)), burden,
                                af, mac, n, vc, mafs, state.definition.score,
                                raw_burden=torch.where(observed, state.raw_alt, float("nan")),
-                               beta_a=self.config.beta_a, beta_b=self.config.beta_b)
+                               beta_a=self.config.beta_a, beta_b=self.config.beta_b,
+                               vc_reuse_key=vc_key, vc_reuse_tensor_guard=_vc_tensor_guard(vc),
+                               burden_reuse_key=(self._reuse_namespace, tuple(state.raw_member_ordinals)),
+                               burden_reuse_tensor_guard=_vc_tensor_guard(burden))
 
     def finish(self) -> list[PreparedMask]:
         """Return all materialized masks for the in-memory Python interface."""

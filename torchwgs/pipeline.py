@@ -232,7 +232,7 @@ def run_discovery(inputs: DiscoveryInputs, *, config=None, output_dir,
     null_key = _fingerprint({'inputs':metadata['inputs'],'phenotype':inputs.phenotype_column,'phenotype_mode':config.phenotype_mode,
                              'phenotype_quantile_normalize':config.phenotype_quantile_normalize,
                              'phenotype_outlier_sd':config.phenotype_outlier_sd,
-                             'implementation':_implementation_identity(['step1','phenotype','io','pipeline']),
+                             'implementation':_implementation_identity(['step1','phenotype','io','_packed_gpu','pipeline']),
                              'imported_loco':None if not inputs.imported_loco else _prediction_identity(inputs.imported_loco,inputs.phenotype_column),
                              'step1':asdict(config.step1),'covariates':None if inputs.covariates is None else
                              hashlib.sha256(inputs.covariates.cpu().numpy().tobytes()).hexdigest()})

@@ -2,7 +2,9 @@
 
 import math
 import unittest
+import weakref
 from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
 from threading import Barrier
 from unittest.mock import patch
 
@@ -204,6 +206,51 @@ class TailTests(unittest.TestCase):
         self.assertEqual(numerical_diagnostics()["cpu_tail_fallback_calls"], 0)
         self.assertEqual(numerical_diagnostics()["kuonen_tail_values"], 1)
 
+    def test_prepared_davies_spectrum_preserves_values_faults_and_per_q_budget(self):
+        from torchwgs import statistics as stats
+        devices = {torch.device("cpu"), DEVICE}
+        fixtures = (([.2, .5, 1.], [0., 1.7, 5.1, 100.]),
+                    ([1e-5, 3e-5, 1e-4, 3e-4, .001, .003, .1, 1.],
+                     [.0441776, .2, 3.]))
+        for device in devices:
+            for spectrum, qs in fixtures:
+                eigenvalues = torch.tensor(spectrum, device=device, dtype=torch.float64)
+                q = torch.tensor(qs, device=device, dtype=torch.float64)
+                for controller in ("scalar", "numpy", "auto"):
+                    with self.subTest(device=device, spectrum=spectrum, controller=controller):
+                        prepared = stats._prepare_davies_spectrum(eigenvalues, controller)
+                        # A failed plan must not spend the next statistic's
+                        # budget or retain its Gaussian variance/rules.
+                        for accuracy, limit in ((1e-6, 1), (1e-6, 10000),
+                                                (1e-9, 1000000), (1e-6, 10000)):
+                            expected, expected_fault = davies_logsf(q, eigenvalues,
+                                accuracy=accuracy, limit=limit, controller=controller)
+                            observed, fault = davies_logsf(q, eigenvalues,
+                                accuracy=accuracy, limit=limit, controller=controller,
+                                _prepared_spectrum=prepared)
+                            torch.testing.assert_close(observed, expected,
+                                rtol=0, atol=0, equal_nan=True)
+                            torch.testing.assert_close(fault, expected_fault, rtol=0, atol=0)
+                        self.assertEqual(observed.device, device)
+                        if prepared.spectrum.numpy_weights is not None:
+                            self.assertFalse(prepared.spectrum.numpy_weights.flags.writeable)
+
+    def test_regenie_strict_retry_reuses_only_spectrum_not_statistic_plan(self):
+        from torchwgs import statistics as stats
+        spectrum = tensor([1., 2., 3.])
+        with diagnostics_scope() as ledger, \
+                patch("torchwgs.statistics.kuonen_logsf", return_value=tensor([math.nan])), \
+                patch("torchwgs.statistics.davies_logsf", wraps=stats.davies_logsf) as tails:
+            value = stats._association_tail(tensor(100.), spectrum, "regenie")
+            self.assertTrue(bool(torch.isfinite(value)))
+            self.assertEqual(tails.call_count, 2)
+            self.assertEqual(ledger["davies_spectrum_preparations"], 1)
+            ordinary, strict = tails.call_args_list
+            self.assertIs(ordinary.kwargs["_prepared_spectrum"], strict.kwargs["_prepared_spectrum"])
+            self.assertNotIn("accuracy", ordinary.kwargs)
+            self.assertEqual(strict.kwargs["accuracy"], 1e-9)
+            self.assertEqual(strict.kwargs["limit"], 1000000)
+
     def test_weighted_rank_two_against_positive_angular_integral(self):
         values = tensor([.2, 2.])
         qs = tensor([.1, 1., 10., 100., 1000.])
@@ -237,28 +284,163 @@ class TailTests(unittest.TestCase):
         torch.testing.assert_close(observed, reference, rtol=2e-10, atol=2e-10)
 
     def test_weighted_rank_six_against_three_exponential_convolution(self):
-        q = tensor([.1, 1., 5., 20., 100., 1000., 5000.])
         # chi2_2 + 2*chi2_2 + 3*chi2_2: factor out the slowest
         # exponential to retain a closed form at probabilities below 1e-308.
-        reference = (q/6 - torch.log(4.5 - 4*torch.exp(-q/12)
-                                    + .5*torch.exp(-q/3))) / math.log(10.)
-        observed = weighted_chi2_logsf(q, tensor([1., 1., 2., 2., 3., 3.]))
-        torch.testing.assert_close(observed, reference, rtol=2e-6, atol=8e-6)
-        self.assertGreater(float(observed[-1]), 308.)
+        for device in {torch.device("cpu"), DEVICE}:
+            # At q=1000/5000 this fixture needed the checked scalar fallback
+            # in the earlier CUDA API. Keep that independent extreme-tail
+            # precision check on CPU; CUDA nonconvergence is tested explicitly.
+            qs = [.1, 1., 5., 20., 100.]
+            if device.type == "cpu":
+                qs += [1000., 5000.]
+            q = torch.tensor(qs, dtype=torch.float64, device=device)
+            reference = (q/6 - torch.log(4.5 - 4*torch.exp(-q/12)
+                                        + .5*torch.exp(-q/3))) / math.log(10.)
+            observed = weighted_chi2_logsf(q, torch.tensor([1., 1., 2., 2., 3., 3.],
+                                                          dtype=torch.float64, device=device))
+            torch.testing.assert_close(observed, reference, rtol=2e-6, atol=8e-6)
+            if device.type == "cpu":
+                self.assertGreater(float(observed[-1]), 308.)
 
-    def test_explicit_cpu_fallback_and_rejecting_inaccurate_gpu_integral(self):
+    def test_explicit_cpu_fallback_and_rejecting_inaccurate_integral(self):
         numerical_diagnostics(reset=True)
-        ev = tensor([1., 2., 3.])
+        ev = torch.tensor([1., 2., 3.], dtype=torch.float64)
+        q = torch.tensor(20., dtype=torch.float64)
         with self.assertRaises(ArithmeticError):
-            weighted_chi2_logsf(tensor(20.), ev, max_order=64, allow_cpu_fallback=False)
-        result = weighted_chi2_logsf(tensor(20.), ev, max_order=64)
+            weighted_chi2_logsf(q, ev, max_order=64, allow_cpu_fallback=False)
+        result = weighted_chi2_logsf(q, ev, max_order=64)
         self.assertTrue(bool(torch.isfinite(result)))
         diagnostics = numerical_diagnostics()
         self.assertEqual(diagnostics["cpu_tail_fallback_calls"], 1)
         self.assertGreater(diagnostics["cpu_tail_fallback_seconds"], 0.)
 
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_cuda_nonconvergence_and_exact_route_never_call_cpu_integrand(self):
+        from torchwgs import statistics as stats
+        ev = tensor([1., 2., 3.])
+        with diagnostics_scope() as ledger, \
+                patch("torchwgs.statistics._fourier_tail_scalar",
+                      side_effect=AssertionError("CUDA called a CPU integrand")) as fallback:
+            for allow_fallback in (False, True):
+                with self.assertRaisesRegex(ArithmeticError, "CPU integrand fallback is disabled"):
+                    weighted_chi2_logsf(tensor(20.), ev, max_order=64,
+                                       allow_cpu_fallback=allow_fallback)
+            # Exercise the public association backend's default max_order,
+            # with a deliberately nonfinite positive angular integral.
+            with patch("torchwgs.statistics._small_rank_integral",
+                       side_effect=lambda q, *_: torch.full_like(q, math.nan)):
+                with self.assertRaisesRegex(ArithmeticError, "CPU integrand fallback is disabled"):
+                    stats._association_tail(tensor(20.), ev, "exact")
+            fallback.assert_not_called()
+            self.assertEqual(ledger["cpu_tail_fallback_calls"], 0)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_mixed_mixture_inputs_keep_cuda_and_match_same_device_values(self):
+        from torchwgs import statistics as stats
+        q = tensor([0., .1, 1., 5., 20., 100.])
+        eigenvalues = tensor([1., 2., 2.])
+        cases = ((q, eigenvalues.cpu()), (q, [1., 2., 2.]),
+                 (q, np.array([1., 2., 2.])), (q.cpu(), eigenvalues),
+                 (q.cpu().tolist(), eigenvalues))
+        routines = (weighted_chi2_logsf, kuonen_logsf,
+                    lambda x, ev: stats._association_tail(x, ev, "regenie"),
+                    lambda x, ev: stats._association_tail(x, ev, "exact"))
+        with diagnostics_scope() as ledger, \
+                patch("torchwgs.statistics._fourier_tail_scalar",
+                      side_effect=AssertionError("mixed CUDA inputs called a CPU integrand")) as fallback:
+            for routine in routines:
+                expected = routine(q, eigenvalues)
+                for x, ev in cases:
+                    observed = routine(x, ev)
+                    self.assertEqual(observed.device, q.device)
+                    torch.testing.assert_close(observed, expected, rtol=0, atol=0, equal_nan=True)
+            for controller in ("scalar", "numpy", "auto"):
+                expected, expected_fault = davies_logsf(q, eigenvalues, controller=controller)
+                for x, ev in cases:
+                    observed, fault = davies_logsf(x, ev, controller=controller)
+                    self.assertEqual(observed.device, q.device)
+                    self.assertEqual(fault.device, q.device)
+                    torch.testing.assert_close(observed, expected, rtol=0, atol=0, equal_nan=True)
+                    torch.testing.assert_close(fault, expected_fault, rtol=0, atol=0)
+                prepared_cpu = stats._prepare_davies_spectrum(eigenvalues.cpu(), controller)
+                for x, ev in cases:
+                    observed, fault = davies_logsf(x, ev, controller=controller,
+                                                   _prepared_spectrum=prepared_cpu)
+                    torch.testing.assert_close(observed, expected, rtol=0, atol=0, equal_nan=True)
+                    torch.testing.assert_close(fault, expected_fault, rtol=0, atol=0)
+                    observed_tail = stats._association_tail(x, ev, "regenie",
+                        davies_controller=controller, _prepared_spectrum=prepared_cpu)
+                    expected_tail = stats._association_tail(q, eigenvalues, "regenie",
+                                                            davies_controller=controller)
+                    self.assertEqual(observed_tail.device, q.device)
+                    torch.testing.assert_close(observed_tail, expected_tail, rtol=0, atol=0, equal_nan=True)
+                self.assertEqual(prepared_cpu.eigenvalues.device.type, "cpu")
+            fallback.assert_not_called()
+            self.assertEqual(ledger["cpu_tail_fallback_calls"], 0)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_mixed_cuda_nonconvergence_never_allows_cpu_fallback(self):
+        from torchwgs import statistics as stats
+        q, eigenvalues = tensor(20.), tensor([1., 2., 3.])
+        cases = ((q, eigenvalues.cpu()), (q, [1., 2., 3.]),
+                 (q.cpu(), eigenvalues), (20., eigenvalues))
+        with diagnostics_scope() as ledger, \
+                patch("torchwgs.statistics._fourier_tail_scalar",
+                      side_effect=AssertionError("mixed CUDA inputs called a CPU integrand")) as fallback:
+            for x, ev in cases:
+                with self.assertRaisesRegex(ArithmeticError, "CPU integrand fallback is disabled"):
+                    weighted_chi2_logsf(x, ev, max_order=64, allow_cpu_fallback=True)
+                with patch("torchwgs.statistics._small_rank_integral",
+                           side_effect=lambda value, *_: torch.full_like(value, math.nan)):
+                    with self.assertRaisesRegex(ArithmeticError, "CPU integrand fallback is disabled"):
+                        stats._association_tail(x, ev, "exact")
+            fallback.assert_not_called()
+            self.assertEqual(ledger["cpu_tail_fallback_calls"], 0)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_cpu_integrand_entry_itself_rejects_cuda_before_scipy(self):
+        from torchwgs import statistics as stats
+        q, eigenvalues = tensor(20.), tensor([1., 2., 3.])
+        with patch("scipy.integrate.quad", side_effect=AssertionError("CUDA entered SciPy")) as integral:
+            for x, ev in ((q, eigenvalues.cpu()), (q.cpu(), eigenvalues)):
+                with self.assertRaisesRegex(ArithmeticError, "CPU integrand fallback is disabled"):
+                    stats._fourier_tail_scalar(x, ev, 1e-5)
+            integral.assert_not_called()
+
 
 class GeneInferenceTests(unittest.TestCase):
+    def test_skato_reuses_rho_zero_tail_and_keeps_custom_rho_skat(self):
+        from torchwgs import statistics as stats
+        score = tensor([2., -.5, 1.])
+        covariance = tensor([[2., .1, 0.], [.1, 1., .2], [0., .2, 3.]])
+        expected = skat_logp(score, covariance)
+        for rhos, count in (((0.,), 1), ((.25,), 2)):
+            with self.subTest(rhos=rhos), \
+                    patch("torchwgs.statistics._association_tail", wraps=stats._association_tail) as tail:
+                result = skato_logp(score, covariance, rhos=rhos)
+                self.assertEqual(tail.call_count, count)
+                torch.testing.assert_close(result["SKAT"], expected, rtol=0, atol=0)
+                if rhos == (0.,):
+                    torch.testing.assert_close(result["SKAT"], result["rho_log10ps"][0], rtol=0, atol=0)
+
+    def test_skato_conditional_rules_share_spectrum_for_all_integral_backends(self):
+        from torchwgs import statistics as stats
+        original_tail = stats._association_tail
+        for backend in ("adaptive_x", "adaptive_sqrt", "segmented"):
+            prepared = []
+            def record(q, ev, method, **kwargs):
+                if kwargs.get("rank_one_exact") is False:
+                    prepared.append(kwargs.get("_prepared_spectrum"))
+                return original_tail(q, ev, method, **kwargs)
+            with self.subTest(backend=backend), \
+                    patch("torchwgs.statistics._association_tail", side_effect=record):
+                result = skato_logp(tensor([2., -1.]), torch.eye(2, dtype=torch.float64, device=DEVICE),
+                                   integral_backend=backend, native_validity=True)
+                self.assertGreater(len(prepared), 1)
+                self.assertIsNotNone(prepared[0])
+                self.assertTrue(all(state is prepared[0] for state in prepared))
+                self.assertIsNotNone(result["SKATO"])
+
     def test_sbat_subset_policy_is_repeatable_and_preserves_independent_mixture(self):
         gram = torch.eye(6, dtype=torch.float64)
         expected = torch.tensor([math.comb(6, df)/64 for df in range(7)], dtype=torch.float64)
@@ -641,6 +823,115 @@ class GeneInferenceTests(unittest.TestCase):
         result = sbat_logp(tensor([3., 2.]), k, variance_scale=2.)
         b = result["coefficients_positive"]
         self.assertAlmostEqual(float(result["statistic_positive"]), float(b@k@b)/2., places=12)
+
+    def test_sobol_cache_keeps_draw_bits_and_orthant_probability(self):
+        from torchwgs import statistics as stats
+        for device in {torch.device("cpu"), DEVICE}:
+            covariance = torch.eye(5, dtype=torch.float64, device=device)*.7+.3
+            with self.subTest(device=device), \
+                    patch.object(stats, "_SOBOL_UNIFORM_CACHE", OrderedDict()), \
+                    patch.object(stats, "_SOBOL_UNIFORM_CACHE_BYTES", 0):
+                with patch.object(stats, "_SOBOL_UNIFORM_CACHE_LIMIT_BYTES", 0):
+                    expected = normal_orthant_probability(covariance, qmc_samples=256, seed=73)
+                original_engine = torch.quasirandom.SobolEngine
+                with patch("torch.quasirandom.SobolEngine", wraps=original_engine) as engine:
+                    first = normal_orthant_probability(covariance, qmc_samples=256, seed=73)
+                    uniform, _ = next(iter(stats._SOBOL_UNIFORM_CACHE.values()))
+                    original_draw = original_engine(4, scramble=True, seed=73).draw(
+                        256, dtype=torch.float64).to(device)
+                    torch.testing.assert_close(uniform, original_draw, rtol=0, atol=0)
+                    second = normal_orthant_probability(covariance, qmc_samples=256, seed=73)
+                    self.assertEqual(engine.call_count, 1)
+                    torch.testing.assert_close(first, expected, rtol=0, atol=0)
+                    torch.testing.assert_close(second, expected, rtol=0, atol=0)
+                    # The triangular Genz integration must never overwrite
+                    # the shared draw when changing covariance or seed.
+                    normal_orthant_probability(covariance*.8+torch.eye(5, device=device)*.2,
+                                              qmc_samples=256, seed=73)
+                    torch.testing.assert_close(uniform, original_draw, rtol=0, atol=0)
+                    normal_orthant_probability(covariance, qmc_samples=256, seed=74)
+                    self.assertEqual(engine.call_count, 2)
+                self.assertEqual(stats._SOBOL_UNIFORM_CACHE_BYTES, 2*4*256*8)
+
+    def test_sobol_cache_eviction_budget_and_unspecified_seed(self):
+        from torchwgs import statistics as stats
+        reference = torch.zeros((), dtype=torch.float64)
+        with patch.object(stats, "_SOBOL_UNIFORM_CACHE", OrderedDict()), \
+                patch.object(stats, "_SOBOL_UNIFORM_CACHE_BYTES", 0), \
+                patch.object(stats, "_SOBOL_UNIFORM_CACHE_LIMIT_BYTES", 2*5*16*8):
+            for seed in (0, 1, 0, 2):
+                stats._sobol_uniform(5, 16, seed, reference)
+                self.assertLessEqual(stats._SOBOL_UNIFORM_CACHE_BYTES, 2*5*16*8)
+            self.assertEqual([key[2] for key in stats._SOBOL_UNIFORM_CACHE], [0, 2])
+            keys = list(stats._SOBOL_UNIFORM_CACHE)
+            for _ in range(2):
+                stats._sobol_uniform(5, 40, 9, reference)  # One draw exceeds the total budget.
+                stats._sobol_uniform(5, 16, None, reference)  # Fresh randomized scramble.
+                with self.assertRaisesRegex(RuntimeError, "negative dimension"):
+                    # Preserve the original SobolEngine error without
+                    # retaining a zero-sized cache entry.
+                    stats._sobol_uniform(5, 0, 17, reference)
+            self.assertEqual(list(stats._SOBOL_UNIFORM_CACHE), keys)
+            self.assertEqual(stats._SOBOL_UNIFORM_CACHE_BYTES, 2*5*16*8)
+        with patch.object(stats, "_SOBOL_UNIFORM_CACHE", OrderedDict()), \
+                patch.object(stats, "_SOBOL_UNIFORM_CACHE_BYTES", 0), \
+                patch.object(stats, "_SOBOL_UNIFORM_CACHE_MAX_ENTRIES", 1):
+            stats._sobol_uniform(2, 8, 0, reference)
+            stats._sobol_uniform(2, 8, 1, reference)
+            self.assertEqual(len(stats._SOBOL_UNIFORM_CACHE), 1)
+            self.assertEqual(stats._SOBOL_UNIFORM_CACHE_BYTES, 2*8*8)
+
+    def test_sobol_cache_evicts_before_draw_and_failed_draw_does_not_inflate_budget(self):
+        from torchwgs import statistics as stats
+        reference = torch.zeros((), dtype=torch.float64)
+        item_bytes = 5*16*8
+        with patch.object(stats, "_SOBOL_UNIFORM_CACHE", OrderedDict()), \
+                patch.object(stats, "_SOBOL_UNIFORM_CACHE_BYTES", 0), \
+                patch.object(stats, "_SOBOL_UNIFORM_CACHE_LIMIT_BYTES", 2*item_bytes):
+            for seed in (0, 1):
+                stats._sobol_uniform(5, 16, seed, reference)
+            old_uniform = weakref.ref(next(iter(stats._SOBOL_UNIFORM_CACHE.values()))[0])
+            engine = torch.quasirandom.SobolEngine(5, scramble=True, seed=2)
+            def failed_draw(*args, **kwargs):
+                self.assertIsNone(old_uniform())  # Release the evicted draw before allocation.
+                self.assertEqual(stats._SOBOL_UNIFORM_CACHE_BYTES, item_bytes)
+                self.assertLessEqual(stats._SOBOL_UNIFORM_CACHE_BYTES+item_bytes, 2*item_bytes)
+                raise RuntimeError("checked draw failure")
+            with patch("torch.quasirandom.SobolEngine", return_value=engine), \
+                    patch.object(engine, "draw", side_effect=failed_draw):
+                with self.assertRaisesRegex(RuntimeError, "checked draw failure"):
+                    stats._sobol_uniform(5, 16, 2, reference)
+            self.assertEqual([key[2] for key in stats._SOBOL_UNIFORM_CACHE], [1])
+            self.assertEqual(stats._SOBOL_UNIFORM_CACHE_BYTES, item_bytes)
+            recovered = stats._sobol_uniform(5, 16, 2, reference)
+            expected = torch.quasirandom.SobolEngine(5, scramble=True, seed=2).draw(16, dtype=torch.float64)
+            torch.testing.assert_close(recovered, expected, rtol=0, atol=0)
+            self.assertEqual(stats._SOBOL_UNIFORM_CACHE_BYTES, 2*item_bytes)
+
+    def test_dimensions_up_to_four_keep_analytic_and_plackett_paths(self):
+        with patch("torchwgs.statistics._sobol_uniform",
+                   side_effect=AssertionError("small orthant used Sobol")) as constants:
+            for dimension in range(5):
+                value = normal_orthant_probability(torch.eye(dimension, dtype=torch.float64, device=DEVICE))
+                self.assertAlmostEqual(float(value), 2.**-dimension, places=13)
+            constants.assert_not_called()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_sobol_cache_is_valid_across_cuda_streams(self):
+        from torchwgs import statistics as stats
+        reference = torch.zeros((), device=DEVICE, dtype=torch.float64)
+        first_stream, second_stream = torch.cuda.Stream(), torch.cuda.Stream()
+        expected = torch.quasirandom.SobolEngine(5, scramble=True, seed=173).draw(512, dtype=torch.float64)
+        with patch.object(stats, "_SOBOL_UNIFORM_CACHE", OrderedDict()), \
+                patch.object(stats, "_SOBOL_UNIFORM_CACHE_BYTES", 0):
+            with torch.cuda.stream(first_stream):
+                first = stats._sobol_uniform(5, 512, 173, reference)
+            with torch.cuda.stream(second_stream):
+                second = stats._sobol_uniform(5, 512, 173, reference)
+                observed = second.clone()
+            second_stream.synchronize()
+            self.assertIs(first, second)
+            torch.testing.assert_close(observed.cpu(), expected, rtol=0, atol=0)
 
     def test_four_dimensional_orthant_against_independent_conditional_integral(self):
         # Equicorrelation admits a separate one-factor conditional integral.

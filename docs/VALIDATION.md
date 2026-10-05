@@ -1,18 +1,34 @@
-# 当前完整 GPU 串行验证
+# 当前 REGENIE GPU 验证
 
-本次验证使用 chr21 的一个连续表型，包含芯片 Step1、全染色体 single-variant、全部 26 组 coding/noncoding gene-based 和汇总。完整组与 42 个基础 mask 定义见[指南](REGENIE.md#完整-mask-和-gpu-执行)。当前全量关联采用 `ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)`；全 26 组和三个 Summary 文件尚未完成最终验收。
+当前 v13 包含 23 个实现模块，提供连续单表型 discovery 的芯片 Step1、全染色体 single-variant、全部 26 组 coding/noncoding gene-based 和汇总。完整组与 42 个基础 mask 定义见[指南](REGENIE.md#完整-mask-和-gpu-执行)。全量关联采用 `ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)`。
+
+本地与共享 A100 的 239 项 CUDA 回归均通过，零跳过。当前全染色体 single 探针已超时，旧完整 gene 运行已停止于 13/26 组；全 26 组与三个 Summary 文件尚未完成最终验收。完整 single、全部 gene 组、全部 mask 附件和 Summary 的 300 秒目标尚未达成。
 
 ## 范围与环境
 
-正式 discovery 名单经基因型和排除名单对齐后输入 44,365 人，连续表型（公开代称 `trait_01`）有效 41,538 人。chr21 包含 13,733,596 个 WGS 位点；整条染色体的关联验证均使用同一份完整 509,468 个 QC 芯片位点拟合的 LOCO。Step2 两边共用 GPU 导出的 LOCO，以单独核对关联计算，Step1 预测误差另行记录。
+正式 discovery 名单经基因型和排除名单对齐后输入 44,365 人，连续表型使用公开代称 `trait_01`，有效样本为 41,538 人。chr21 包含 13,733,596 个 WGS 位点；整条染色体的关联对照共用完整 509,468 个 QC 芯片位点拟合的 LOCO。Step2 两边共用 GPU 导出的 LOCO，以核对关联计算；Step1 预测误差另行记录。
 
-环境为共享 A100 80GB、PyTorch 2.0.0/CUDA 11.8、Triton 2.0、NumPy 1.26.4、SciPy 1.13.1、pandas 1.4.4。GPU 峰值表示本进程 PyTorch 的分配峰值，CUDA 上下文和其他进程占用不计入该值。资源预算为 20 GiB。
+远端验证环境为共享 A100 80GB、PyTorch 2.0.0/CUDA 11.8、Triton 2.0、NumPy 1.26.4、SciPy 1.13.1、pandas 1.4.4。GPU 峰值表示本进程 PyTorch 的分配峰值，CUDA 上下文和其他进程占用不计入该值。资源预算为 20 GiB。
 
-冻结原 REGENIE 3.4.1 的核心计算使用 double，没有 float32 运行开关。当前对照基线为原 float64；PyTorch Step1/single 使用 float32/TF32，gene 投影、协方差与推断使用 float64。可在 Python 配置关闭 TF32 或选择 float64，不使用 float16。原实现见[Step1](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/Step1_Models.cpp)、[连续性状投影](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/Step2_Models.cpp)和[VC](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/SKAT.cpp)。
+原 REGENIE 3.4.1 的核心计算使用 double，没有 float32 运行开关；对照基线为原 float64。PyTorch Step1/single 使用 float32/TF32，gene 投影、协方差与推断使用 float64。Python 可关闭 TF32 或选择 float64，不使用 float16。原实现见 [Step1](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/Step1_Models.cpp)、[连续性状投影](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/Step2_Models.cpp)和 [VC](https://github.com/rgcgithub/regenie/blob/v3.4.1/src/SKAT.cpp)。
 
-## 完整 Step1
+## 当前版本回归
 
-509,468 个 QC 位点划分为 521 个 block、2,605 个 L0 预测列，采用 5-fold。GPU 与同队列原程序（8 CPU 线程）的完整拟合对照为：
+本地 PyTorch 2.4.1/CUDA GPU 执行 239/239 项回归，零跳过，框架计时 87.197 秒。共享 A100 使用当前冻结的 23 个实现模块，核对实际导入路径、源码摘要和测试摘要，并按下列三组串行执行。运行前后源码与测试保持一致。
+
+| 回归分组 | 通过 / 总数 | 跳过 | 框架计时 |
+|---|---:|---:|---:|
+| I/O 与 masks | 133/133 | 0 | 43.468 秒 |
+| models | 57/57 | 0 | 50.353 秒 |
+| statistics | 49/49 | 0 | 77.908 秒 |
+
+这些时间属于各测试框架，不是整条染色体、整个 pipeline 或三组进程的总墙钟。覆盖独立 ridge/QT 数学解、packed BED 与索引失效、样本及 reader 对齐、全部 mask 和原格式附件、流式产品缓存、Davies/Triton Fourier、QAGS 收敛和故障路径、SBAT/NNLS，以及预算和 NA 边界。数学 fixture 用于回归；下文真实性能观测单独记录。
+
+当前优化包括 packed BED 整数计数预筛、Step1 GPU 解码、固定 Davies 谱准备复用、面积/误差及输出元数据合并回传、GPU mask BED 编码、染色体 reader 与有界 BIM 索引复用、同一 gene 内受保护的重复 score/covariance 与 burden 产品缓存、QAGS 积分，以及可选的 Triton float64 Fourier。v13解码器动态接收MAC保留列数，避免按每个宽度编译；1、16、17、129列、重复及重排列和缺失值通过逐位一致性检查。全部 26 组、42 个基础 mask 定义和原统计参数保留。缓存受显存预算约束，可在 Python 关闭；gene 推断维持 float64。
+
+## 完整 Step1 的历史对照
+
+509,468 个 QC 位点划分为 521 个 block、2,605 个 L0 预测列，采用 5-fold。已完成的 GPU 与原程序（8 CPU 线程）完整拟合对照为：
 
 | 指标 | 结果 |
 |---|---:|
@@ -25,15 +41,29 @@
 | 原程序总耗时 | 1131.51 秒 |
 | GPU 峰值分配 | 986,269,184 字节 |
 
-总时间包含初始化、整理和保存；原程序/GPU 的观测耗时比约 1.76（1131.51/644.708），为共享资源下的非隔离观测。LOCO 按 FID/IID 对齐，原预测只写 6 位有效数字。23 行染色体、样本映射、chr23 全基因组预测和 pred.list 已检查。当前全量串行 pipeline 导入这些已验证的预测，没有再次拟合 Step1。
+总时间包含初始化、整理和保存；原程序/GPU 的观测耗时比约 1.76（1131.51/644.708），属于共享资源下的非隔离观测。LOCO 按样本标识对齐，原预测只写 6 位有效数字。23 行染色体、样本映射、chr23 全基因组预测和 pred.list 已检查。这是历史拟合对照；本轮关联导入其 LOCO，当前 v13 尚未登记 fresh Step1 的受控前后测量。
 
 ## 全染色体 single-variant
 
-当前 GPU 串行运行扫描全部 13,733,596 个 WGS 位点，使用 minMAC20、N=41,538，输出 314,209 行；single 阶段耗时 424.529767 秒。独立输出比较确认表头、13 列布局、行序、结构字段、NA、.ids 和五项数值门槛均通过。该时间是 single 阶段计时，尚无本轮完整 pipeline 墙钟和峰值结果。
+历史冻结版本扫描全部 13,733,596 个 WGS 位点，采用 minMAC20、N=41,538，输出 314,209 行，single 阶段耗时 424.529767 秒。独立比较确认表头、13 列布局、行序、结构字段、NA、.ids 和五项数值门槛通过。该数字保留为历史阶段观测，不代表当前优化版本的已完成测量。
 
-## 完整 gene 组的串行测量
+此前 v12 的探针使用原完整 chr21 输入，超时上限为 180 秒。进程观测为 182.243 秒，返回码 124，完成标记为 false，私有部分输出有 41,844 行。它尚未生成完整结果，也未完成本轮完整文件和原 REGENIE 数值验收；部分输出数量不能用于推算全程或宣布五分钟目标达成。
 
-已完成 PTV、Missense、Intron、Pseudo、RNA、Intron_Gnocchi4 六个完整组，共 32,842 行，每组包含其全部 setlist gene 和 masks。计时在同一份已冻结的 21 个实现模块上完成；源码摘要保存在[匿名资源记录](../benchmarks/real_gpu_serial_resources_2026-10-05.json)。
+随后使用相同前100,000个原始位点、全部41,538个有效样本和原LOCO做阶段探针，保留1,302行。每个版本使用独立的新Triton缓存；输入存储缓存未隔离，逐阶段同步会改变生产执行节奏。每个子进程限时60秒，比较在计时结束后进行。
+
+| 同一真实切片 | single阶段 | pipeline调用墙钟 | 解码含JIT | kernel缓存文件数 |
+|---|---:|---:|---:|---:|
+| v12，新Triton缓存 | 26.08047秒 | 31.81272秒 | 21.38432秒 | 35 |
+| v13，新Triton缓存 | 5.59638秒 | 11.44175秒 | 0.92362秒 | 2 |
+| v13，同进程热缓存 | 3.51617秒 | 4.66123秒 | 0.35045秒 | 2 |
+
+这段输入产生34种MAC保留列宽。v12按宽度编译；v13使用动态列宽，35个kernel缓存文件降至2个。新缓存下single阶段观测耗时比为4.66，收益主要来自减少JIT。它不是整条染色体倍速，也不是冷存储吞吐测量；v12未在同一进程完成热缓存对照，不报告两版本热吞吐倍速。
+
+三个切片输出的`.regenie`和`.ids`逐字节相同。1,302行与原REGENIE对应行的表头、13列、行序、结构及五项原数值门槛全部通过；A1FREQ最大差为0，BETA、SE、CHISQ、LOG10P最大绝对差分别约1×10⁻⁶、1×10⁻⁷、1×10⁻⁵、1×10⁻⁶。该对照只认证上述切片，完整single仍待验收。
+
+## 完整 gene 组的历史串行观测
+
+已完成同源 PTV、Missense、Intron、Pseudo、RNA、Intron_Gnocchi4 六个完整组，共 32,842 行，每组包含其全部 setlist gene 和 masks。计时来自冻结的 21 个实现模块，软件摘要保存在[匿名资源记录](../benchmarks/real_gpu_serial_resources_2026-10-05.json)。
 
 | 指标 | 实测 |
 |---|---:|
@@ -43,18 +73,38 @@
 | 结构与附属文件通过 | 6/6 组 |
 | 全组严格数值通过 | **0/6 组** |
 
-结构审计包括表头、行序、N、NA、EXTRA、.ids，以及 masks BED/BIM/FAM/snplist。完整 gene 数值等价尚未达到；输出格式和严格数值分别登记。资源图与CSV只覆盖这六组，不代表全部 26 组的最终验收，也不与原全 26 组 gene-only 驱动换算倍速。
+结构审计包括表头、行序、N、NA、EXTRA、.ids，以及 masks BED/BIM/FAM/snplist。完整 gene 数值等价尚未达到。资源图和 CSV 只覆盖这六组；它们不代表当前 23 模块版本或全 26 组的最终验收，也不与原全 26 组 gene-only 驱动换算倍速。
 
 ![六组完整 GPU 串行资源测量](../benchmarks/gpu_serial_2026-10-05.png)
 
-本次完整 26 组 GPU 串行运行仍在验证，最终状态、数值验收、显著性/locus 汇总、总耗时和显存待结果闭合后登记。新计算版本的结果须与其实际源码和配置配对。
+旧完整运行已停止：完成 13/26 组，已完成 gene 阶段累计 39,116.70 秒，启动到停止的部分运行墙钟为 41,618.63 秒。全部组与汇总未完成，不能当作完整 pipeline 测量，也不能按组数线性推算全程。后续完整候选队列同样已停止；本轮只执行有超时上限的真实范围探针。
 
-## 数值门槛与检查
+## QAGS 与 Fourier 的真实统计探针
 
-逐行比较容差为 A1FREQ 绝对差 2×10⁻⁶；BETA/SE 绝对差 1×10⁻⁶ 加相对差 1×10⁻⁵；CHISQ 绝对差 1×10⁻⁴ 加相对差 1×10⁻⁵；LOG10P 绝对差 1×10⁻⁴。非有限值和 NA 比较原始 token；不会因结果超门槛调整验收阈值。
+四例使用已有真实完整样本的 score/covariance，N=41,538，VC 列数依次为 4、4、3、2；没有截短其样本。计时范围是统计调用，未包含读取基因型、生成 mask、投影或完整 gene/pipeline。
 
-已完成串行测量对应的冻结统计实现通过本地与验证 GPU 环境的 111 项回归，框架报告时间分别为 119.770 和 54.939 秒。此次串行入口清理包含 21 个实现模块，本地 111 项回归全部通过，框架报告耗时为 64.704 秒；清理后的完整端到端测量尚未登记。覆盖 ridge/QT 独立解、Davies 故障路径、SKAT-O 积分与下溢边界、退化 kernel、SBAT/NNLS、packed BED、样本重排、全部 mask 表头、评分白名单交集、原格式导出、缓存及失败恢复。数学 fixture 用于回归，性能数字均来自真实数据；精简和优化后的代码须按实际源码另行验证。
+| 四例合计指标 | v7 原积分 | v9 QAGS |
+|---|---:|---:|
+| 各例统计调用中位耗时之和 | 11.15249 秒 | 4.47655 秒 |
+| 积分节点总数 | 6,426 | 1,008 |
+| SKAT-O CHISQ 与 LOG10P 同时通过原门槛 | 0/4 例 | 4/4 例 |
+
+积分预算保持 epsabs=1×10⁻²⁵、epsrel=2⁻¹³、最多 1,000 个区间；原数值门槛保持 LOG10P 绝对差 1×10⁻⁴，CHISQ 绝对差 1×10⁻⁴ 加相对差 1×10⁻⁵。这些是不同进程、共享 A100 上的局部观测，不能用作受控整基因或整 pipeline 倍速。四例 SKAT-O 通过也不能替代完整 gene 严格数值 0/6 的记录。
+
+同类四例统计探针中，v11 fused 将 PyTorch 峰值分配从约 46.6 MB 降至 8.82 MB，计时尚未显示稳定收益。v12同进程单独预热两种后端后，每例每种后端交替计时五次，共四例48次调用；全部QAGS收敛、IER=0，无SKAT-O积分失败回退，均通过原CHISQ与LOG10P门槛。各例中位耗时合计torch为3.14907秒、fused为3.44327秒，张量最大绝对差8.38×10⁻¹³。共享GPU下两例较快、两例较慢，未证明融合普遍更快；v13默认采用torch，auto/fused可显式选择。完整真实数值结果与计时须按各自冻结源码、输入范围和配置配对。
+
+完整13,733,596行BIM的私有SQLite索引首次建立为25.02443秒，后续有效性与复用检查为0.001285秒。首次建立计入完整pipeline；本次未测gene查询吞吐，single-only流程不使用这个索引。
+
+重复产品缓存的真实GPU性能探针未完成：原五个mask的CPU重建通过，GPU因跨设备的逐位相等守卫停止。后续仅构建mask的诊断确认成员、顺序、观测计数和raw burden完全相同；一例AAF绝对差为5.42×10⁻²⁰，填补缺失值后的burden有浮点位差。该诊断没有运行关联检验或改变原精度门槛，不登记真实products倍速。缓存开关的score/covariance一致性由回归覆盖，完整真实验收仍单独进行。
+
+[本轮匿名优化记录](../benchmarks/regenie_bounded_optimization_2026-10-05.json)包含上述范围、重复计时、误差、软件和测试摘要。
+
+## 数值门槛与待完成范围
+
+逐行容差为 A1FREQ 绝对差 2×10⁻⁶；BETA/SE 绝对差 1×10⁻⁶ 加相对差 1×10⁻⁵；CHISQ 绝对差 1×10⁻⁴ 加相对差 1×10⁻⁵；LOG10P 绝对差 1×10⁻⁴。非有限值和 NA 比较原始 token；验收阈值保持不变。
+
+当前版本的完整 single、26 组 gene、全部 mask 附件和 Summary 仍需完成真实验证。相对既有 PyTorch 的数值保持、相对原 REGENIE 的严格等价、局部统计计算耗时，以及完整 pipeline 墙钟分别登记；完整五分钟目标尚未达到。
 
 Raw 表型可按论文协变量重新处理；当前真实验证使用现成残差表，raw 协变量处理相对原 R 流程的全队列对照尚未完成。当前范围为连续单表型常染色体 discovery；全研究 22 条染色体、阳性显著命中和二分类/生存/联合多表型不在本次验收中。
 
-私有输入、逐变异/逐基因结果、矩阵和输入文件指纹仅保存在分析者的验证目录。公开资源只包含匿名类别、计数、资源测量和软件摘要。[输入与命令](API.md)、[原算法与文献](REGENIE.md#数值后端与参考)提供复现入口。
+私有输入、逐变异/逐基因结果、矩阵和输入文件指纹仅保存在分析者的验证目录。公开资源只包含匿名类别、计数、资源测量、误差汇总和软件摘要。[输入与命令](API.md)、[原算法与文献](REGENIE.md#数值后端与参考)提供复现入口。

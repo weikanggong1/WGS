@@ -397,12 +397,16 @@ def _shape(genotypes: Any) -> tuple[int, int]:
     return int(genotypes.n_samples), int(genotypes.n_variants)
 
 
-def _read_block(genotypes: Any, indices: np.ndarray, sample_indices: torch.Tensor) -> torch.Tensor:
+def _read_block(genotypes: Any, indices: np.ndarray, sample_indices: torch.Tensor, *,
+                device=None, dtype=torch.float32) -> torch.Tensor:
     if isinstance(genotypes, torch.Tensor):
         block = genotypes.index_select(1, torch.as_tensor(indices, device=genotypes.device))
         return block.index_select(0, sample_indices.to(block.device))
     if isinstance(genotypes, np.ndarray):
         return torch.from_numpy(np.asarray(genotypes[np.ix_(sample_indices.numpy(), indices)]))
+    if device is not None and torch.device(device).type == 'cuda' and hasattr(genotypes, 'read_packed_variants'):
+        return genotypes.read_packed_variants(indices, sample_rows=sample_indices,
+                                              device=device, dtype=dtype)
     pieces = []
     seen = []
     for block_indices, matrix in genotypes.iter_blocks(len(indices), indices=indices):
@@ -559,7 +563,7 @@ def fit_null(genotypes: Any, phenotype: torch.Tensor | np.ndarray,
             penalties0 = torch.tensor([m_total * (1 - h) / h for h in config.ridge_l0], dtype=dtype, device=device)
             l0_started = time.perf_counter()
             for block_number, (chromosome, indices) in enumerate(blocks):
-                raw = _read_block(genotypes, indices, working_indices)
+                raw = _read_block(genotypes, indices, working_indices, device=device, dtype=dtype)
                 g = raw.to(device=device, dtype=dtype)
                 del raw
                 if torch.isinf(g).any() or ((torch.isfinite(g)) & ((g < 0) | (g > 2))).any():

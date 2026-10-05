@@ -35,6 +35,48 @@ class Context:
 
 
 class MaskTests(unittest.TestCase):
+    def test_gene_output_preserves_python_float_rounding_with_both_default_dtypes(self):
+        from torchwgs.gene import _row, _materialize_gene_rows
+        from torchwgs.output import _native
+        gene = GeneSet('FixtureGene', '21', 1, ())
+        original_dtype = torch.get_default_dtype()
+        try:
+            for dtype in (torch.float32, torch.float64):
+                torch.set_default_dtype(dtype)
+                value = 1.23456499
+                expected = _row(gene, 100, 'ADD-TEST', value)
+                obtained = _materialize_gene_rows([_row(gene, 100, 'ADD-TEST', value, defer=True)])[0]
+                for field in ('LOG10P', 'CHISQ'):
+                    self.assertEqual(_native(obtained[field]), _native(expected[field]))
+                self.assertEqual(obtained['LOG10P'], expected['LOG10P'])
+        finally:
+            torch.set_default_dtype(original_dtype)
+
+    def test_gene_output_batches_inverse_without_changing_native_na_and_order(self):
+        import math
+        from scipy.stats import chi2
+        from torchwgs.gene import _row, _materialize_gene_rows
+        from torchwgs import statistics as stats
+        gene = GeneSet('FixtureGene', '21', 1, ())
+        logps = [.3010299956639812, 0., 12., float('nan'), -.2, None]
+        rows = [_row(gene, 100, 'ADD-TEST'+str(index),
+                     None if value is None else torch.tensor(value, device=DEVICE, dtype=torch.float64),
+                     df=3, strongest='Mask1', defer=True)
+                for index, value in enumerate(logps)]
+        with patch.object(stats, 'chi2_isf_log10p', wraps=stats.chi2_isf_log10p) as inverse:
+            output = _materialize_gene_rows(rows)
+        self.assertEqual(inverse.call_count, 1)
+        self.assertEqual([row['TEST'] for row in output], ['ADD-TEST'+str(i) for i in range(6)])
+        for row, value in zip(output, logps):
+            if value is None or not math.isfinite(value) or value < 0:
+                self.assertIsNone(row['LOG10P'])
+                self.assertIsNone(row['CHISQ'])
+                self.assertEqual(row['EXTRA'], 'DF=NA;STRONGEST_MASK=Mask1')
+            else:
+                self.assertEqual(row['LOG10P'], value)
+                self.assertAlmostEqual(row['CHISQ'], float(chi2.isf(10**-value, 1)), places=10)
+                self.assertEqual(row['EXTRA'], 'DF=3;STRONGEST_MASK=Mask1')
+
     def test_score_whitelist_candidate_filter_matches_complete_source_membership(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "score.extract"
@@ -101,7 +143,10 @@ class MaskTests(unittest.TestCase):
                          {(None, "singleton"), (None, "0.01"),
                           ("UR", "singleton"), ("UR", "0.01")})
         self.assertFalse(loaded.gene_based.apply_rint)
-        self.assertEqual(loaded.gene_based.skato_integral_backend, "adaptive_x")
+        self.assertEqual(loaded.gene_based.skato_integral_backend, "qags_x")
+        self.assertEqual(loaded.gene_based.davies_fourier_backend, "torch")
+        restored = WGSConfig.from_dict({'gene_based': {'skato_integral_backend': 'adaptive_x'}})
+        self.assertEqual(restored.gene_based.skato_integral_backend, 'adaptive_x')
         self.assertEqual(loaded.gene_based.skato_integral_epsabs, 1e-25)
         self.assertEqual(loaded.gene_based.skato_integral_epsrel, 2.**-13)
         self.assertEqual(loaded.gene_based.skato_integral_max_intervals, 1000)

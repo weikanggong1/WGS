@@ -93,6 +93,12 @@ def _allele_counts(g):
     called = torch.isfinite(g)
     n_called = called.sum(0)
     alt_count = torch.where(called, g, 0.).sum(0, dtype=torch.float64)
+    return _counts_from_observed(n_called, alt_count)
+
+
+def _counts_from_observed(n_called, alt_count):
+    """Use identical float64 frequency/MAC arithmetic for both BED readers."""
+    alt_count = alt_count.to(torch.float64)
     aaf = alt_count/(2*n_called.clamp_min(1))
     maf = torch.minimum(aaf, 1-aaf)
     mac = torch.minimum(alt_count, 2*n_called-alt_count)
@@ -121,6 +127,23 @@ def score_genotypes(genotypes, context):
     return _score_counted_genotypes(g, context, _allele_counts(g))
 
 
+def _copy_result_columns(statistics):
+    """Copy floating statistics and validity together, preserving integer N.
+
+    Integer sample counts keep their original Python integer representation.
+    Floating values are promoted losslessly to float64 for one bounded block
+    transfer; this also avoids a separate nonzero/host-copy for validity.
+    """
+    names = [name for name in statistics if name not in ('N', 'VALID')]
+    floating = torch.stack([statistics[name].to(torch.float64) for name in names]
+                           + [statistics['VALID'].to(torch.float64)])
+    copied = floating.detach().cpu().tolist()
+    columns = dict(zip(names, copied[:-1]))
+    columns['N'] = statistics['N'].detach().cpu().tolist()
+    columns = {name: columns[name] for name in statistics if name != 'VALID'}
+    return columns, copied[-1]
+
+
 def iter_single_variant_results(reader, context, *, config=None, variant_indices=None):
     config = SingleVariantConfig() if config is None else config
     sample_rows=None
@@ -132,24 +155,41 @@ def iter_single_variant_results(reader, context, *, config=None, variant_indices
         sample_rows=context.sample_indices
     if config.genotype_reader=='cuda_packed' and context.y.device.type!='cuda':
         raise ValueError('cuda_packed single-variant reader requires a CUDA context')
-    blocks = reader.iter_variant_blocks(config.block_size,variant_indices,
-             genotype_reader=config.genotype_reader,sample_rows=sample_rows,
-             device=context.y.device,dtype=context.y.dtype)
+    packed_blocks = config.genotype_reader == 'cuda_packed' and hasattr(reader, 'iter_packed_variant_blocks')
+    if packed_blocks:
+        blocks = reader.iter_packed_variant_blocks(config.block_size, variant_indices,
+                 sample_rows=sample_rows, device=context.y.device, dtype=context.y.dtype)
+    else:
+        blocks = reader.iter_variant_blocks(config.block_size,variant_indices,
+                 genotype_reader=config.genotype_reader,sample_rows=sample_rows,
+                 device=context.y.device,dtype=context.y.dtype)
     for variants, genotypes in blocks:
-        g = torch.as_tensor(genotypes, device=context.y.device, dtype=context.y.dtype)
-        counts = _allele_counts(g)
+        if packed_blocks:
+            observed = genotypes.allele_counts()
+            counts = _counts_from_observed(observed['N'], observed['AAC'])
+        else:
+            g = torch.as_tensor(genotypes, device=context.y.device, dtype=context.y.dtype)
+            counts = _allele_counts(g)
         # WGS contains many ultra-rare variants.  Reject them before building
         # projected N x B matrices; the observed-count filter is unchanged.
         selected = ((counts['N'] > 0) & (counts['MAC'] >= config.min_mac)
                     & (counts['MAF'] > config.maf_min)).nonzero().flatten()
         if not selected.numel():
             continue
-        variants = [variants[j] for j in selected.cpu().tolist()]
+        selected_rows = selected.cpu().tolist()
+        variants = [variants[j] for j in selected_rows]
         counts = {name: values[selected] for name, values in counts.items()}
-        stats = _score_counted_genotypes(g[:, selected], context, counts)
-        keep = stats['VALID']
-        columns = {k: v.detach().cpu().tolist() for k, v in stats.items() if k != 'VALID'}
-        for j in keep.nonzero().flatten().cpu().tolist():
+        # The packed CUDA path only materializes the sites that survive MAC/MAF.
+        # The CPU/reference path retains its previous decode and selection order.
+        g = genotypes.decode(selected_rows) if packed_blocks else g[:, selected]
+        stats = _score_counted_genotypes(g, context, counts)
+        columns, valid_rows = _copy_result_columns(stats)
+        # Do not keep this floating-point matrix alive while the reader uploads
+        # and counts the next packed block, including consecutive empty blocks.
+        del g
+        for j, valid in enumerate(valid_rows):
+            if not valid:
+                continue
             variant = variants[j]
             yield {'CHROM': variant.chrom, 'GENPOS': variant.position, 'ID': variant.id,
                    'ALLELE0': variant.allele0, 'ALLELE1': variant.allele1,
