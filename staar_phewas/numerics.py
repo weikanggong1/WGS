@@ -84,9 +84,6 @@ def _sixteen_lane_dot(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return (second[0] + second[1]) + (second[2] + second[3])
 
 
-_warmed_layouts: set[tuple] = set()
-
-
 def reference_crossprod(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
     """A'B with the frozen BLAS scalar-column reduction order.
 
@@ -105,14 +102,19 @@ def reference_crossprod(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor
     if right.ndim not in (1, 2):
         raise ValueError("cross-product right input must be a vector or matrix")
     r = right[:, None] if vector else right
-    a, b = torch.broadcast_tensors(left, r)
-    key = (str(a.device), a.shape, a.stride(), b.stride())
-    if a.is_cuda and key not in _warmed_layouts:
-        # TorchScript's first profiling executions precede CUDA fusion. Warm
-        # this layout before selecting its fused multiply-add result, so the
-        # first fitted model and subsequent fits have the same rounding.
-        _sixteen_lane_dot(a, b)
-        _sixteen_lane_dot(a, b)
-        _warmed_layouts.add(key)
-    result = _sixteen_lane_dot(a, b)
+    if left.is_cuda:
+        # Explicit hardware FMA retains the reference rounding on every lane;
+        # profiling/fusion of TorchScript addcmul does not define this result.
+        from ._fma_cuda import fma16_dot
+        result = fma16_dot(left, r)
+    else:
+        a, b = torch.broadcast_tensors(left, r)
+        result = _sixteen_lane_dot(a, b)
     return result if vector else result[None, :]
+
+
+
+def reference_dot_execution_metadata() -> dict:
+    """Report actual explicit FP64 FMA CUDA launches in this process."""
+    from ._fma_cuda import fma16_execution_metadata
+    return fma16_execution_metadata()

@@ -255,9 +255,14 @@ def dense_s4_matrix(matrix, *, dimnames=None) -> RS4:
 
 
 def association_object(result, *, kind: str, layout="phewas"):
-    """Convert result records into the exact reference PheWAS object topology."""
-    if layout != "phewas":
-        raise ValueError("supported association layout is phewas")
+    """Convert records into the reference PheWAS or base object topology.
+
+    The computation API always groups rows by trait. Base STAARpipeline has
+    one trait and returns each matrix/data.frame directly; PheWAS retains the
+    trait list. Empty masks are R NULL in either layout.
+    """
+    if layout not in ("phewas", "base"):
+        raise ValueError("supported association layouts are phewas and base")
     if kind == "individual":
         kind = "singlevariant"
     if kind not in ("coding", "noncoding", "ncrna", "singlevariant", "sliding"):
@@ -280,6 +285,11 @@ def association_object(result, *, kind: str, layout="phewas"):
                     # to character before numeric statistic lists are joined.
                     value = str(value) if isinstance(value, str) else format(float(value), ".15g")
                 elif name == "#SNV":
+                    value = int(value)
+                elif layout == "base" and name == "Chr":
+                    # Tutorial array-to-chromosome mapping uses which.max,
+                    # whose scalar is integer; PheWAS reference calls use a
+                    # numeric chromosome argument. Preserve that distinction.
                     value = int(value)
                 elif name not in ("Gene name", "Category"):
                     value = float(value)
@@ -304,8 +314,15 @@ def association_object(result, *, kind: str, layout="phewas"):
                 columns[name] = np.asarray(values, dtype=np.int32 if name == "N" else np.float64)
         return RDataFrame(columns, row_names)
 
+    def trait_output(values):
+        if layout == "base":
+            if len(values) != 1:
+                raise ValueError("base association layout requires exactly one trait")
+            return values[0]
+        return values
+
     if kind == "singlevariant":
-        return [dataframe_rows(rows) for rows in result]
+        return trait_output([dataframe_rows(rows) for rows in result])
     if isinstance(result, Mapping):
         output = {}
         for category, traits in result.items():
@@ -316,9 +333,9 @@ def association_object(result, *, kind: str, layout="phewas"):
                 if category == "disruptive_missense" and bool(result.get("missense", [[]] * len(traits))[index]):
                     label = None
                 category_rows.append(matrix_rows(rows, row_label=label))
-            output[category] = category_rows
+            output[category] = trait_output(category_rows)
         return output
-    return [matrix_rows(rows) for rows in result]
+    return trait_output([matrix_rows(rows) for rows in result])
 
 
 def write_association_output(path, result, *, kind: str, object_name=None,
@@ -328,7 +345,8 @@ def write_association_output(path, result, *, kind: str, object_name=None,
              "ncrna": "results_noncoding", "sliding": "results_sliding_window",
              "singlevariant": "results_individual_analysis", "individual": "results_individual_analysis"}
     value = association_object(result, kind=kind, layout=layout)
-    write_r_object(path, value, object_name=object_name or names[kind])
+    default_name = "results_ncRNA" if kind == "ncrna" and layout == "base" else names[kind]
+    write_r_object(path, value, object_name=object_name or default_name)
 
 
 def association_batch_object(results, *, kind: str, layout="phewas"):
@@ -347,6 +365,19 @@ def association_batch_object(results, *, kind: str, layout="phewas"):
         return parts[0]
     if kind in ("singlevariant", "individual"):
         raise ValueError("multiple individual jobs cannot share one output file")
+    if layout == "base" and kind in ("sliding", "ncrna"):
+        matrices = [part for part in parts if part is not None]
+        if not matrices:
+            return None
+        columns = matrices[0].columns
+        if any(matrix.columns != columns or matrix.mode != "list" for matrix in matrices):
+            raise ValueError("base matrices must have identical ordered columns")
+        values = np.concatenate([matrix.values for matrix in matrices], axis=0)
+        row_names = None
+        if any(matrix.row_names is not None for matrix in matrices):
+            row_names = [name for matrix in matrices for name in
+                         (matrix.row_names if matrix.row_names is not None else [""] * len(matrix.values))]
+        return RMatrix(values, columns, row_names, mode="list")
     if kind == "sliding":
         n_traits = len(parts[0])
         if any(len(part) != n_traits for part in parts):
@@ -375,8 +406,16 @@ def association_batch_object(results, *, kind: str, layout="phewas"):
             values.extend(part.values())
             names.extend(part.keys())
         else:
-            values.extend(part)
-            names.extend([""] * len(part))
+            if layout == "base":
+                # R append(NULL, selected_matrix) appends its cells, stripping
+                # dimensions. Tutorials call all_categories; preserve the
+                # selected-category append semantics when explicitly used.
+                cells = [] if part is None else list(np.asarray(part.values).ravel(order="F"))
+                values.extend(cells)
+                names.extend([""] * len(cells))
+            else:
+                values.extend(part)
+                names.extend([""] * len(part))
     return RAttributed(values, {"names": np.asarray(names, dtype=str)}) if named else values
 
 
@@ -387,4 +426,5 @@ def write_association_batch(path, results, *, kind: str, object_name=None,
              "ncrna": "results_noncoding", "sliding": "results_sliding_window",
              "singlevariant": "results_individual_analysis", "individual": "results_individual_analysis"}
     value = association_batch_object(results, kind=kind, layout=layout)
-    write_r_object(path, value, object_name=object_name or names[kind])
+    default_name = "results_ncRNA" if kind == "ncrna" and layout == "base" else names[kind]
+    write_r_object(path, value, object_name=object_name or default_name)

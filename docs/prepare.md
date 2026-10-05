@@ -5,8 +5,8 @@
 ```bash
 staar-phewas-prepare \
     --gds private/chr22.gds \
-    --phenotypes private/brain_phenotypes.tsv \
-    --phenotype-columns brain_trait_1 \
+    --phenotypes private/phenotypes.tsv \
+    --phenotype-columns trait_A \
     --id-column IID \
     --grm private/relationship.Rdata \
     --id-pattern '([^_]+)$' \
@@ -14,7 +14,7 @@ staar-phewas-prepare \
     --output private/aligned_trait.npz
 ```
 
-`--phenotype-columns brain_trait_1 brain_trait_2` 生成联合完整样本输入。多个独立 PheWAS 表型分别准备各自 NPZ，保留不同的有效样本数。
+`--phenotype-columns trait_A trait_B` 生成联合完整样本输入。多个独立 PheWAS 表型分别准备各自 NPZ，保留不同的有效样本数。
 
 ## Python 调用和参数
 
@@ -23,8 +23,8 @@ from staar_phewas.prepare import prepare_input
 
 alignment_summary = prepare_input(
     gds="private/chr22.gds",
-    phenotypes="private/brain_phenotypes.tsv",
-    phenotype_columns=["brain_trait_1"],
+    phenotypes="private/phenotypes.tsv",
+    phenotype_columns=["trait_A"],
     id_column="IID",
     grm="private/relationship.Rdata",
     id_pattern=r"([^_]+)$",
@@ -52,6 +52,6 @@ alignment_summary = prepare_input(
 
 本工具不变换表型，不再次阈值化 GRM，不把其对角替换成 1。秩变换在拟合配置的 `transform="rint"` 阶段执行。正式零模型及关联输出见 [pipeline](pipeline.md)。
 
-2026-10-04：真实原始影像表型 64,840 行、60,709 个有限值、353 个排除 ID，最终 42,652 个 GDS/GRM 对齐样本。Python 原生读取 GRM 后的 8 个关键数组与独立 R 导出的准备结果逐项一致，保留真实非单位对角项。此记录属于输入一致性检查；关联精度和耗时见 [benchmark](benchmark.md)。
+2026-10-04：真实原始连续表型 64,840 行、60,709 个有限值、353 个排除 ID，最终 42,652 个 GDS/GRM 对齐样本。Python 原生读取 GRM 后的 8 个关键数组与独立 R 导出的准备结果逐项一致，保留真实非单位对角项。此记录属于输入一致性检查；关联精度和耗时见 [benchmark](benchmark.md)。
 
 原 R 对应通过 `load()` 读取 Matrix GRM、`seqGetData(genofile,"sample.id")` 读取样本，并按照匹配索引子集化；正式拟合调用见 [零模型](null_model.md)。参考：[SeqArray](https://github.com/zhengxwen/SeqArray)、[CoreArray pygds](https://github.com/CoreArray/pygds)、[rdata](https://github.com/vnmabus/rdata)、[R Matrix](https://cran.r-project.org/package=Matrix)。

@@ -17,8 +17,11 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from ._reference_weights import reference_complementary_phred
+
 
 CODING_CATEGORIES = ("plof", "plof_ds", "missense", "disruptive_missense", "synonymous")
+CODING_CATEGORIES_INCL_PTV = CODING_CATEGORIES + ("ptv", "ptv_ds")
 NONCODING_CATEGORIES = (
     "upstream", "downstream", "UTR", "promoter_CAGE", "promoter_DHS",
     "enhancer_CAGE", "enhancer_DHS",
@@ -48,6 +51,36 @@ def _chromosome(value: object) -> str:
     if result.lower().startswith("chr"):
         result = result[3:]
     return result.upper()
+
+
+def gene_assignments(category: str, values: Sequence) -> list[tuple[str, ...]]:
+    """Parse gene names using the original mask's annotation grammar.
+
+    ``values`` is GENCODE.Info for upstream, downstream, UTR, promoter and
+    ncRNA masks, or GeneHancer for enhancer masks. The result contains one
+    tuple per row, in input order. Empty names are omitted; names are not
+    stripped or otherwise normalized. Coding masks use catalog coordinates
+    and must not use this annotation assignment helper.
+    """
+    if category in ("upstream", "downstream"):
+        parse = lambda value: value.split(",")
+    elif category == "UTR":
+        parse = lambda value: [value.split("(", 1)[0]]
+    elif category in ("promoter", "promoter_CAGE", "promoter_DHS"):
+        parse = lambda value: [re.split(r"\(|,|;|-", value, maxsplit=1)[0]]
+    elif category == "ncRNA":
+        parse = lambda value: re.sub(r"\(.*\)", "", value.split(";", 1)[0]).split(",")[:3]
+    elif category in ("enhancer", "enhancer_CAGE", "enhancer_DHS"):
+        parse = lambda value: [value.split("=")[3].split(";", 1)[0]] if len(value.split("=")) > 3 else []
+    else:
+        raise ValueError("gene assignment category must be a noncoding or ncRNA mask")
+    return [tuple(dict.fromkeys(name for name in parse(value) if name))
+            for value in _strings(values)]
+
+
+def genehancer_genes(values: Sequence) -> list[tuple[str, ...]]:
+    """Parse the fourth '=' token used by both original enhancer selectors."""
+    return gene_assignments("enhancer", values)
 
 
 @dataclass
@@ -286,8 +319,7 @@ def annotation_phred_matrix(
         columns.append(values)
         names.append(name)
         if name == "aPC.LocalDiversity":
-            with np.errstate(divide="ignore", invalid="ignore"):
-                complement = -10 * np.log10(1 - np.power(10.0, -values / 10))
+            complement = reference_complementary_phred(values)
             columns.append(complement)
             names.append(name + "(-)")
     return (np.column_stack(columns) if columns else np.empty((len(rows), 0))), names

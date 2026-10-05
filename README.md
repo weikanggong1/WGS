@@ -40,6 +40,12 @@ torchwgs --inputs discovery_inputs.json --out /results/discovery --no-rint
 
 安装、Python/命令行调用、全部参数、原 R 示例与流程图见 [pipeline 文档](docs/pipeline.md)。真实数据对照范围和误差见 [benchmark](docs/benchmark.md)。
 
+读取、主机准备、小矩阵同步与精度校正的速度成本，以及串行/mask 批量和完整计时口径，见 [性能分析](docs/performance.md)。
+
+单个连续表型的完整染色体入口见 [chromosome](docs/chromosome.md)：全部单变异、7 类 coding、7 类 noncoding 及独立 ncRNA mask，按原完整基因目录与 array ID 生成批次文件；支持 mask 批量 GPU 统计。精度选择及实际 FP32/TF32 探针见 [precision](docs/precision.md)。
+
+0.2.0 已在 42,652 个真实样本、一个连续表型的 chr21 上完成 GPU 串行全流程：221 个 coding、221 个 noncoding、349 个 ncRNA 和四个单变异区段，共 795 项任务。18 份关联文件的 3,343,119 个数值单元格全部通过原 R 的严格容差检查，文件结构、8 次单变异元数据读回及零模型对照均通过；单变异输出共 318,132 行。范围、实测耗时和聚合记录见 [最新 benchmark](docs/benchmark.md)。
+
 正式输出采用 STAAR 原生 `.Rdata` 文件，保留保存对象名、列表层次、混合矩阵、factor 与 `row.names`；[文件格式](docs/r_native_output.md)给出批次命名和 R 读回方式。[联合多表型](docs/multi.md)与[二分类 SPA](docs/binary.md)分别说明相关性模型、原包兼容问题和实际验证范围。
 
 ```bash
@@ -48,8 +54,12 @@ conda activate staar-phewas-torch
 LZMA_PREFIX="$CONDA_PREFIX" python -m pip install --no-deps --no-build-isolation \
   'git+https://github.com/CoreArray/pygds.git@b7a2dbbebf3b06ac4e97c806e36ec4e1a6af5bdd'
 python -m pip install -e .
+# 安装并配置独立精度库，命令见下方链接。
+# STAAR_REFERENCE_LAPACK_LIBRARY 指向已校验的 libmkl_rt.so。
 staar-phewas-torch examples/staar-analysis.json --device cuda --report runs/summary.json
 ```
+
+保持原版近均值 Saddle 输出的 CUDA 分析还需安装独立的参考 LAPACK prefix，设置 `STAAR_REFERENCE_LAPACK_LIBRARY`；完整命令见 [精度与安装说明](docs/precision.md#安装锁定的参考-lapack)。少量标量权重转换和敏感谱求解使用 CPU，score、协方差和关联检验由 PyTorch CUDA 执行；报告记录这些校正的实际次数和耗时。
 
 示例配置使用占位路径。输入 GDS、表型、亲缘信息和零模型均保存在分析者的私有目录。
 

@@ -1,11 +1,16 @@
 """Private JSON configuration for chromosome-sharded association analyses."""
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import time
 import numpy as np
 import torch
 from .gds import SeqArrayGDS
+from .sparse_numerics import sparse_execution_metadata
+from .numerics import reference_dot_execution_metadata
+from ._precision_eigen import precision_eigen_execution_metadata
+from ._reference_weights import reference_weights_execution_metadata
 from .pipeline import PheWASPipeline, AnalysisOptions
 from .io import fit_prepared_input, save_null_model, load_null_model
 from .r_output import write_association_output, write_association_batch
@@ -19,6 +24,18 @@ def _json_value(value):
     if isinstance(value, np.ndarray):
         return value.tolist()
     raise TypeError(type(value).__name__)
+
+
+def _read_promoter_intervals(filename):
+    intervals = []
+    with open(filename) as stream:
+        for line in stream:
+            if line.strip() and not line.startswith('#'):
+                chromosome, start, end = line.split()[:3]
+                if start == 'start' and end == 'end':
+                    continue
+                intervals.append((chromosome, int(start), int(end)))
+    return intervals
 
 
 def _bind_gds_samples(gds,model,prepared_indices=None,rule="auto"):
@@ -68,9 +85,16 @@ def _bind_gds_samples(gds,model,prepared_indices=None,rule="auto"):
 
 def run_configuration(config, *, device="cuda"):
     """Fit/load one model per phenotype, then run ordered chromosome jobs."""
+    precision_eigen_execution_metadata(reset=True)
+    reference_weights_execution_metadata(reset=True)
+    full_started = time.perf_counter()
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
-    full_started = time.perf_counter()
+    if device.startswith('cuda'):
+        torch.cuda.init()
+        torch.cuda.reset_peak_memory_stats(device)
+    cuda_initialization_seconds = time.perf_counter() - full_started if device.startswith('cuda') else 0.0
+    models_started = time.perf_counter()
     models, rows = [], []
     for phenotype in config["phenotypes"]:
         if "model" in phenotype:
@@ -98,15 +122,28 @@ def run_configuration(config, *, device="cuda"):
                 model.phenotype_names=tuple(names)
         if model.family=="binomial" and "reference" in model.fit_method.lower() and not config.get("validation_reference",False):
             raise ValueError("an original R binary reference cache is restricted to explicit validation_reference runs")
+        if config.get('require_single_continuous', False) and (model.family != 'gaussian' or model.n_pheno != 1):
+            raise ValueError('the complete chromosome workflow requires a single Gaussian phenotype')
         models.append(model); rows.append(index)
-    null_fit_seconds = time.perf_counter() - full_started
+    null_fit_seconds = time.perf_counter() - models_started
     catalog = config.get("annotation_catalog", {})
     if isinstance(catalog, str):
         catalog = json.loads(Path(catalog).read_text())
     report = {"schema_version": 1, "phenotypes": [p["name"] for p in config["phenotypes"]], "jobs": []}
     # Report excludes the input configuration and any subject identifiers.
     output_groups={}
+    remaining_outputs = Counter(str(Path(job['output']).resolve())
+        for chromosome in config['chromosomes'] for job in chromosome['jobs'])
+    interval_cache = {}
+    statistics_execution = config.get('statistics_execution', 'serial')
+    if statistics_execution not in ('serial', 'batched'):
+        raise ValueError('statistics_execution must be serial or batched')
+    index_seconds = 0.0
+    setup_seconds = 0.0
+    native_output_seconds = 0.0
+    null_output_seconds = 0.0
     for chromosome in config["chromosomes"]:
+        before_setup = time.perf_counter()
         with SeqArrayGDS(chromosome["gds"]) as gds:
             current_rows=[_bind_gds_samples(gds,model,index,phenotype.get("sample_id_rule","auto"))
                           for model,index,phenotype in zip(models,rows,config["phenotypes"])]
@@ -114,7 +151,20 @@ def run_configuration(config, *, device="cuda"):
                 annotation_catalog=catalog, annotation_names=config.get("annotation_names", []),
                 gds_sample_indices=current_rows,
                 options=AnalysisOptions(**config.get("analysis_options", {})))
+            pipeline.statistics_execution = statistics_execution
+            setup_seconds += time.perf_counter() - before_setup
+            if 'annotation_index' in chromosome:
+                index_config = chromosome['annotation_index']
+                promoter_file = index_config.get('promoter_intervals_file')
+                if promoter_file is not None and promoter_file not in interval_cache:
+                    interval_cache[promoter_file] = _read_promoter_intervals(promoter_file)
+                before_index = time.perf_counter()
+                pipeline.prepare_annotation_index(chromosome['name'],
+                    promoter_intervals=None if promoter_file is None else interval_cache[promoter_file],
+                    include_ncrna=index_config.get('include_ncrna', True))
+                index_seconds += time.perf_counter() - before_index
             if not report.get("models_saved",False):
+                before_null_output = time.perf_counter()
                 for model, phenotype in zip(models, config["phenotypes"]):
                     if "save_model" in phenotype:
                         Path(phenotype["save_model"]).parent.mkdir(parents=True, exist_ok=True)
@@ -127,26 +177,21 @@ def run_configuration(config, *, device="cuda"):
                         writer(phenotype["output_null"],model,original_sample_ids=model.gds_sample_ids,
                                covariate_names=phenotype.get("covariate_names"),**extra)
                 report["models_saved"]=True
+                null_output_seconds += time.perf_counter() - before_null_output
             for job in chromosome["jobs"]:
                 kind = job["kind"]
                 arguments = dict(job.get("arguments", {}))
                 arguments["chromosome"] = chromosome["name"]
                 if "promoter_intervals_file" in arguments:
                     filename = arguments.pop("promoter_intervals_file")
-                    intervals = []
-                    with open(filename) as stream:
-                        for line in stream:
-                            if line.strip() and not line.startswith("#"):
-                                c, start, end = line.split()[:3]
-                                if start == "start" and end == "end":
-                                    continue
-                                intervals.append((c, int(start), int(end)))
-                    arguments["promoter_intervals"] = intervals
+                    if filename not in interval_cache:
+                        interval_cache[filename] = _read_promoter_intervals(filename)
+                    arguments["promoter_intervals"] = interval_cache[filename]
                 print(json.dumps({"event": "started", "job": job.get("name", kind), "chromosome": chromosome["name"]}), flush=True)
                 started = time.perf_counter()
                 result = getattr(pipeline, kind)(**arguments)
                 if device.startswith("cuda"):
-                    torch.cuda.synchronize()
+                    torch.cuda.synchronize(device)
                 elapsed = time.perf_counter() - started
                 output = Path(job["output"])
                 output.parent.mkdir(parents=True, exist_ok=True)
@@ -159,6 +204,16 @@ def run_configuration(config, *, device="cuda"):
                     if kind=="individual" and group["results"]:
                         raise ValueError("multiple individual jobs require separate native output files")
                     group["results"].append(result)
+                    remaining_outputs[key] -= 1
+                    if remaining_outputs[key] == 0:
+                        # Final occurrence is known from the complete schedule.
+                        # Flush whole tutorial batches as soon as ready, so a
+                        # chromosome does not retain all individual data.frames.
+                        before_write = time.perf_counter()
+                        write_association_batch(group['path'], group['results'], kind=kind,
+                            object_name=job.get('object_name'), layout=job.get('layout', 'phewas'))
+                        native_output_seconds += time.perf_counter() - before_write
+                        group['results'].clear()
                 elif output.suffix.lower() == ".json" and config.get("debug_json", False):
                     output.write_text(json.dumps(result, ensure_ascii=False, default=_json_value, allow_nan=False))
                 else:
@@ -173,18 +228,41 @@ def run_configuration(config, *, device="cuda"):
                     debug_path.write_text(json.dumps(result,ensure_ascii=False,default=_json_value,allow_nan=False))
                 report["jobs"].append({"name": job.get("name", kind), "chromosome": chromosome["name"],
                                        "kind": kind, "seconds": elapsed})
+                print(json.dumps({"event": "finished", "job": job.get("name", kind),
+                                  "seconds": elapsed}), flush=True)
+                del result
+            if getattr(pipeline, 'batch_diagnostics', None):
+                report.setdefault('batch_diagnostics', []).extend(pipeline.batch_diagnostics)
     for group in output_groups.values():
         kind,object_name,layout=group["signature"]
-        write_association_batch(group["path"],group["results"],kind=kind,object_name=object_name,layout=layout)
+        if group['results']:
+            before_write = time.perf_counter()
+            write_association_batch(group["path"],group["results"],kind=kind,object_name=object_name,layout=layout)
+            native_output_seconds += time.perf_counter() - before_write
     report["null_fit_seconds"] = null_fit_seconds
     report["total_seconds"] = time.perf_counter() - full_started
-    report["peak_gpu_mib"] = torch.cuda.max_memory_allocated() / 2**20 if device.startswith("cuda") else None
+    report["peak_gpu_mib"] = torch.cuda.max_memory_allocated(device) / 2**20 if device.startswith("cuda") else None
+    report["peak_gpu_reserved_mib"] = torch.cuda.max_memory_reserved(device) / 2**20 if device.startswith("cuda") else None
     report.pop("models_saved",None)
     report["number_samples"] = [model.n for model in models]
     report["number_phenotypes"] = [model.n_pheno for model in models]
     report["null_fit_methods"] = [getattr(model,"fit_method","single_gaussian") for model in models]
     report["reference_validation"] = bool(config.get("validation_reference",False))
     report["device"] = device
+    report['statistics_execution'] = statistics_execution
+    report['index_preparation_seconds'] = index_seconds
+    report['gds_setup_seconds'] = setup_seconds
+    report['genotype_reader'] = gds.reader_metadata
+    report['ordered_addition_execution'] = sparse_execution_metadata()
+    report['reference_projection_execution'] = reference_dot_execution_metadata()
+    report['precision_eigen_execution'] = precision_eigen_execution_metadata()
+    report['annotation_weight_execution'] = reference_weights_execution_metadata()
+    report['native_association_output_seconds'] = native_output_seconds
+    report['native_null_and_cache_output_seconds'] = null_output_seconds
+    report['torch_version'] = torch.__version__
+    report['cuda_version'] = torch.version.cuda
+    report['cuda_initialization_seconds'] = cuda_initialization_seconds
+    report['gpu_name'] = torch.cuda.get_device_name(device) if device.startswith('cuda') else None
     return report
 
 

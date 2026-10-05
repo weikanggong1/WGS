@@ -139,20 +139,50 @@ class GaussianNullModel:
     def device(self):
         return self.x.device
 
-    def score_covariance(self, genotype):
+    def score_covariance(self, genotype, *, reduction="blas", max_workspace_bytes=256 * 1024**2):
         """U=G' scaled.residuals, V=G' Sigma_i G-X projection.
 
         The block eigensystem avoids materializing an N by N projector.
         Final precision and residuals preserve GMMAT's finite-tolerance
         return convention (precision is from the last pre-update step).
+        reduction='reference_sparse' uses increasing sparse row sums for
+        diagonal precision, with bounded temporary covariance pair blocks.
+        Off-diagonal relatedness blocks require reduction='blas'.
+        """
+        g = torch.as_tensor(genotype, dtype=torch.float64, device=self.device)
+        if g.ndim != 2 or g.shape[0] != self.n or not bool(torch.isfinite(g).all()):
+            raise ValueError("genotype must be a finite samples-by-variants matrix")
+        if reduction == "reference_sparse":
+            if self.spectrum.blocks:
+                raise NotImplementedError("ordered sparse reduction requires diagonal precision")
+            from .sparse_numerics import reference_sparse_score_covariance
+            return reference_sparse_score_covariance(
+                g, self.scaled_residuals, self.inverse_variance, self.precision_x,
+                self.fixed_effect_covariance, max_workspace_bytes=max_workspace_bytes)
+        if reduction != "blas":
+            raise ValueError("reduction must be 'blas' or 'reference_sparse'")
+        rotated = self.spectrum.rotate(g)
+        cross = self.precision_x.T @ g
+        covariance = rotated.T @ (self.inverse_variance[:, None] * rotated) - cross.T @ self.fixed_effect_covariance @ cross
+        return g.T @ self.scaled_residuals, (covariance + covariance.T) / 2
+
+
+    def individual_score_variance(self, genotype):
+        """Single-variant scores and variances without an M by M matrix.
+
+        Genotypes have the same oriented, imputed [samples, variants] layout
+        as score_covariance. All computations remain float64 on this model's
+        device; the block eigensystem applies the same precision operator.
         """
         g = torch.as_tensor(genotype, dtype=torch.float64, device=self.device)
         if g.ndim != 2 or g.shape[0] != self.n or not bool(torch.isfinite(g).all()):
             raise ValueError("genotype must be a finite samples-by-variants matrix")
         rotated = self.spectrum.rotate(g)
+        weighted = self.inverse_variance[:, None] * rotated
         cross = self.precision_x.T @ g
-        covariance = rotated.T @ (self.inverse_variance[:, None] * rotated) - cross.T @ self.fixed_effect_covariance @ cross
-        return g.T @ self.scaled_residuals, (covariance + covariance.T) / 2
+        projected = cross.T @ self.fixed_effect_covariance
+        variance = (rotated * weighted).sum(dim=0) - (projected * cross.T).sum(dim=1)
+        return g.T @ self.scaled_residuals, variance
 
 
 def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_diagonal=None,

@@ -6,18 +6,24 @@
 
 多表型分析先在所有表型的样本并集确定 minor allele 方向，再为每个表型提取自己的样本、计算 MAF 和填补缺失值。单个表型提取后不会再次翻转 allele。这对应 STAARpipelinePheWAS 的读取顺序。
 
+Base 与 PheWAS 使用同一个原基因型 helper：`ALT_AF <= 0.5` 时选择 ALT，包括 AF 恰好为 0.5 的 tie；等价地，`REF_AF >= 0.5` 时 `minor_is_alt=True`。PheWAS 的各 trait 保留并集决定的方向，base 也不另作第二次 tie 翻转。后述 `reference`/`count` 区别属于频率求值与填补，不是两种 tie 方向。
+
 ```mermaid
 flowchart LR
   A[原生 GDS] --> B[筛选位点和样本并集]
-  B --> C[按 Bit2 索引解码 REF dosage]
-  C --> D[并集 AF 决定 minor 方向]
+  B --> C[按 Bit2 索引解码 allele]
+  C --> D[非缺失 allele 的并集 AF 决定 minor 方向]
+  C --> I[任一 allele 缺失时整次 dosage 为 NA]
   D --> E[稀疏 COO 保留显式缺失]
+  I --> E
   E --> F[按当前表型顺序取样本]
   F --> G[重新计算 MAF 和处理缺失]
   G --> H[float64 分块基因型]
 ```
 
 GDS 是 CoreArray 格式。它需要原生 GDS 解码器；不能用 HDF5 读取器打开。
+
+可选的 `staar_gds_flat` 适配器通过已安装的官方 PyGDS capsule SDK 批量读取原始 Bit2 元素。它复用 CoreArray 解压和迭代器，没有关联检验或 R 调用，也不复制 CoreArray 实现。Python 随后恢复编码层、缺失、allele 和请求顺序。未安装适配器时使用官方 pygds 的通用读取接口。
 
 ## 2. Python 调用、输入和输出
 
@@ -31,7 +37,11 @@ genotype_path = "cohort.gds"  # 用户已处理的原生 GDS
 sample_ids = np.loadtxt("phenotype_sample_ids.txt", dtype=str, ndmin=1)
 variant_indices = np.arange(100, 356, dtype=np.int64)  # 零起始位点索引
 
-with SeqArrayGDS(genotype_path) as genotype_reader:
+with SeqArrayGDS(
+    genotype_path,
+    genotype_raw_memory_bytes=256 * 2**20,  # CPU 原始读取缓冲区预算
+    genotype_max_gap_layers=8,             # 合并读取允许跨过的编码层数
+) as genotype_reader:
     union_sample_indices = genotype_reader.sample_indices(sample_ids)
     quality_labels = genotype_reader.read_field(
         "annotation/info/QC_label", variant_indices
@@ -56,21 +66,121 @@ with SeqArrayGDS(genotype_path) as genotype_reader:
 
 | 接口 | 参数和返回值 |
 |---|---|
-| `SeqArrayGDS(path)` | `path` 为原生 GDS 路径；只读打开；支持 `with` 自动关闭。 |
+| `SeqArrayGDS(path, genotype_raw_memory_bytes=256*2**20, genotype_max_gap_layers=8)` | `path` 为原生 GDS 路径；只读打开；支持 `with` 自动关闭。两个可选参数分别限制 CPU 原始缓冲区字节数和合并读取允许跨过的编码层数；不限制最终解码矩阵或 GPU 张量。 |
+| `reader_metadata` | 返回实际 `reader_backend`、适配器二进制 SHA-256、上述预算及 `native_reads` 的 flat/selected 调用次数和返回字节数；整数解码另记录实际设备、次数及切换原因。 |
 | `n_samples`, `n_variants`, `ploidy` | 文件的样本数、位点数和固定基因型倍性。 |
 | `sample_ids()` | 返回文件顺序的样本 ID 数组；调用者负责保留在本地数据环境。 |
 | `sample_indices(sample_ids)` | 按请求的 ID 顺序返回文件中的零起始样本索引；不存在或重复的 ID 报错。 |
 | `describe(path)` | 返回节点的维度、存储类型、压缩和属性，不返回载荷。 |
 | `read_field(path, variant_indices=None)` | `path` 为数组节点；省略索引则读取整个该字段。固定字段返回位点位于轴 0 的数组；变长 INFO 返回每个位点一个数组的列表，长度 0 返回空数组。 |
 | `read_field("$ref"/"$alt"/"$num_allele", indices)` | 返回 REF、完整逗号分隔 ALT 字符串或 allele 数量，不将多等位位点拆成新位点。 |
-| `read_genotype(variant_indices, sample_indices)` | 返回 `[位点, 样本, 倍性]` 整数 allele code，缺失为 `-1`。 |
+| `read_ref_alt(indices)` | 一次读取 allele 字段，返回顺序一致的 REF 和完整 ALT 两个数组，避免重复读取该节点。 |
+| `read_genotype(variant_indices, sample_indices)` | 返回 `[位点, 样本, 倍性]` 整数 allele code，缺失为 `-1`。最多 7 层用 int16，8–15 层用 int32，16 层用 int64，避免高 code 溢出。 |
 | `read_ref_dosage(variant_indices, sample_indices)` | 返回 `[样本, 位点]` float64 REF 拷贝数，缺失为 NaN；对应 SeqArray 的 `$dosage`。 |
-| `minor_block(variant_indices, union_sample_indices)` | 在并集样本确定方向，返回 `SparseMinorBlock`。COO 包含非零 dosage 和显式 NaN；未存储元素为零。 |
-| `iter_minor_blocks(indices, union_samples, block_size=256)` | 按请求顺序逐块提取；`block_size` 必须为正整数。可使用 128 或 256 控制中间矩阵大小。 |
-| `SparseMinorBlock.trait_dense(trait_rows, imputation="mean")` | `trait_rows` 是并集样本列表中的零起始行，按当前 null model 顺序提供。`mean` 用当前表型非缺失样本的 `2*MAF` 填补，保留原 MAF；`minor` 填零并以全部当前表型样本计算 MAF。返回上例中的五项。 |
+| `minor_block(variant_indices, union_sample_indices, device=None, minimum_mac=None)` | 在并集样本确定方向，返回 CPU `SparseMinorBlock`。COO 包含非零 dosage 和显式 NaN；未存储元素为零。`device=None` 使用 CPU；CUDA 设备且 SDK 可用时用 Torch 整数解码。`minimum_mac` 省略时保留全部列；指定非负阈值时按原 helper 的 allele 初始 MAC 筛列，返回的 `variant_indices` 同步筛选。 |
+| `iter_minor_blocks(indices, union_samples, block_size=256, device=None, minimum_mac=None)` | 按请求顺序逐块提取；`block_size` 必须为正整数。设备及 MAC 参数与 `minor_block` 相同；解码块大小不改变过滤后原版 5000 位点的统计分组。 |
+| `SparseMinorBlock.observed_mac(trait_rows=None)` | 返回 `[块位点数]` float64 未填补 dosage 列和，忽略 NaN。省略 `trait_rows` 用全部并集样本；指定时按这些并集行号计算。 |
+| `SparseMinorBlock.initial_mac()`、`allele_missing_rate()` | 分别返回原 helper 的 allele 初始 MAC 和缺失 allele 比例，均为 `[块位点数]` float64；与完整 dosage 的 MAC、缺失样本数不同。全部 allele 缺失时初始 MAC 为 NaN。 |
+| `SparseMinorBlock.select_columns(column_indices)` | 按本块零起始列号返回新块。列号须唯一，可乱序；保留样本顺序、显式 NaN、源 allele 摘要及请求列顺序。 |
+| `SparseMinorBlock.trait_dense(trait_rows, imputation="mean", frequency_mode="count")` | `trait_rows` 是并集样本列表中的零起始行，按当前 null model 顺序提供。`count` 对应 PheWAS，`reference` 对应 base；公式见下文。`mean` 用该路径的 `2*MAF` 填补，保留原 MAF；`minor` 填零并以全部当前表型样本计算 MAF。返回上例中的五项。 |
 | `SparseMinorBlock.to_torch_sparse(device="cpu")` | 返回指定设备的 float64 COO tensor，保留显式 NaN；调用统计计算前须按表型处理缺失。 |
 
 QC 节点由数据配置指定。应先核对实际字段，不能仅因节点存在便认为其值可用于筛选。`read_field` 对 folder 报错；本模块尚未提供 FORMAT 数据提取接口。
+
+### Base 与 PheWAS 的频率求值顺序
+
+以上逐表型示例对应 PheWAS：在样本并集确定 minor 方向后，用当前表型的非缺失 dosage 列和计算 `MAF = MAC / (2 * (N - missing_count))`。Base STAARpipeline 0.9.9 保留另一条路径：先在模型样本求 REF_AF，再计算 `ALT_AF = 1 - REF_AF` 和 `MAF = min(REF_AF, ALT_AF)`，沿用 helper 返回的 MAF。低层接口的 `frequency_mode="count"/"reference"` 分别实现两条路径；pipeline 用 `AnalysisOptions(wrapper_semantics="phewas"/"base")` 选择原 wrapper 行为。本轮 chr21、单个连续表型的 base 串行完整流程已通过验收；多表型使用其对应的原 wrapper 验证。[原版公式和来源](base_reference_inventory.md#base-与-phewas-的频率和缺失填补)
+
+`mean` 都用各自得到的 `2 * MAF` 填补缺失，而不是在填补后重新估计频率。`minor` 都填零并使用全部模型样本作为分母：base 用 `MAC_restore = round(((2*MAF)*(1-allele_missing_rate))*N)` 恢复计数，再求 `MAF = MAC_restore/(2*N)`；PheWAS 用完整 dosage 的列和除以 `2*N`。Base 的恢复公式用于 minor 填补后的频率，与下表的初始 MAC 筛选公式不同。没有半缺失、样本和 minor 方向相同的情况下，两个实数等价的频率公式可能有不同浮点舍入，随之改变 mean 填充值。Base/PheWAS 的选择关系到原 wrapper 的计算语义，不能仅由 Rdata 输出布局推断。
+
+### 半缺失 genotype 的两种统计粒度
+
+原 SeqArray 的频率与 dosage 缺失规则不同：AF、AC 和 `seqMissing(per.variant=TRUE)` 按 allele 统计，每个已知 allele 都贡献计数；任一 allele 缺失时，该二倍体样本的整个 dosage 为 NA。因此不能仅用非缺失 dosage 求出的列和与样本数来重建原 helper 的 REF_AF 或 missing rate。
+
+| 统计量 | 原版统计粒度 | 使用位置 |
+|---|---|---|
+| REF_AF、ALT_AF | 非缺失 allele；`ALT_AF = 1 - REF_AF` | 并集 minor 方向及 base MAF |
+| REF_AC、原 helper missing rate | 已知 allele 的 REF 计数；缺失 allele / `2*N` | 先求 `ALT_AC = 2*round(N*(1-missing_rate))-REF_AC`，再取初始 `MAC = min(REF_AC, ALT_AC)` |
+| dosage、返回的 `missing_counts` | 任一 allele 缺失则该样本整次调用缺失 | genotype 和 mean/minor 填补 |
+| PheWAS 当前表型 MAC/MAF | 完整 dosage 的列和与非缺失整次调用样本数 | 每 trait 的 MAC 筛选与 `count` 频率 |
+
+原 SeqArray 1.48.0 的 6 样本、5 位点合成 GDS 单测确认了这一边界。例如一个位点有 8 个已知 allele、其中 5 个为 REF，base MAF 为 `1-5/8=0.375`；完整 dosage 仅有三个样本，PheWAS 当前表型 MAF 为 `3/(2*3)=0.5`。半缺失样本的 dosage 仍为 NA。这个规则单测不证明真实 1,023 行 pilot 或整份染色体含有半缺失调用；新 CPU/GPU 读取路径须分别保留 allele 摘要和整次调用缺失规则。
+
+初始计数须保留上面的减法和 `round` 次序。例如 `N=6`、7 个已知 allele、`REF_AC=4`，缺失率为 `5/12`：float64 的 `N*(1-missing_rate)` 为 `3.4999999999999996`，原式得到 `ALT_AC=2`、初始 MAC 为 2；用 MAF 恢复的另一公式会得到 3。两者不能合并成同一个 MAC 定义。
+
+### CUDA 整数解码与单变异 MAC 预筛
+
+读取器把 Bit2 编码层恢复、allele 计数和 dosage 生成放到指定 CUDA 设备。整数计数传回 CPU 后，以 NumPy float64 保持原 REF_AF、`1-REF_AF` 和 R `round` 求值顺序；mean 填补及关联统计仍遵循上面的 wrapper 语义。SDK 适配器只提供原始读取，没有新增 C++ 关联计算。
+
+```python
+import numpy as np
+from staar_phewas.gds import SeqArrayGDS
+
+sample_ids = np.loadtxt("phenotype_sample_ids.txt", dtype=str, ndmin=1)
+variant_indices = np.arange(100, 1124, dtype=np.int64)
+with SeqArrayGDS("cohort.gds") as genotype_reader:
+    union_sample_indices = genotype_reader.sample_indices(sample_ids)
+    minor_block = genotype_reader.minor_block(
+        variant_indices, union_sample_indices,
+        device="cuda",       # 也可传 torch.device；默认 None 使用 CPU
+        minimum_mac=20,      # 原 helper 的并集 allele 初始 MAC 阈值
+    )
+    retained_variant_indices = minor_block.variant_indices
+    initial_mac = minor_block.initial_mac()
+    allele_missing_rate = minor_block.allele_missing_rate()
+    whole_call_mac = minor_block.observed_mac()
+    # 上述三个摘要均与 retained_variant_indices 一一对应。
+    metadata = genotype_reader.reader_metadata  # 调用后的实际累计计数
+```
+
+单变异 pipeline 自动传入首个 CUDA 模型的设备及 MAC 阈值；gene 类别默认沿用 CPU 提取。没有 SDK 适配器时使用 CPU 读取，并在 `minor_genotype_decode_fallback_reason` 记录原因。实际解码设备见 `minor_genotype_decode_backend`、`minor_genotype_decode_calls`；它们记录完成的调用，不根据配置推定 CUDA 已使用。
+
+显式指定 `minimum_mac` 时，`individual_decode_coverage` 累计解码位点数、MAC 保留数、半缺失 genotype 数、REF_AF tie 位点数、全部 allele 缺失位点数及最大 Bit2 层数。计数描述本次实际读取范围，不能补充未读取的全染色体覆盖。每个块另保存 `union_ref_ac`、`union_called_alleles`、`union_initial_mac` 和 `union_missing_rate` 四个源摘要，按块位点顺序排列。
+
+### 染色体注释索引与流式检验
+
+`PheWASPipeline.prepare_annotation_index` 分块筛选 QC、位点类型和类别，再解析实际候选行的基因注释。相同染色体、位点类型和类别只准备一次；UTR 与 ncRNA 后续按基因查询索引，enhancer 保留原注释指定的远端基因。编码区仍采用原基因目录的坐标范围。候选索引保留 GDS 行顺序；MAF、缺失填补及稀有位点筛选继续由每个表型自己的样本决定。
+
+```python
+import json
+import numpy as np
+from staar_phewas.gds import SeqArrayGDS
+from staar_phewas.io import load_null_model
+from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
+
+null_model = load_null_model("phenotype_null.npz", device="cuda")
+annotation_catalog = json.load(open("annotation_catalog.json", encoding="utf-8"))
+with SeqArrayGDS("chromosome.gds") as genotype_reader:
+    association_pipeline = PheWASPipeline(
+        genotype_reader, [null_model],
+        qc_path="annotation/info/QC_label",
+        annotation_catalog=annotation_catalog,
+        options=AnalysisOptions(annotation_block_size=250_000,
+                                genotype_block_size=128, memory_limit_gib=20),
+    )
+    annotation_index = association_pipeline.prepare_annotation_index(
+        "21", categories=["UTR", "ncRNA"], include_ncrna=False,
+    )
+    utr_variant_indices = annotation_index.indices("GENE_A", "UTR")
+    # 候选数尚未经过当前表型的 MAF 和缺失筛选。
+    candidate_counts = annotation_index.manifest()
+    association_pipeline.statistics_execution = "serial"
+    association_results = [association_pipeline.test_set(utr_variant_indices)]
+    # 返回顺序为 [位点集合][模型]；不足两个稀有位点的模型结果为 None。
+    for model_index, record_block in association_pipeline.iter_individual_records(
+        "21", mac_cutoff=20, variant_type="variant", subset_variants_num=5000,
+    ):
+        # 每次处理一个有界结果块，不需累计整个染色体的个体或结果矩阵。
+        print(model_index, len(record_block))
+```
+
+`categories` 可选七类 noncoding 及 `ncRNA`；省略时准备七类 noncoding，`include_ncrna=True` 另加 ncRNA。promoter 类须提供 `promoter_intervals`，格式为原参考的 `(chromosome, start, end)` 区间；同一索引不接受随后更换参考区间。`annotation_index.indices` 返回只读、零起始的 GDS 行号，缺少候选的基因为空数组；未准备的类别报错。`manifest()` 只列实际候选，完整扫描的基因目录应另用原版目录，保留没有候选的基因。
+
+`annotation_block_size` 限制每批元数据行数，`genotype_block_size` 限制每批解码位点数，`memory_limit_gib` 是 GPU 工作空间估计上限。非连续元数据索引用有界连续节点读取恢复请求顺序，避免为每个小查询构造全染色体选择向量。单变异计算只求 score 和方差对角线，每块一次传回结果；5000 位点的原版分组以并集 MAC 筛选后的序号确定，与解码块大小独立。
+
+CLI 每次打开染色体均用 null model 的 canonical GDS sample IDs 重新映射样本行，并验证顺序。缓存的另一染色体行号不能直接代用。`statistics_execution="batched"` 对 coding、noncoding、ncRNA 和滑窗使用同一批量统计入口；二元 SPA 和联合多表型保持各自统计核。
+
+单变异从稀疏 dosage 和独立 allele 摘要预筛 MAC，先筛掉达不到原阈值的列，再为保留列调用 `trait_dense`。Base 和 PheWAS 的并集初始 MAC 都由 REF_AC、allele missing rate 及上述 ALT_AC 公式得到；base 随后不再用完整 dosage MAC 二次筛选，PheWAS 当前表型仍按完整 dosage 的列和筛选。读取和解码仍须得到这些位点；过滤前不重复建立各表型的 dense 矩阵。并集 minor 方向、每个表型自己的 MAF 和 mean 填补、过滤后的 5000 位点分组、REF/ALT factor 与 row.names 按原 wrapper 规则处理。CUDA 整数解码和预筛先通过下述真实 100 kb 区段对照，随后在本轮完整 chr21 串行流程中通过四个 Single 正式文件及八份原 R 元数据读回。
 
 ## 3. 命令行和安装
 
@@ -91,6 +201,36 @@ LZMA_PREFIX="$CONDA_PREFIX" python -m pip install --no-deps --no-build-isolation
 
 直接从固定官方来源安装：PyPI 同名 `pygds` 项目是另一用途的软件。读取器会检查 `pygds.gdsfile`，发现错误依赖时明确报错。原生解码依赖采用 GPL-3；安装后保留它的许可证和来源信息。
 
+### 可选的官方 SDK 批量读取适配器
+
+在已安装上述 PyGDS 的环境中显式构建本项目的 C++ 适配器。还需要 setuptools、Python 开发头文件和 C++ 编译器；前面的 Conda 环境提供这些构建依赖。
+
+```bash
+python -m staar_phewas.gds_flat --output-dir ./build/gds-flat
+export PYTHONPATH="$PWD/build/gds-flat${PYTHONPATH:+:$PYTHONPATH}"
+python -m staar_phewas.cli analysis.json
+```
+
+构建只在指定目录写入适配器和中间文件，不下载依赖、不写入 site-packages。构建输出 JSON 含 `native_binary_sha256`、`adapter_source_sha256`、`sdk_headers_sha256` 和 `pygds_version`。二进制依赖当前 Python/SDK/编译环境，跨环境应重新构建并保留新的 SHA。
+
+运行时可直接记录读取器实际使用的后端：
+
+```python
+from staar_phewas.gds import SeqArrayGDS
+
+with SeqArrayGDS("cohort.gds") as genotype_reader:
+    metadata = genotype_reader.reader_metadata
+    print(metadata["reader_backend"])          # native_auto 或 pygds_generic
+    print(metadata["native_binary_sha256"])    # 通用路径时为 None
+    print(metadata["native_reads"])            # flat/selected 各自的次数和返回字节数
+```
+
+`native_auto` 在合并块包含至少两个选定位点、且所需样本少于全文件一半时调用 selected 路径；其余块使用 flat 路径。这是当前实现的选择规则，尚未用完整染色体结果证明对所有查询都更快。返回字节数记录 SDK 输出缓冲区，不代表存储设备实际读入或解压的字节数。
+
+底层 `read_flat_path(file_id, node_path, flat_offset, flat_count, output_dtype="uint8")` 读取连续的原始元素。`read_selected_rows_path(file_id, node_path, flat_offset, raw_rows, row_width, row_selection, output_dtype="uint8")` 按同一个选择向量读取各原始行；`row_selection` 是长度为 `row_width` 的连续一维 bool、uint8 或 int8 数组，只接受 0/1，输出按自然元素顺序排列。常规分析应调用 `SeqArrayGDS`，由它处理索引、编码层及顺序恢复。
+
+只有适配器模块不存在时自动使用 `pygds_generic`。已安装模块的导入错误、无效文件句柄、关闭后的文件和越界请求均直接报错，不用通用路径掩盖错误。读取过程中不触发编译或安装。
+
 ## 4. R 原软件对应调用
 
 ```r
@@ -106,6 +246,10 @@ seqClose(genotype_file)
 `$dosage` 是 REF 拷贝数。表型子集处理采用 STAARpipelinePheWAS 的 `Genotype_sp_extraction`、`Missing_num.sp` 和逐表型 mean/minor 填补规则。当前验证使用 R `gdsfmt` 直接读取同一 GDS 节点作为独立解码参照。
 
 ## 5. 真实数据对照
+
+2026-10-05，执行源码 `c6362c6d392dce8c29668a9563a88182714571ebc8aa68285e5988a7ad423300`（33 个执行及依赖定义文件）的 chr21 连续表型串行流程完成 795 项任务、全部 15 个 mask 和 18 个正式文件。18 项关联文件比较、R/GPU 各四份 Single 元数据读回及一项零模型比较严格通过。关联核对 161,839 个数值字段、3,343,119 个数值单元格，结构和数值超限差异为零，最大绝对/相对差为 `1.0913936421275139e-10` / `1.7739502638151633e-9`；零模型的 341,221 个数值单元格差异为 0。完整范围见 [原版对照记录](base_reference_inventory.md)，计时见 [性能分析](performance.md)。本轮完整 GPU 实验只报告串行，另一个批量运行按用户要求在完成前取消。
+
+此次实际 SDK 为 `native_auto`，二进制 SHA-256 为 `6342919e6b9e8ce1597c96c547945ec9f54d8823eab935002231cec873b298d2`。解码成功调用为 CUDA 13,413 次、CPU 2,207 次；单变异解码覆盖 13,733,596 个位点，MAC 合格 318,132 个，REF_AF tie 为 1，半缺失和全部 allele 缺失计数均为 0，最大 Bit2 层数为 2。四个 Single 文件共 318,132 行、每份 13 列：238,947 个双等位 SNV、79,185 个双等位 Indel，N 均为 42,652；没有多等位输出、缺失 allele 或缺失 N。八份原 R 原生文件元数据读回均与正式报告及文件哈希缓存一致。下面的小区段和解码 pilot 保留其原范围，尤其不能用历史 AF tie 为 0 代替本轮的实际计数 1。
 
 2026-10-04 对一份已处理的真实染色体 GDS 验证。文件有 345,967 个样本、14,866,221 个位点，固定倍性为 2；基因型为 `Bit2 + ZIP_RA`，三个位置使用两层 Bit2 编码。选取 2,079 个样本和 35 个位点，使用逆序请求检验行列顺序，包含全部三个多层位置。
 
@@ -124,11 +268,25 @@ seqClose(genotype_file)
 
 此解码检查与完整关联检验 benchmark 分开记录。它没有检验 null model、STAAR P 值、全基因组扫描或 GPU 加速。
 
+最终 `native_auto` 另完成五组真实解码回归，均与通用读取器逐元素一致：两组 42,652 人 × 128 位点（含样本和位点乱序）、一组 7 个远距和多层位点、旧独立 R oracle 的 2,079 人 × 35 位点，以及 345,967 人 × 3 个真实多层位点。35 位点同时与缓存的原 R allele code 完全一致。真实检查未出现 code > 2 或多等位调用；较高 code 和最多 16 层的检查来自单元测试，不能作为真实数据覆盖。
+
+两组 128 位点的自动路径首次/重复调用分别为 0.430/0.342 和 0.378/0.406 秒；相应通用路径为 1.075/0.984 和 1.095/1.194 秒。计时只覆盖读取和解码，方法顺序做了交替，操作系统文件缓存未清空，也未隔离共享存储。这些观测不构成完整 pipeline 或 R 端到端加速结论。原 fullbulk 原型没有获得稳定的大幅改善，未作为性能结论。
+
+CUDA 整数解码和 MAC 预筛另在 42,652 样本的真实 100 kb 单变异区段输出正式 Rdata/RDS。45 次 CUDA 解码覆盖 45,247 个 PASS 位点，保留 1,023 个 MAC 合格位点；原 R 递归回读的 13 列类型、factor、整数 row.names、全部属性及 10,230 个 double 单元格通过严格检查。最大绝对差 `2.956e-12`、相对差 `3.022e-13`。本次初始化 2.626 秒、关联调用 21.794 秒、峰值 GPU allocated 704.3 MiB；关联调用包括读取、MAC 预筛和统计，不含正式文件写出。177 次 selected 读取返回 3.860 GB，测得读取调用 16.718 秒；这一字节数为 SDK 返回缓冲区。缓存未清、共享主机负载未隔离，原 R 最终区段没有独立函数计时，故不计算 R/GPU 加速倍数。实际解码覆盖中半缺失、AF tie 和全部 allele 缺失均为零、最大一层；这些边界的 CPU/CUDA 原 R 对照来自合成单测，不作为真实数据覆盖。
+
+历史冻结源码 `56162751…` 的五个 Coding 文件严格通过，首个 Noncoding 文件有两个数值单元格超出容差；随后 `8520cf24…` 在 Noncoding 368 出现三个超容差数值。`5b0dfd83…` 又在 Noncoding 367 的三个字段超出容差后中断，串行完成 325 项，批量未开始。这些历史失败的源码与结果独立保留。更早的一处差异曾在真实基因局部回读中通过：7 个类别、6 个非空，528 个数值元素全部满足容差，最大绝对差 8.000e-9、相对差 2.510e-8。本轮 `c6362c6d…` 已通过上文完整串行 18/8/1 验收，未改变原严格容差；历史局部结果不代替本轮全量记录。
+
+2026-10-04 的候选索引回归另使用同一真实输入的 42,652 个已对齐样本，检查 11 项 coding、noncoding、ncRNA、单变异和滑窗任务的正式 RData。串行与批量路径各有 1,243 个数值元素通过原 R 的结构和值比较，容差为绝对 `1e-10` 加相对 `1e-7`；18 个单变异位点也覆盖新方差对角线及一次性结果传回实现。批量 ncRNA 和一组、五组滑窗另在最新入口重跑，统计诊断确认调用批量核。这里记录的是已执行的任务范围，完整染色体计时另行报告。
+
 ## 6. 更新和验证记录
 
+- 2026-10-05：`c6362c6d…` 完整 chr21 串行 795 项、18 个正式文件及 18/8/1 验收通过；原 R 与 GPU Single 都为 318,132 行、N 42,652，实际 AF tie 为 1、最大两层 Bit2。批量完整实验按用户要求取消，仅保留此前局部回归范围。
 - 2026-10-04：增加原生只读 GDS 接口；完成真实 Bit2 层索引、任意样本/位点顺序、缺失、REF dosage、factor 和固定注释的 R 独立对照。
 - 2026-10-04：增加并集 minor 方向、逐表型 MAF、mean/minor 缺失处理，以及保留显式 NaN 的 COO 输出。
 - 2026-10-04：明确固定依赖来源与现有真实数据尚未覆盖的高 allele code、变长 INFO、FORMAT 验证边界。
+- 2026-10-04：增加按需类别索引、有界元数据读取、REF/ALT 共用读取、按基因复用和单变异流式结果；串行与批量真实 11 项回归通过原 R 对照。
+- 2026-10-04：增加官方 PyGDS capsule SDK flat/selected 适配器、显式构建与后端/SHA 元数据；自动路径五组真实解码逐元素一致。该轮为读取器局部检查，后续完整关联结果见上文。
+- 2026-10-04：增加可选 CUDA 整数解码、独立 allele 摘要和单变异 MAC 预筛；真实 1,023 行正式文件通过原 R 全结构及 10,230 个 double 单元格检查。该轮为单变异 pilot，完整串行验收另记于 2026-10-05。
 
 ## 7. 原实现和参考文献
 

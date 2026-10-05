@@ -114,6 +114,20 @@ def test_saddlepoint_at_mean_uses_fourth_moment_fallback():
     assert quadratic_form_sf(0.0, [1.0, 0.1]) == 1
 
 
+@pytest.mark.parametrize("device", ["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
+def test_saddle_negative_bound_preserves_original_scalar_division(device):
+    # A small arithmetic fixture, unrelated to any private study data.
+    # Original STAAR 0.9.9 Bisection/Saddle gives the values below. With
+    # scalar/Tensor reverse division, reciprocal*m changes this bound by
+    # one ulp and the resulting near-mean tail by about 3.66e-6.
+    eigenvalues = torch.tensor([1/3, 2/3, 1.], dtype=torch.float64, device=device)
+    statistic = eigenvalues.new_tensor(1.9996)
+    lower = -torch.full_like(statistic, eigenvalues.numel()) / (2 * statistic)
+    assert float(lower) == -0.75015003000600122
+    expected = 0.39548257230568734
+    assert quadratic_form_sf(statistic, eigenvalues) == pytest.approx(expected, abs=1e-10, rel=1e-7)
+
+
 def test_burden_and_acat_very_rare_collapse_match_manual_calculation():
     score = np.array([0.4, -0.8, 0.6])
     covariance = np.array([[1.0, 0.2, 0.1], [0.2, 1.2, 0.3], [0.1, 0.3, 0.9]])
@@ -171,3 +185,43 @@ def test_cuda_matches_cpu_float64_for_score_and_final_columns():
     gpu = staar_test(gpu_u, gpu_v, [0.001, 0.005], [2, 10])
     for name in cpu:
         assert gpu[name] == pytest.approx(cpu[name], rel=1e-11, abs=1e-13)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("size", [3, 32, 33])
+def test_cuda_small_spectra_use_real_weight_batch_and_preserve_large_route(monkeypatch, size):
+    # The CUDA solver changes between single and small batched matrices. Check
+    # real annotation matrices, including the dispatch boundary, without study
+    # data or artificial duplicate matrices used to trigger a solver.
+    device = "cuda"
+    diagonal = torch.linspace(.3, 2., size, dtype=torch.float64, device=device)
+    score = torch.sqrt(diagonal * .995)
+    covariance = torch.diag(diagonal)
+    maf = torch.linspace(.001, .009, size, dtype=torch.float64, device=device)
+    annotations = torch.linspace(10., 30., size, dtype=torch.float64, device=device)[:, None]
+    weights = annotation_weights(maf, annotations)[1]
+    matrices = torch.stack([covariance * weight[:, None] * weight[None, :]
+                            for weight in weights.T])
+    original = torch.linalg.eigvalsh
+    spectra = original(matrices, UPLO="U") if size <= 32 else torch.stack([
+        original(matrix, UPLO="U") for matrix in matrices])
+    expected = [quadratic_form_sf(torch.sum(score.square() * weight.square()), eigen)
+                for weight, eigen in zip(weights.T, spectra)]
+    calls = []
+
+    def record(matrix, **kwargs):
+        calls.append(matrix.detach().clone())
+        return original(matrix, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "eigvalsh", record)
+    result = staar_test(score, covariance, maf, torch.full_like(maf, 20),
+                        annotations, ["functional"])
+    if size <= 32:
+        assert [tuple(matrix.shape) for matrix in calls] == [(4, size, size)]
+        torch.testing.assert_close(calls[0], matrices, atol=0., rtol=0.)
+    else:
+        assert [tuple(matrix.shape) for matrix in calls] == [(size, size)] * 4
+    fields = ["SKAT(1,25)", "SKAT(1,25)-functional",
+              "SKAT(1,1)", "SKAT(1,1)-functional"]
+    for field, probability in zip(fields, expected):
+        assert result[field] == pytest.approx(probability, abs=1e-10, rel=1e-7)

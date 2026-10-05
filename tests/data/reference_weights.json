@@ -1,0 +1,26 @@
+{
+  "scope": "small arithmetic regression fixture; no study data or benchmark",
+  "reference": "R version 3.6.1 (2019-07-05)",
+  "formulas": "original dbeta/Pow/sqrt and ACAT-V division order",
+  "maf": [0.001, 0.005, 0.5],
+  "phred": [
+    [0.001, 0.5],
+    [10, 20],
+    [0, 100]
+  ],
+  "burden": [
+    ["0x1.868274cb3ce5p+4", "0x1.70432ad2faa06p-8", "0x1.53bd8bf00aa64p+1", "0x1p+0", "0x1.e2d4dd639ep-13", "0x1.bd6fa802fada8p-4"],
+    ["0x1.62a951c922af2p+4", "0x1.3f31fcce9f374p+4", "0x1.5f1d62e348bccp+4", "0x1p+0", "0x1.ccccccccccccdp-1", "0x1.fae147ae147aep-1"],
+    ["0x1.900000000000cp-20", "0x0p+0", "0x1.8fffffff54344p-20", "0x1p+0", "0x0p+0", "0x1.ffffffff2419p-1"]
+  ],
+  "skat": [
+    ["0x1.868274cb3ce5p+4", "0x1.7b390e66da60dp-2", "0x1.018ec28b585a5p+3", "0x1p+0", "0x1.f133afbbf12fcp-7", "0x1.51af8c64ee7a4p-2"],
+    ["0x1.62a951c922af2p+4", "0x1.50761b1324043p+4", "0x1.60e2365617a49p+4", "0x1p+0", "0x1.e5b9d136c6d96p-1", "0x1.fd6efe4c9b8a5p-1"],
+    ["0x1.900000000000cp-20", "0x0p+0", "0x1.8fffffffaa1a8p-20", "0x1p+0", "0x0p+0", "0x1.ffffffff920c8p-1"]
+  ],
+  "acat": [
+    ["0x1.77e59674571acp+2", "0x1.627b6a3d8e81ep-10", "0x1.470704e3c15cfp-1", "0x1.4315733fdf89cp-7", "0x1.30ad8414787bbp-19", "0x1.191499d66b53fp-10"],
+    ["0x1.82030ca1a79efp+4", "0x1.5b6924f7e3a8ap+4", "0x1.7e26dbdd7a6cbp+4", "0x1.923cd9fdd712fp-5", "0x1.6a0390fe0e5ddp-5", "0x1.8e371f7ddc9a7p-5"],
+    ["0x1.81880b444c465p-38", "0x0p+0", "0x1.81880b43a6b0bp-38", "0x1.3bd3cc9be45e1p+1", "0x0p+0", "0x1.3bd3cc9b5cb88p+1"]
+  ]
+}

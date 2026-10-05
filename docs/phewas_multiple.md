@@ -23,7 +23,7 @@ from staar_phewas.pipeline import PheWASPipeline
 
 # 所有个体数据和产物存放在私有目录。
 annotation_catalog = json.loads(Path("annotation_catalog.json").read_text())
-gene_start, gene_end = 19941607, 19969975  # 对照版本的 COMT 一基 inclusive 坐标
+gene_start, gene_end = 200000, 230000  # 对照版本的 GENE_B 一基 inclusive 坐标
 model_one, rows_one = fit_prepared_input("trait_one.npz", device="cuda", transform="rint")
 model_two, rows_two = fit_prepared_input("trait_two.npz", device="cuda", transform="rint")
 with SeqArrayGDS("chromosome.gds") as gds:
@@ -35,7 +35,7 @@ with SeqArrayGDS("chromosome.gds") as gds:
         annotation_names=["CADD", "aPC.LocalDiversity"],
     )
     results = pipeline.coding(
-        chromosome="22", gene_name="COMT", start=gene_start, end=gene_end,
+        chromosome="22", gene_name="GENE_B", start=gene_start, end=gene_end,
         category="all_categories",
     )
 ```
@@ -54,7 +54,7 @@ with SeqArrayGDS("chromosome.gds") as gds:
   "annotation_catalog": "annotation_catalog.json",
   "annotation_names": ["CADD", "aPC.LocalDiversity"],
   "chromosomes": [{"name": "22", "gds": "chromosome.gds", "jobs": [{
-    "kind": "coding", "arguments": {"gene_name": "COMT", "start": 19941607, "end": 19969975},
+    "kind": "coding", "arguments": {"gene_name": "GENE_B", "start": 200000, "end": 230000},
     "output": "coding_results.Rdata"
   }]}]
 }
@@ -64,13 +64,13 @@ with SeqArrayGDS("chromosome.gds") as gds:
 
 原版 R 对应调用为 `Gene_Centric_Coding_PheWAS(..., obj_nullmodel_list=list(null_one, null_two))`、`Sliding_Window_Single_PheWAS` 和 `Individual_Analysis_PheWAS`。原模型分别由 `STAARpipeline::fit_nullmodel(y~1, data=..., kins=..., id="id")` 拟合。
 
-2026-10-04 用两个真实连续脑影像表型分别保留 42,652、42,418 名完整案例，均保留真实 GRM。第一个表型从 raw 输入采用与 R 逐元素相同的 RINT；第二个使用明确冻结的变换值，R 和 GPU 读取相同值，不将这一项称为新的 raw-transform 验收。原作者推荐环境中真正 STAARpipelinePheWAS wrapper 运行两模型列表，比较 COMT 全部 coding 类别、OR11H1 单窗口及单变异。
+2026-10-04 用两个真实连续连续表型分别保留 42,652、42,418 名完整案例，均保留真实 GRM。第一个表型从 raw 输入采用与 R 逐元素相同的 RINT；第二个使用明确冻结的变换值，R 和 GPU 读取相同值，不将这一项称为新的 raw-transform 验收。原作者推荐环境中真正 STAARpipelinePheWAS wrapper 运行两模型列表，比较 GENE_B 全部 coding 类别、GENE_A 单窗口及单变异。
 
 | 分析 | 核对数值字段 | 最大绝对差 | 原 R / GPU job 秒 |
 |---|---:|---:|---:|
-| COMT 全部 coding | 362 | 1.12e-8 | 32.811 / 39.016 |
-| OR11H1 单窗口 | 74 | 4.10e-12 | 15.903 / 17.792 |
-| OR11H1 单变异 | 396 | 5.41e-12 | 8.167 / 21.165 |
+| GENE_B 全部 coding | 362 | 1.12e-8 | 32.811 / 39.016 |
+| GENE_A 单窗口 | 74 | 4.10e-12 | 15.903 / 17.792 |
+| GENE_A 单变异 | 396 | 5.41e-12 | 8.167 / 21.165 |
 
 所有字段通过 `abs_error <= 1e-10 + 1e-7*abs(R_value)`；正式 Rdata 的对象名、class、typeof、属性顺序、dimnames、factor levels 和 row.names 与原版比较均无差异。第二个模型的 theta、精度、Sigma_iX 和固定效应 covariance 逐位一致，scaled residual 最大差 `1.39e-17`。
 

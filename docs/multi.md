@@ -123,31 +123,31 @@ association_results <- MultiSTAAR::MultiSTAAR(
 
 ## 真实精度与运行记录
 
-2026-10-04 使用原 annotated GDS 的真实变异和三个真实连续脑影像表型，共同完整案例分别为两表型 42,418 人、三表型 42,411 人。按各自样本重新计算 MAF 和均值插补后，对 OR11H1 pLoF（3 RV）、COMT pLoF（5 RV）、COMT missense（74 RV）逐一比较原 R MultiSTAAR 与 float64 A100 GPU。每个集合均核对完整 40 列，含四列 PHRED 注释及各合并检验。
+2026-10-04 使用原 annotated GDS 的真实变异和三个真实连续连续表型，共同完整案例分别为两表型 42,418 人、三表型 42,411 人。按各自样本重新计算 MAF 和均值插补后，对 GENE_A pLoF（3 RV）、GENE_B pLoF（5 RV）、GENE_B missense（74 RV）逐一比较原 R MultiSTAAR 与 float64 A100 GPU。每个集合均核对完整 40 列，含四列 PHRED 注释及各合并检验。
 
 | 联合模型 | 普通零模型 T 最大绝对差 | 三集合最大 P 绝对差 | 三集合 STAAR-O 最大绝对差 | GPU 观测峰值分配 |
 |---|---:|---:|---:|---:|
 | 两表型 | 7.44e-15 | 1.14e-7 | 4.31e-9 | 0.221 GiB |
 | 三表型 | 5.55e-16 | 4.71e-12 | 6.49e-13 | 0.456 GiB |
 
-两表型最大差来自 COMT missense 的 SKAT 鞍点近似；另外两个集合最大差不超过 3.7e-15。两表型 COMT missense 的该列尚未通过本项目 `1e-10 + 1e-7*abs(R)` 严格阈值，不能据此声称联合集合全部严格一致。三表型高相关导致精度矩阵与 scaled residual 最大绝对差分别为 4.43e-11 和 5.67e-11，三个集合的全部 40 列通过严格阈值。
+两表型最大差来自 GENE_B missense 的 SKAT 鞍点近似；另外两个集合最大差不超过 3.7e-15。两表型 GENE_B missense 的该列尚未通过本项目 `1e-10 + 1e-7*abs(R)` 严格阈值，不能据此声称联合集合全部严格一致。三表型高相关导致精度矩阵与 scaled residual 最大绝对差分别为 4.43e-11 和 5.67e-11，三个集合的全部 40 列通过严格阈值。
 
 | 步骤 | 两表型原 R / GPU 秒 | 三表型原 R / GPU 秒 |
 |---|---:|---:|
 | 普通联合零模型 | 1.014 / 3.461 | 1.069 / 0.028 |
-| OR11H1 pLoF 关联 | 0.686 / 0.191 | 0.591 / 0.206 |
-| COMT pLoF 关联 | 0.640 / 0.230 | 0.588 / 0.243 |
-| COMT missense 关联 | 0.961 / 0.383 | 0.674 / 0.396 |
+| GENE_A pLoF 关联 | 0.686 / 0.191 | 0.591 / 0.206 |
+| GENE_B pLoF 关联 | 0.640 / 0.230 | 0.588 / 0.243 |
+| GENE_B missense 关联 | 0.961 / 0.383 | 0.674 / 0.396 |
 
 GPU 关联计时含 score/covariance 和全部检验，使用同步后的墙钟；原 R 关联计时是完整 `MultiSTAAR` 调用。GPU 两表型零模型含首次 CUDA/lstsq 初始化，三表型在同一进程随后运行。计时不含 GDS 读取、完整案例准备和结果文件写入，是共享 GPU 的运行记录，不构成全基因组端到端加速结论。
 
 当前版本新增联合 ordinary Gaussian 核心与对角 GRM AI-REML、独立完整矩阵代数检查和上述真实 ordinary R 对照；尚无对角 GRM 原版成功数值基线。八项联合单元检查是代数与尾概率验证，不替代真实 benchmark。
 
-真实 CLI 同进程运行两个联合模型，完成 OR11H1 pLoF、COMT missense 和 COMT 区域单变异三个 job，含 GDS 读取、null 拟合和 native Rdata 保存，观测端到端 130.289 秒，GPU 峰值分配 0.461 GiB。这个入口记录没有对应原 R 端到端计时，不作为加速比。
+真实 CLI 同进程运行两个联合模型，完成 GENE_A pLoF、GENE_B missense 和 GENE_B 区域单变异三个 job，含 GDS 读取、null 拟合和 native Rdata 保存，观测端到端 130.289 秒，GPU 峰值分配 0.461 GiB。这个入口记录没有对应原 R 端到端计时，不作为加速比。
 
 普通联合 null 的 native Rdata 已在真正原 R 中回读：两表型和三表型各 18 个字段的名称、顺序、每字段 class、dimnames 和 call 全部与原 null 一致；`Sigma_i` 为 `dgTMatrix`、`Sigma_iX` 为 `dgCMatrix`，`validObject` 均通过。原 MultiSTAAR 直接使用 Python 保存的 null 完成六个真实集合统计。数值仍受上表中零模型和关联误差约束。
 
-联合单变异另有真正 PheWAS wrapper 对照：在 COMT 的同一 1,000 bp 区域，两个 ordinary 联合模型各纳入 11 个变异，样本数分别为 42,418 和 42,411。原 `Individual_Analysis_PheWAS` 与 GPU 的 209 个数值单元全部通过严格阈值；Score、P 和 log10(P) 最大绝对差分别为 `1.63e-10`、`1.51e-11`、`1.35e-11`。正式 Rdata 的对象名、类型、属性、因子水平、行列名均与原输出一致，原 R 回读比较无结构或数值失败。原 wrapper 用时 8.596 秒，GPU 关联 job 用时 13.776 秒，含模型加载与 native 文件保存共 19.389 秒，峰值分配 36.29 MiB；这些是同区域运行记录。
+联合单变异另有真正 PheWAS wrapper 对照：在 GENE_B 的同一 1,000 bp 区域，两个 ordinary 联合模型各纳入 11 个变异，样本数分别为 42,418 和 42,411。原 `Individual_Analysis_PheWAS` 与 GPU 的 209 个数值单元全部通过严格阈值；Score、P 和 log10(P) 最大绝对差分别为 `1.63e-10`、`1.51e-11`、`1.35e-11`。正式 Rdata 的对象名、类型、属性、因子水平、行列名均与原输出一致，原 R 回读比较无结构或数值失败。原 wrapper 用时 8.596 秒，GPU 关联 job 用时 13.776 秒，含模型加载与 native 文件保存共 19.389 秒，峰值分配 36.29 MiB；这些是同区域运行记录。
 
 显式 `robust=True` 的因子 REML 在相同真实两表型、三表型样本上分别用 194、443 次迭代达到梯度收敛，零模型运行 8.742、8.130 秒，GPU 峰值分配为 0.229、0.466 GiB。优化先作可逆 float64 表型白化，最终协方差变回原表型空间。将这些已拟合的总协方差固定后，真正原 R MultiSTAAR 与 GPU 六个关联集合的 40 列最大 P 差分别为 5.62e-12、1.08e-13。这个对照验证关联统计，不验证原 GMMAT 零模型优化；原 GMMAT 在这两个输入上仍然报错。
 

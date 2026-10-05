@@ -16,6 +16,9 @@ from typing import Sequence
 
 import torch
 
+from ._precision_eigen import (refine_near_mean_spectrum, record_gpu_eigen_route,
+                               record_ordered_tail)
+
 
 class DegenerateTestError(ValueError):
     """The requested test has no positive variance or valid weight mass."""
@@ -169,7 +172,15 @@ def cct(pvalues, weights=None, *, internal: bool = False) -> float:
     return float(_cct_tensor(pvalues, weights, internal=internal))
 
 
-def _quadratic_form_sf_tensor(statistic, eigenvalues, *, moment_eigenvalues=None) -> torch.Tensor:
+def _ordered_sum(values: torch.Tensor) -> torch.Tensor:
+    """Original scalar-addition order for CUDA rows; CPU retains Torch sum."""
+    if values.is_cuda:
+        from ._ordered_cuda import ordered_rows_cuda
+        return ordered_rows_cuda(values.reshape(values.shape[0], -1)).reshape(values.shape[1:])
+    return values.sum(dim=0)
+
+
+def _quadratic_form_sf_tensor(statistic, eigenvalues, *, moment_eigenvalues=None, reference_reduction=False) -> torch.Tensor:
     raw = _double(eigenvalues).reshape(-1)
     q_raw = _double(statistic, device=raw.device)
     if not raw.numel() or not bool(torch.isfinite(raw).all()) or q_raw.numel() != 1 or not bool(torch.isfinite(q_raw)) or bool(q_raw < 0):
@@ -180,14 +191,17 @@ def _quadratic_form_sf_tensor(statistic, eigenvalues, *, moment_eigenvalues=None
         raise DegenerateTestError("SKAT covariance has no eigenvalue at or above 1e-8")
     if bool(q_raw == 0):
         return raw.new_tensor(1.)
+    if reference_reduction and raw.is_cuda:
+        record_ordered_tail()
+    reduce = _ordered_sum if reference_reduction else lambda values: values.sum()
     scaled, q = spectrum / maximum, q_raw / maximum
-    lower = q.new_tensor(-0.01) if bool(q > scaled.sum()) else -scaled.numel() / (2 * q)
+    lower = q.new_tensor(-0.01) if bool(q > reduce(scaled)) else -torch.full_like(q, scaled.numel()) / (2 * q)
     upper, root = q.new_tensor(0.499995), q.new_tensor(0.)
     for _ in range(2048):
         if bool((upper - lower).abs() <= 1e-8):
             break
         root = (upper + lower) / 2
-        derivative = (scaled / (1 - 2 * scaled * root)).sum() - q
+        derivative = reduce(scaled / (1 - 2 * scaled * root)) - q
         if bool(derivative == 0):
             break
         upper = torch.where(derivative > 0, root, upper)
@@ -203,12 +217,12 @@ def _quadratic_form_sf_tensor(statistic, eigenvalues, *, moment_eigenvalues=None
         dof = c2.square() / c4
         adjusted = (q_raw - c1) / torch.sqrt(2 * c2) * torch.sqrt(2 * dof) + dof
         return raw.new_tensor(1.) if bool(adjusted <= 0) else torch.special.gammaincc(dof / 2, adjusted / 2)
-    cumulant = -0.5 * torch.log(1 - 2 * scaled * root).sum()
+    cumulant = -0.5 * reduce(torch.log(1 - 2 * scaled * root))
     w2 = 2 * (root * q - cumulant)
     if bool(w2 <= 0):
         raise ArithmeticError("STAAR saddlepoint has an invalid signed root")
     signed_root = torch.copysign(torch.sqrt(w2), root)
-    second_derivative = 2 * (scaled.square() / (1 - 2 * scaled * root).square()).sum()
+    second_derivative = 2 * reduce(scaled.square() / (1 - 2 * scaled * root).square())
     v = root * torch.sqrt(second_derivative)
     z = signed_root + torch.log(v / signed_root) / signed_root
     return 0.5 * torch.erfc(z / math.sqrt(2))
@@ -275,24 +289,19 @@ def annotation_weights(maf, annotations=None) -> tuple[torch.Tensor, torch.Tenso
     _finite(f, "maf")
     if bool(((f <= 0) | (f > 0.5)).any()):
         raise ValueError("weights require minor-allele frequencies in (0, 0.5]")
-    if annotations is None:
-        ranks = torch.ones((f.numel(), 1), dtype=f.dtype, device=f.device)
-    else:
+    phred = None
+    if annotations is not None:
         phred = _double(annotations, device=f.device)
         if phred.ndim != 2 or phred.shape[0] != f.numel():
             raise ValueError("annotations must have shape variants-by-annotations")
         _finite(phred, "annotations")
         if bool((phred < 0).any()):
             raise ValueError("PHRED annotations cannot be negative")
-        ranks = torch.cat((torch.ones((f.numel(), 1), dtype=f.dtype, device=f.device),
-                           1 - torch.pow(10.0, -phred / 10)), dim=1)
-    # dbeta(f,1,25), dbeta(f,1,1); 1/dbeta(f,.5,.5)^2 = pi^2*f*(1-f).
-    beta = (25 * torch.pow(1 - f, 24), torch.ones_like(f))
-    burden = torch.cat([ranks * b[:, None] for b in beta], dim=1)
-    skat = torch.cat([torch.sqrt(ranks) * b[:, None] for b in beta], dim=1)
-    acat = torch.cat([ranks * (b.square() * math.pi ** 2 * f * (1 - f))[:, None]
-                      for b in beta], dim=1)
-    return burden, skat, acat
+    # The original scalar libm transformations are retained at this small
+    # weight boundary. Score/covariance and probability calculations stay on
+    # the input device; the helper reports its CPU and transfer work.
+    from ._reference_weights import reference_annotation_weights
+    return reference_annotation_weights(f, phred)
 
 
 def _chi1_from_score(score: torch.Tensor, variance: torch.Tensor) -> torch.Tensor:
@@ -318,6 +327,7 @@ def staar_test(
     rv_num_cutoff: int = 2,
     rv_num_cutoff_max: int = 1_000_000_000,
     cmac: float | None = None,
+    _skat_pvalues: torch.Tensor | None = None,
 ) -> dict[str, float | int]:
     """Return STAAR columns from already oriented, imputed score inputs.
 
@@ -364,6 +374,7 @@ def staar_test(
     u, v, f, m = u[mask], v[mask][:, mask], f[mask], m[mask]
     if not bool(torch.allclose(v, v.T, atol=1e-10, rtol=1e-10)):
         raise ValueError("covariance must be symmetric")
+    reference_covariance = v
     v = (v + v.T) * 0.5
     k = 0 if phred is None else phred.shape[1]
     labels = [f"annotation_{i + 1}" for i in range(k)] if names is None else list(names)
@@ -381,12 +392,35 @@ def staar_test(
         common_p = _student_t_two_sided(t_squared, dof - 1)
     number_weights = burden_weights.shape[1]
     pvalues = torch.empty((3, number_weights), dtype=u.dtype, device=u.device)
+    if _skat_pvalues is not None:
+        _skat_pvalues = _double(_skat_pvalues, device=u.device)
+        if _skat_pvalues.shape != (number_weights,):
+            raise ValueError("precomputed SKAT values do not match the annotation weights")
+    small_spectra = None
+    if _skat_pvalues is None and u.is_cuda and len(u) <= 32 and number_weights > 1:
+        # A natural batch of annotation weights selects the small-matrix
+        # CUDA Jacobi solver. Reuse that spectrum through the scalar tail.
+        matrices = torch.stack([v * ws[:, None] * ws[None, :]
+                                for ws in skat_weights.T])
+        small_spectra = torch.linalg.eigvalsh(matrices, UPLO="U")
+        record_gpu_eigen_route(matrices)
+    q_values = (_ordered_sum(u.square()[:, None] * skat_weights.square())
+                if _skat_pvalues is None and u.is_cuda else None)
     for i in range(number_weights):
-        ws = skat_weights[:, i]
-        weighted_covariance = v * ws[:, None] * ws[None, :]
-        eigenvalues = torch.linalg.eigvalsh(weighted_covariance)
-        q = torch.sum(u.square() * ws.square())
-        pvalues[0, i] = _quadratic_form_sf_tensor(q, eigenvalues)
+        if _skat_pvalues is None:
+            ws = skat_weights[:, i]
+            if small_spectra is None:
+                weighted_covariance = v * ws[:, None] * ws[None, :]
+                eigenvalues = torch.linalg.eigvalsh(weighted_covariance, UPLO="U")
+                record_gpu_eigen_route(weighted_covariance)
+            else:
+                eigenvalues = small_spectra[i]
+            q = q_values[i] if q_values is not None else torch.sum(u.square() * ws.square())
+            eigenvalues, refined = refine_near_mean_spectrum(
+                reference_covariance, eigenvalues, q, weights=ws)
+            pvalues[0, i] = _quadratic_form_sf_tensor(q, eigenvalues, reference_reduction=refined)
+        else:
+            pvalues[0, i] = _skat_pvalues[i]
         wb = burden_weights[:, i]
         burden_score = torch.sum(u * wb)
         burden_variance = wb @ v @ wb

@@ -1,6 +1,6 @@
 {
   "phenotypes": [
-    {"name": "imaging_trait", "input": "private/aligned_trait.npz", "transform": "rint", "save_model": "private/trait_model.npz", "output_null": "runs/obj_nullmodel.Rdata"}
+    {"name": "trait_A", "input": "private/aligned_trait.npz", "transform": "rint", "save_model": "private/trait_model.npz", "output_null": "runs/obj_nullmodel.Rdata"}
   ],
   "qc_path": "annotation/info/QC_label",
   "annotation_catalog": "private/annotation_catalog.json",
@@ -17,9 +17,9 @@
     {
       "name": "22", "gds": "private/chr22.gds",
       "jobs": [
-        {"name": "coding_example", "kind": "coding", "arguments": {"gene_name": "OR11H1", "start": 15528159, "end": 15529139}, "output": "runs/imaging_trait_Coding_1.Rdata"},
-        {"name": "window_example", "kind": "sliding", "arguments": {"start": 15528159, "end": 15532158, "window_length": 2000}, "output": "runs/imaging_trait_Sliding_Window_1.Rdata"},
-        {"name": "individual_example", "kind": "individual", "arguments": {"start": 15528159, "end": 15532158, "mac_cutoff": 20}, "output": "runs/imaging_trait_Individual_Analysis_1.Rdata"}
+        {"name": "coding_example", "kind": "coding", "arguments": {"gene_name": "GENE_A", "start": 100000, "end": 101000}, "output": "runs/trait_A_Coding_1.Rdata"},
+        {"name": "window_example", "kind": "sliding", "arguments": {"start": 100000, "end": 104000, "window_length": 2000}, "output": "runs/trait_A_Sliding_Window_1.Rdata"},
+        {"name": "individual_example", "kind": "individual", "arguments": {"start": 100000, "end": 104000, "mac_cutoff": 20}, "output": "runs/trait_A_Individual_Analysis_1.Rdata"}
       ]
     }
   ]

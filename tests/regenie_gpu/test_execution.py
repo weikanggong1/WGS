@@ -91,7 +91,7 @@ class ExecutionTests(unittest.TestCase):
                 ExecutionConfig(*arguments)
 
     def test_complete_mask_inventory_and_configuration_roundtrip(self):
-        analyses = study_gene_analyses('/fixture/Anno_New', chromosomes=[21], require_files=False)['21']
+        analyses = study_gene_analyses('/fixture/annotations', chromosomes=[21], require_files=False)['21']
         self.assertEqual(len(analyses), 26)
         self.assertTrue({'Intergenic', 'Pseudo', 'RNA'}.issubset({a.name for a in analyses}))
         config = WGSConfig.paper(apply_rint=False)

@@ -222,8 +222,8 @@
         "ADD-BURDEN-SBAT": {
           "rows": 3,
           "max_abs_difference": {
-            "CHISQ": 0.000024000000000024002,
-            "LOG10P": 0.000008999999999981245
+            "CHISQ": 2.4000000000024002e-05,
+            "LOG10P": 8.999999999981245e-06
           },
           "six_digit_mismatches": {
             "CHISQ": 3,
@@ -233,8 +233,8 @@
         "ADD-BURDEN-SBAT_NEG": {
           "rows": 3,
           "max_abs_difference": {
-            "CHISQ": 0.000028000000000028002,
-            "LOG10P": 0.000010999999999983245
+            "CHISQ": 2.8000000000028002e-05,
+            "LOG10P": 1.0999999999983245e-05
           },
           "six_digit_mismatches": {
             "CHISQ": 2,
@@ -244,8 +244,8 @@
         "ADD-BURDEN-SBAT_POS": {
           "rows": 3,
           "max_abs_difference": {
-            "CHISQ": 0.000018999999999991246,
-            "LOG10P": 0.000008000000000008
+            "CHISQ": 1.8999999999991246e-05,
+            "LOG10P": 8.000000000008e-06
           },
           "six_digit_mismatches": {
             "CHISQ": 3,
@@ -266,8 +266,8 @@
         "ADD-SKATO": {
           "rows": 9,
           "max_abs_difference": {
-            "CHISQ": 0.000005000000000032756,
-            "LOG10P": 0.000002000000000002
+            "CHISQ": 5.000000000032756e-06,
+            "LOG10P": 2.000000000002e-06
           },
           "six_digit_mismatches": {
             "CHISQ": 3,
@@ -288,8 +288,8 @@
         "GENE_P": {
           "rows": 3,
           "max_abs_difference": {
-            "CHISQ": 6.999999999923734e-7,
-            "LOG10P": 0.000001000000000001
+            "CHISQ": 6.999999999923734e-07,
+            "LOG10P": 1.000000000001e-06
           },
           "six_digit_mismatches": {
             "CHISQ": 2,
@@ -520,7 +520,7 @@
           "rows": 3,
           "max_abs_difference": {
             "CHISQ": 0.00014900000000001024,
-            "LOG10P": 0.00006100000000003325
+            "LOG10P": 6.100000000003325e-05
           },
           "six_digit_mismatches": {
             "CHISQ": 2,
@@ -530,8 +530,8 @@
         "ADD-BURDEN-SBAT_NEG": {
           "rows": 3,
           "max_abs_difference": {
-            "CHISQ": 0.00008000000000008001,
-            "LOG10P": 0.000025000000000052758
+            "CHISQ": 8.000000000008001e-05,
+            "LOG10P": 2.5000000000052758e-05
           },
           "six_digit_mismatches": {
             "CHISQ": 2,
@@ -541,8 +541,8 @@
         "ADD-BURDEN-SBAT_POS": {
           "rows": 3,
           "max_abs_difference": {
-            "CHISQ": 0.00006999999999998674,
-            "LOG10P": 0.00004300000000001525
+            "CHISQ": 6.999999999998674e-05,
+            "LOG10P": 4.300000000001525e-05
           },
           "six_digit_mismatches": {
             "CHISQ": 2,
@@ -563,8 +563,8 @@
         "ADD-SKATO": {
           "rows": 8,
           "max_abs_difference": {
-            "CHISQ": 0.00006300000000003525,
-            "LOG10P": 0.000029000000000001247
+            "CHISQ": 6.300000000003525e-05,
+            "LOG10P": 2.9000000000001247e-05
           },
           "six_digit_mismatches": {
             "CHISQ": 2,
@@ -585,8 +585,8 @@
         "GENE_P": {
           "rows": 3,
           "max_abs_difference": {
-            "CHISQ": 0.00003700000000000925,
-            "LOG10P": 0.000015000000000042757
+            "CHISQ": 3.700000000000925e-05,
+            "LOG10P": 1.5000000000042757e-05
           },
           "six_digit_mismatches": {
             "CHISQ": 2,
@@ -619,14 +619,12 @@
       "before": {
         "cudaLaunchKernel_calls": 1148,
         "synchronized_scalar_copies": 164,
-        "chisq_six_digits": "0.5662",
         "cuda_activity_events_filtered": 1229,
         "cuda_activity_microseconds_filtered": 4060
       },
       "after": {
         "cudaLaunchKernel_calls": 31,
         "synchronized_scalar_copies": 3,
-        "chisq_six_digits": "0.5662",
         "cuda_activity_events_filtered": 33,
         "cuda_activity_microseconds_filtered": 125
       }

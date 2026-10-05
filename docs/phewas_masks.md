@@ -84,7 +84,9 @@ promoter 的 `promoter_overlap` 必须是与每个变异对齐的布尔数组。
 - `aPC.LocalDiversity` 后紧接一列 `aPC.LocalDiversity(-)`，值为 `-10 log10(1-10^(-PHRED/10))`。
 - `variant_type` 不为 `SNV`，或 `use_annotation_weights=False` 时，返回零列矩阵，符合原版分支。
 
-`staar_weights(maf, annotation_phred=None)` 接收已经按当前表型筛选的稀有变异频率，返回 `B`、`S`、`A` 三个矩阵。每个矩阵先排列 Beta(1,25) 的基础权重与注释权重，再排列 Beta(1,1) 对应权重。注释变换为 `r=1-10^(-PHRED/10)`；Burden 乘 `r`，SKAT 乘 `sqrt(r)`，ACAT-V 乘 `r` 并使用原版 Beta 密度比例。所有计算采用 float64。
+生产统计调用 `statistics.annotation_weights(maf, annotations=None)`，接收已按当前表型筛选的 float64 MAF 和完整 PHRED Tensor，返回同设备的 `B`、`S`、`A` 三个矩阵。每个矩阵先排列 Beta(1,25) 的基础权重与注释权重，再排列 Beta(1,1) 对应权重。注释变换为 `r=1-10^(-PHRED/10)`；Burden 乘 `r`，SKAT 乘 `sqrt(r)`，ACAT-V 乘 `r` 并使用原版 Beta 密度比例。标量转换保留原 R 的 float64 `libm` 求值次序，实际边界及计时见 [precision](precision.md)。
+
+`masks.staar_weights` 是 NumPy 公式和形状辅助函数，采用解析简化的 Beta 公式；其 float64 类型不保证与原 R 逐位一致。完整关联流程使用上述生产入口。
 
 ## 多表型的数据关系
 

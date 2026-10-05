@@ -10,7 +10,7 @@
   "relative_tolerance": 1e-07,
   "all_pass": true,
   "jobs": {
-    "OR11H1_coding": {
+    "GENE_A_coding": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 4.73009315049566e-09,
@@ -19,7 +19,7 @@
       "object_name": "results_coding",
       "pass": true
     },
-    "COMT_coding": {
+    "GENE_B_coding": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 1.12217689030025e-08,
@@ -28,7 +28,7 @@
       "object_name": "results_coding",
       "pass": true
     },
-    "APOBEC3A_coding": {
+    "GENE_C_coding": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 1.73749903353837e-13,
@@ -37,7 +37,7 @@
       "object_name": "results_coding",
       "pass": true
     },
-    "OR11H1_window": {
+    "GENE_A_window": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 3.19999582387709e-12,
@@ -46,7 +46,7 @@
       "object_name": "results_sliding_window",
       "pass": true
     },
-    "OR11H1_individual": {
+    "GENE_A_individual": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 1.08002495835535e-12,
@@ -55,7 +55,7 @@
       "object_name": "results_individual_analysis",
       "pass": true
     },
-    "COMT_noncoding": {
+    "GENE_B_noncoding": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 4.73536931888674e-10,
@@ -64,7 +64,7 @@
       "object_name": "results_noncoding",
       "pass": true
     },
-    "POTEH-AS1_ncrna": {
+    "NCRNA_A_ncrna": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 2.27373675443232e-13,
@@ -73,7 +73,7 @@
       "object_name": "results_noncoding",
       "pass": true
     },
-    "OR11H1_multiple_window": {
+    "GENE_A_multiple_window": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 1.09139364212751e-11,
@@ -82,7 +82,7 @@
       "object_name": "results_sliding_window",
       "pass": true
     },
-    "COMT_missense_selected": {
+    "GENE_B_missense_selected": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 1.70530256582424e-13,
@@ -91,7 +91,7 @@
       "object_name": "results_coding",
       "pass": true
     },
-    "COMT_disruptive_selected": {
+    "GENE_B_disruptive_selected": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 2.1094237467878e-15,
@@ -100,7 +100,7 @@
       "object_name": "results_coding",
       "pass": true
     },
-    "COMT_UTR_selected": {
+    "GENE_B_UTR_selected": {
       "schema_errors": [],
       "numeric_failures": [],
       "max_abs_error": 4.73536931888674e-10,
@@ -125,5 +125,6 @@
     "Two-trait joint set test has one SKAT difference beyond the strict tolerance; see docs/multi.md.",
     "Native mixed binary null fitting and complete binary null Rdata export are unavailable.",
     "Full chromosome/genome batches and SCANG were not validated."
-  ]
+  ],
+  "case_labels_anonymized": true
 }

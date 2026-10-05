@@ -14,7 +14,8 @@ read_native <- function(path) {
 }
 expected <- read_native(args[1L]); actual <- read_native(args[2L])
 schema_errors <- character(); numeric_errors <- character()
-numeric_fields <- 0L; maximum_absolute_difference <- 0
+numeric_fields <- 0L; numeric_cells <- 0; numeric_failed_cells <- 0
+maximum_absolute_difference <- 0; maximum_relative_difference <- 0
 schema_error <- function(path, reason) {
   schema_errors <<- c(schema_errors, paste(path, reason, sep=": "))
 }
@@ -48,13 +49,23 @@ compare <- function(reference, result, path, inspect_attributes=TRUE) {
       compare(reference[[index]], result[[index]], paste0(path, "[[", index, "]]"))
   } else if (is.double(reference) || is.complex(reference)) {
     numeric_fields <<- numeric_fields + 1L
+    numeric_cells <<- numeric_cells + length(reference)
     if (!identical(is.na(reference), is.na(result))) schema_error(path, "missing values differ")
+    if (!identical(is.nan(reference), is.nan(result))) schema_error(path, "NA and NaN differ")
     finite <- is.finite(reference) & is.finite(result)
     if (!identical(is.finite(reference), is.finite(result))) schema_error(path, "nonfinite values differ")
+    infinity <- is.infinite(reference) & is.infinite(result)
+    if (any(infinity) && !identical(reference[infinity], result[infinity]))
+      schema_error(path, "infinite values differ")
     if (any(finite)) {
       difference <- abs(reference[finite] - result[finite])
       maximum_absolute_difference <<- max(maximum_absolute_difference, difference)
-      if (any(difference > atol + rtol * abs(reference[finite])))
+      relative <- difference / abs(reference[finite])
+      relative[difference == 0] <- 0
+      maximum_relative_difference <<- max(maximum_relative_difference, relative)
+      failed <- difference > atol + rtol * abs(reference[finite])
+      numeric_failed_cells <<- numeric_failed_cells + sum(failed)
+      if (any(failed))
         numeric_errors <<- c(numeric_errors, path)
     }
   } else if (!identical(reference, result)) {
@@ -66,7 +77,10 @@ compare(expected, actual, "saved_objects")
 cat("schema_errors:", length(schema_errors), "\n")
 cat("numeric_errors:", length(numeric_errors), "\n")
 cat("numeric_fields:", numeric_fields, "\n")
+cat("numeric_cells:", format(numeric_cells, scientific=FALSE), "\n")
+cat("numeric_failed_cells:", format(numeric_failed_cells, scientific=FALSE), "\n")
 cat("maximum_absolute_difference:", format(maximum_absolute_difference, digits=17), "\n")
+cat("maximum_relative_difference:", format(maximum_relative_difference, digits=17), "\n")
 if (length(schema_errors)) cat(paste(schema_errors, collapse="\n"), "\n")
 if (length(numeric_errors)) cat(paste(numeric_errors, collapse="\n"), "\n")
 if (length(schema_errors) || length(numeric_errors)) quit(status=1L)
