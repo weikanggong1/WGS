@@ -33,8 +33,8 @@ def read_sample_ids(path):
 class BedReader:
     """Memory-map SNP-major .bed; decode only requested samples and variants.
 
-    This reader never loads the full BIM table. BED decoding is I/O work on CPU;
-    association matrix operations are performed by the PyTorch CUDA kernels.
+    This reader never loads the full BIM table. Blocks can be decoded on CPU,
+    or transferred in their original packed representation and decoded on GPU.
     """
     def __init__(self, prefix, *, keep=None, remove=None, sample_ids=None,
                  metadata_cache_size=100000):
@@ -43,6 +43,7 @@ class BedReader:
         self.prefix = str(prefix)
         self.metadata_cache_size = metadata_cache_size
         self._variant_metadata = OrderedDict()
+        self._packed_decoder_cache = OrderedDict()
         self._bim_identity = None
         p = Path(prefix)
         if not Path(str(p)+'.bed').exists():
@@ -81,6 +82,10 @@ class BedReader:
             except KeyError as error:
                 raise ValueError('Requested sample missing from filtered FAM') from error
         self.sample_indices = np.asarray(selected, dtype=np.int64)
+        # uint8 shifts keep NumPy's bitwise decoding in byte precision.  An
+        # int64 shift array otherwise promotes every N x B BED code to int64.
+        self._sample_bytes = self.sample_indices // 4
+        self._sample_shifts = ((self.sample_indices % 4) * 2).astype(np.uint8)
         self.sample_ids = [fam[i] for i in selected]
         self.sample_sex = [sexes[i] for i in selected]
         self.n_samples = len(selected)
@@ -169,11 +174,57 @@ class BedReader:
         idx = np.asarray(indices, dtype=np.int64).reshape(-1)
         if np.any(idx < 0) or np.any(idx >= self.n_variants):
             raise IndexError('Variant index outside BED')
-        raw = self._bed[idx[:, None], (self.sample_indices//4)[None, :]]
-        codes = (raw >> ((self.sample_indices % 4)*2)[None, :]) & 3
+        raw = self._bed[idx[:, None], self._sample_bytes[None, :]]
+        codes = (raw >> self._sample_shifts[None, :]) & np.uint8(3)
         # PLINK 00=A1/A1; 01=missing; 10=A1/A2; 11=A2/A2.
         dosage = np.asarray([2., np.nan, 1., 0.], dtype=np.float32)[codes]
         return torch.from_numpy(dosage.T.copy())
+
+    def read_packed_variants(self, indices, *, sample_rows=None, device='cuda',
+                             dtype=torch.float32):
+        """Transfer original packed BED bytes and decode using PyTorch kernels.
+
+        The transferred block has B x ceil(N_source/4) bytes, rather than an
+        expanded N_analysis x B float matrix.  Optional sample_rows refers to
+        this reader's already filtered sample order, preserving arbitrary order.
+        """
+        import hashlib
+        idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+        if np.any(idx < 0) or np.any(idx >= self.n_variants):
+            raise IndexError('Variant index outside BED')
+        if sample_rows is None:
+            selection = self.sample_indices
+        else:
+            rows = np.asarray(sample_rows, dtype=np.int64).reshape(-1)
+            if np.any(rows < 0) or np.any(rows >= self.n_samples):
+                raise IndexError('Sample row outside filtered FAM')
+            selection = self.sample_indices[rows]
+        target_device = torch.device(device)
+        if target_device.type == 'cuda' and target_device.index is None:
+            target_device = torch.device('cuda',torch.cuda.current_device())
+        target_dtype = getattr(torch,dtype) if isinstance(dtype,str) else dtype
+        if target_dtype not in (torch.float32,torch.float64):
+            raise ValueError('Packed BED decoding supports float32 and float64')
+        selection_key = hashlib.sha256(selection.tobytes()).digest()
+        cache_key = (str(target_device),target_dtype,selection_key)
+        cached = self._packed_decoder_cache.get(cache_key)
+        if cached is None:
+            sample_bytes = torch.as_tensor(selection//4,device=target_device,dtype=torch.long)
+            sample_shifts = torch.as_tensor(((selection%4)*2).astype(np.uint8),device=target_device)
+            lookup = torch.tensor([2.,float('nan'),1.,0.],device=target_device,dtype=target_dtype)
+            cached = (sample_bytes,sample_shifts,lookup)
+            self._packed_decoder_cache[cache_key] = cached
+            while len(self._packed_decoder_cache)>4:
+                self._packed_decoder_cache.popitem(last=False)
+        self._packed_decoder_cache.move_to_end(cache_key)
+        sample_bytes,sample_shifts,lookup = cached
+        # Integer-array indexing copies only original packed rows into an owned,
+        # contiguous CPU buffer.  No expanded participant matrix exists on CPU.
+        raw = np.ascontiguousarray(self._bed[idx,:])
+        packed = torch.from_numpy(raw).to(target_device)
+        codes = torch.bitwise_right_shift(packed[:,sample_bytes],sample_shifts[None,:])
+        codes.bitwise_and_(3)
+        return lookup[codes.long()].T.contiguous()
 
     def iter_blocks(self, block_size=1000, indices=None):
         if block_size < 1:
@@ -188,7 +239,20 @@ class BedReader:
         if chunk:
             yield torch.tensor(chunk, dtype=torch.int64), self.read_variants(chunk)
 
-    def iter_variant_blocks(self, block_size=1000, indices=None):
+    def iter_variant_blocks(self, block_size=1000, indices=None, *,
+                            genotype_reader='cpu', sample_rows=None, device='cuda',
+                            dtype=torch.float32):
+        if block_size<1:
+            raise ValueError('block_size must be positive')
+        if genotype_reader not in ('cpu','cuda_packed'):
+            raise ValueError('genotype_reader must be cpu or cuda_packed')
+        def decode(variants):
+            indices = [v.index for v in variants]
+            if genotype_reader=='cuda_packed':
+                return self.read_packed_variants(indices,sample_rows=sample_rows,
+                                                device=device,dtype=dtype)
+            values = self.read_variants(indices)
+            return values if sample_rows is None else values[sample_rows]
         selected = None if indices is None else set(map(int, indices))
         chunk = []
         for v in self.iter_variants():
@@ -196,10 +260,10 @@ class BedReader:
                 continue
             chunk.append(v)
             if len(chunk) == block_size:
-                yield chunk, self.read_variants([v.index for v in chunk])
+                yield chunk, decode(chunk)
                 chunk = []
         if chunk:
-            yield chunk, self.read_variants([v.index for v in chunk])
+            yield chunk, decode(chunk)
 
 
 def load_phenotype(path, column, sample_ids, *, missing_values=(-9,)):
@@ -298,4 +362,146 @@ def materialize_bed(prefix, cache_directory):
             link=Path(str(target)+suffix)
             if link.is_symlink() or link.exists():link.unlink()
             link.symlink_to(Path(str(source)+suffix).resolve())
+    return str(target)
+
+
+def materialize_discovery_bed(prefix, cache_directory, *, keep=None, remove=None,
+                              sample_ids=None, block_variants=1000):
+    """Stream all BED variants into a private, sample-filtered BED cache.
+
+    A compressed source is read once in physical variant order.  Its original
+    two-bit calls are copied exactly, including missing calls; no dosage
+    conversion or variant selection is performed.  Source FAM lines retain
+    their sex/pedigree fields.  The returned BIM links to the entire source BIM.
+    """
+    import gzip, hashlib, json, shutil, fcntl, os
+    if not isinstance(block_variants, int) or block_variants < 1:
+        raise ValueError('block_variants must be a positive integer')
+    source = Path(prefix)
+    bed = Path(str(source)+'.bed')
+    if not bed.exists():
+        bed = Path(str(source)+'.bed.gz')
+    if not bed.exists():
+        raise FileNotFoundError(str(source)+'.bed[.gz]')
+    fam = []
+    fam_lines = []
+    with open(str(source)+'.fam') as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            fields = line.split()
+            if len(fields) < 2:
+                raise ValueError('Malformed FAM row')
+            fam.append((fields[0], fields[1]))
+            fam_lines.append(line if line.endswith('\n') else line+'\n')
+    if not fam or len(set(fam)) != len(fam):
+        raise ValueError('Empty FAM or duplicate FID/IID in FAM')
+    keep = read_sample_ids(keep) if isinstance(keep, (str, Path)) else keep
+    remove = read_sample_ids(remove) if isinstance(remove, (str, Path)) else remove
+    selected = [i for i, sid in enumerate(fam)
+                if (keep is None or sid in keep or sid[1] in keep)
+                and (remove is None or (sid not in remove and sid[1] not in remove))]
+    if sample_ids is not None:
+        positions = {fam[i]: i for i in selected}
+        try:
+            selected = [positions[tuple(sid)] for sid in sample_ids]
+        except KeyError as error:
+            raise ValueError('Requested sample missing from filtered FAM') from error
+        if len(set(selected)) != len(selected):
+            raise ValueError('Duplicate requested FID/IID')
+    if not selected:
+        raise ValueError('No samples remain')
+    input_stride = (len(fam)+3)//4
+    output_stride = (len(selected)+3)//4
+    n_variants = 0
+    bim = Path(str(source)+'.bim')
+    with bim.open('rb') as stream:
+        last_byte = b''
+        while True:
+            chunk = stream.read(16*1024**2)
+            if not chunk:
+                break
+            n_variants += chunk.count(b'\n')
+            last_byte = chunk[-1:]
+        if last_byte and last_byte != b'\n':
+            n_variants += 1
+    if not n_variants:
+        raise ValueError('Empty BIM')
+    selection = np.asarray(selected, dtype=np.int64)
+    selection_sha = hashlib.sha256(selection.astype('<i8', copy=False).tobytes()).hexdigest()
+    key = hashlib.sha256((str(source.resolve())+'\0'+selection_sha).encode()).hexdigest()[:20]
+    directory = Path(cache_directory)/('discovery_'+key)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory/(source.name+'_discovery')
+    marker = directory/'source.json'
+    expected = 3+output_stride*n_variants
+    source_paths = [bed, bim, Path(str(source)+'.fam')]
+    identity = {'format_version':1, 'source':str(source.resolve()),
+                'source_files':{path.suffix:[path.stat().st_size,path.stat().st_mtime_ns]
+                                for path in source_paths},
+                'sample_selection_sha256':selection_sha,
+                'n_source_samples':len(fam), 'n_discovery_samples':len(selected),
+                'n_variants':n_variants, 'expected_bed_bytes':expected}
+    target_bed = Path(str(target)+'.bed')
+    with (directory/'materialize.lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            cached_identity = json.loads(marker.read_text())
+        except (OSError, ValueError):
+            cached_identity = None
+        cached = (cached_identity == identity and target_bed.is_file()
+                  and target_bed.stat().st_size == expected
+                  and Path(str(target)+'.fam').is_file())
+        if not cached:
+            if shutil.disk_usage(directory).free < expected+1024**3:
+                raise OSError(f'Insufficient cache space for {expected} bytes of discovery BED')
+            partial_bed = Path(str(target_bed)+'.partial')
+            partial_fam = Path(str(target)+'.fam.partial')
+            partial_marker = Path(str(marker)+'.partial')
+            sample_bytes = selection//4
+            sample_shifts = ((selection % 4)*2).astype(np.uint8)
+            open_source = gzip.open if bed.name.endswith('.gz') else open
+            written = 0
+            try:
+                with open_source(bed, 'rb') as src, partial_bed.open('wb') as dst:
+                    if src.read(3) != b'\x6c\x1b\x01':
+                        raise ValueError('BED must have SNP-major PLINK header')
+                    dst.write(b'\x6c\x1b\x01')
+                    while True:
+                        chunk = src.read(input_stride*block_variants)
+                        if not chunk:
+                            break
+                        if len(chunk) % input_stride:
+                            raise ValueError('Source BED size does not match source FAM')
+                        raw = np.frombuffer(chunk, dtype=np.uint8).reshape(-1,input_stride)
+                        codes = (raw[:,sample_bytes] >> sample_shifts[None,:]) & np.uint8(3)
+                        packed = np.zeros((len(raw),output_stride), dtype=np.uint8)
+                        for offset in range(4):
+                            part = codes[:,offset::4]
+                            packed[:,:part.shape[1]] |= part << np.uint8(2*offset)
+                        dst.write(packed.tobytes())
+                        written += len(raw)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                if written != n_variants or partial_bed.stat().st_size != expected:
+                    raise ValueError('Source BED variant count differs from complete BIM')
+                # Reading gzip through EOF validates its CRC before committing.
+                current_files = {path.suffix:[path.stat().st_size,path.stat().st_mtime_ns]
+                                 for path in source_paths}
+                if current_files != identity['source_files']:
+                    raise RuntimeError('Source genotype files changed while streaming discovery BED')
+                partial_fam.write_text(''.join(fam_lines[i] for i in selected))
+                partial_marker.write_text(json.dumps(identity,indent=2)+'\n')
+                partial_bed.replace(target_bed)
+                partial_fam.replace(str(target)+'.fam')
+                partial_marker.replace(marker)
+            except BaseException:
+                partial_bed.unlink(missing_ok=True)
+                partial_fam.unlink(missing_ok=True)
+                partial_marker.unlink(missing_ok=True)
+                raise
+        target_bim = Path(str(target)+'.bim')
+        if target_bim.is_symlink() or target_bim.exists():
+            target_bim.unlink()
+        target_bim.symlink_to(bim.resolve())
     return str(target)

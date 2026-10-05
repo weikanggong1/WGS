@@ -6,11 +6,11 @@ this module never guesses what C, R, or UR means from those letters.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from numbers import Integral
 from pathlib import Path
-from typing import Collection, Iterable, Mapping, Sequence
+from typing import Collection, Iterable, Iterator, Mapping, Sequence
 
 import torch
 
@@ -74,9 +74,22 @@ class GeneConfig:
     extract_genes: Collection[str] | None = None
     variant_block_size: int = 1000
     max_matrix_bytes: int = 8 * 1024**3
+    vc_score_method: str = "residual"
+    vc_storage: str = "dense"
+    vc_score_block_size: int = 256
+    genotype_reader: str = "cpu"
     genotype_orientation: str = "allele1"
     skato_rhos: tuple[float, ...] = (0., .01, .04, .09, .16, .25, .5, 1.)
     tail_method: str = "regenie"
+    davies_controller: str = "auto"
+    eigen_backend: str = "dense"
+    secular_min_size: int = 4096
+    secular_root_chunk: int = 256
+    secular_iterations: int = 64
+    skato_integral_backend: str = "adaptive_x"
+    skato_integral_epsabs: float = 1e-25
+    skato_integral_epsrel: float = 2.**-13
+    skato_integral_max_intervals: int = 1000
     acato_full: bool = True
     gene_p: bool = True
     gene_p_groups: Mapping[str, Collection[str]] | None = None
@@ -84,11 +97,19 @@ class GeneConfig:
     sbat_max_subsets: int = 10
     sbat_qmc_samples: int = 8192
     sbat_seed: int = 0
+    sbat_subset_sampling: str = "unique"
     rank_tolerance: float = 1e-7
     qr_tie_tolerance: float = 0.0
     genotype_scale_tolerance: float = 1e-6
 
     def __post_init__(self):
+        from ._quadrature import validate_quadrature_parameters
+        if self.skato_integral_backend not in {"segmented", "adaptive_x", "adaptive_sqrt"}:
+            raise ValueError("SKAT-O integral backend must be segmented, adaptive_x or adaptive_sqrt.")
+        validate_quadrature_parameters(self.skato_integral_epsabs, self.skato_integral_epsrel,
+                                       self.skato_integral_max_intervals)
+        if self.davies_controller not in {"auto", "scalar", "numpy"}:
+            raise ValueError("davies_controller must be auto, scalar or numpy.")
         # JSON serializes tuples as lists. Normalize at the public config
         # boundary so both CLI JSON and direct Python calls build the same masks.
         try:
@@ -109,8 +130,26 @@ class GeneConfig:
             raise ValueError("Beta weight parameters must be finite and positive.")
         if self.variant_block_size < 1 or self.max_matrix_bytes < 1:
             raise ValueError("Block size and matrix memory limit must be positive.")
+        if self.vc_score_method not in {"residual", "crossproduct"}:
+            raise ValueError("vc_score_method must be residual or crossproduct.")
+        if self.vc_storage not in {"dense", "sparse"}:
+            raise ValueError("vc_storage must be dense or sparse.")
+        if self.genotype_reader not in {"cpu", "cuda_packed"}:
+            raise ValueError("genotype_reader must be cpu or cuda_packed.")
+        if self.vc_storage == "sparse" and self.vc_score_method != "crossproduct":
+            raise ValueError("Sparse VC storage requires the crossproduct score method.")
+        if not isinstance(self.vc_score_block_size, Integral) or self.vc_score_block_size < 1:
+            raise ValueError("VC score block size must be a positive integer.")
+        if self.sbat_subset_sampling not in {"unique", "with_replacement"}:
+            raise ValueError("SBAT subset sampling must be unique or with_replacement.")
         if self.genotype_orientation not in {"variant_id", "allele1", "alt"}:
             raise ValueError("genotype_orientation must be variant_id, allele1, or alt.")
+        if self.eigen_backend not in {"dense", "secular", "auto"}:
+            raise ValueError("eigen_backend must be dense, secular, or auto.")
+        for name in ("secular_min_size", "secular_root_chunk", "secular_iterations"):
+            value=getattr(self,name)
+            if isinstance(value,bool) or not isinstance(value,Integral) or value<1:
+                raise ValueError(f"{name} must be a positive integer.")
         if self.tail_method not in {"regenie", "exact"}:
             raise ValueError("tail_method must be regenie or exact.")
         if not isinstance(self.sbat_max_subsets, Integral) or self.sbat_max_subsets < 0:
@@ -176,8 +215,46 @@ def load_mask_definitions(path: str | Path, *, extract_variants: Collection[str]
     return masks
 
 
-def load_variant_whitelist(path: str | Path) -> frozenset[str]:
-    return frozenset(parts[0] for _, parts in _lines(path))
+def effective_mask_definitions(definitions: Sequence[MaskDefinition],
+                               annotations: Iterable[Annotation],
+                               available_variants: Collection[str]) -> list[MaskDefinition]:
+    """Return native output-header masks without changing their source definitions.
+
+    Supply the complete annotation records and the BIM IDs remaining after the
+    global/score variant filters. Native category registration precedes setlist,
+    gene, AAF and MAC filtering, so those filters must not restrict this input.
+    ``NULL`` is registered even without an annotation record. Unknown categories
+    are removed in their original order, and masks with none left are omitted.
+    The remaining fields, including per-mask variant filters, are preserved.
+    """
+    available = (available_variants if isinstance(available_variants, (set, frozenset, Mapping))
+                 else set(available_variants))
+    registered = {"NULL"}
+    registered.update(record.category for record in annotations
+                      if record.variant_id in available)
+    effective = []
+    for definition in definitions:
+        categories = definition.categories.intersection(registered)
+        if not categories:
+            continue
+        source_order = (definition.category_order if definition.category_order is not None
+                        else tuple(sorted(definition.categories)))
+        category_order = tuple(category for category in source_order if category in categories)
+        effective.append(replace(definition, categories=frozenset(categories),
+                                 category_order=category_order))
+    return effective
+
+
+def load_variant_whitelist(path: str | Path, variant_ids: Collection[str] | None = None) -> frozenset[str]:
+    """Read an original score whitelist, retaining optional annotation candidates.
+
+    Every source line is parsed with the same first-column semantics. Filtering
+    changes storage rather than membership for the candidate variants; the
+    default still returns the complete whitelist for existing Python callers.
+    """
+    allowed = (variant_ids if isinstance(variant_ids, (set, frozenset)) else set(variant_ids)) if variant_ids is not None else None
+    return frozenset(parts[0] for _, parts in _lines(path)
+                     if allowed is None or parts[0] in allowed)
 
 
 def beta_maf_weights(maf: torch.Tensor, a: float = 1., b: float = 25.) -> torch.Tensor:
@@ -244,6 +321,54 @@ class PreparedMask:
 
 
 @dataclass
+class _SharedVC:
+    values: torch.Tensor | None
+    mafs: torch.Tensor | None
+    references: int = 0
+
+
+@dataclass
+class _VCSelection:
+    shared: _SharedVC
+    columns: torch.Tensor
+
+
+def _matrix_storage_bytes(matrix: torch.Tensor) -> int:
+    if matrix.is_sparse:
+        return (matrix.values().numel() * matrix.values().element_size()
+                + matrix.indices().numel() * matrix.indices().element_size())
+    return matrix.numel() * matrix.element_size()
+
+
+def _select_vc_columns(matrix: torch.Tensor, columns: torch.Tensor) -> torch.Tensor:
+    if not matrix.is_sparse:
+        return matrix[:, columns]
+    mapping = torch.full((matrix.shape[1],), -1, device=matrix.device, dtype=torch.long)
+    mapping[columns] = torch.arange(columns.numel(), device=matrix.device)
+    coordinates, values = matrix.indices(), matrix.values()
+    selected = mapping[coordinates[1]] >= 0
+    indices = torch.stack([coordinates[0, selected], mapping[coordinates[1, selected]]])
+    return torch.sparse_coo_tensor(indices, values[selected], (matrix.shape[0], columns.numel()),
+                                  device=matrix.device, dtype=matrix.dtype).coalesce()
+
+
+def _concatenate_vc_chunks(chunks: Sequence[torch.Tensor], *, sparse=False) -> torch.Tensor:
+    if not sparse:
+        return torch.cat(chunks, 1)
+    indices, values, offset = [], [], 0
+    for chunk in chunks:
+        source = chunk.coalesce() if chunk.is_sparse else chunk.to_sparse_coo().coalesce()
+        coordinates = source.indices().clone()
+        coordinates[1] += offset
+        indices.append(coordinates)
+        values.append(source.values())
+        offset += source.shape[1]
+    return torch.sparse_coo_tensor(torch.cat(indices, 1), torch.cat(values),
+                                  (chunks[0].shape[0], offset), device=chunks[0].device,
+                                  dtype=chunks[0].dtype).coalesce()
+
+
+@dataclass
 class _State:
     definition: MaskDefinition
     domain: str | None
@@ -252,8 +377,7 @@ class _State:
     raw_alt: torch.Tensor
     raw_minor_rare: torch.Tensor
     variant_ids: list[str] = field(default_factory=list)
-    vc_chunks: list[torch.Tensor] = field(default_factory=list)
-    maf_chunks: list[torch.Tensor] = field(default_factory=list)
+    vc_chunks: list[_VCSelection] = field(default_factory=list)
 
 
 class GeneMaskBuilder:
@@ -290,6 +414,7 @@ class GeneMaskBuilder:
                                                empty.clone()))
         self.whitelist = None if self.config.extract_variants is None else set(self.config.extract_variants)
         self.retained_bytes = 0
+        self.finished = False
 
     def _eligible_annotation(self, variant_id: str, state: _State, maf: float) -> bool:
         if self.whitelist is not None and variant_id not in self.whitelist:
@@ -306,6 +431,8 @@ class GeneMaskBuilder:
         return any(a.domain == state.domain for a in matching)
 
     def update(self, variant_ids: Sequence[str], genotypes: torch.Tensor):
+        if self.finished:
+            raise RuntimeError("A finalized gene mask builder cannot accept new genotypes.")
         raw = torch.as_tensor(genotypes, device=self.device, dtype=self.dtype)
         if raw.ndim != 2 or raw.shape != (self.n_samples, len(variant_ids)):
             raise ValueError("Genotype block must have shape [analysis samples, variants].")
@@ -320,6 +447,10 @@ class GeneMaskBuilder:
         singletons = ((raw >= .5) & valid).sum(0) == 1 if self.config.singleton_carrier else (ac + .5).floor() == 1
         aafs, mafs, macs, aacs, ns, single = [t.detach().cpu().tolist() for t in (aaf, maf, mac, ac, counts, singletons)]
         minor = torch.where((aaf > .5)[None, :] & valid, 2.0 - raw, raw)
+        # Several masks and domains can include the same ordinary VC sites.
+        # Keep one imputed block and cheap column selections until each mask
+        # is tested, rather than duplicating N x V matrices for every mask.
+        shared, shared_lookup = None, {}
         for state in self.states:
             indices = [j for j, vid in enumerate(variant_ids)
                        if ns[j] and macs[j] >= .5 and self._eligible_annotation(vid, state, mafs[j])
@@ -339,16 +470,46 @@ class GeneMaskBuilder:
                                                     minor[:, rare].amax(1))
             regular = [j for j in indices if aacs[j] > self.config.collapse_mac]
             if regular:
-                retained = minor[:, regular].clone()
-                retained = torch.where(retained >= 0, retained, 2 * maf[regular][None, :])
-                self.retained_bytes += retained.numel() * retained.element_size()
-                if self.retained_bytes > self.config.max_matrix_bytes:
-                    raise MemoryError("Gene VC matrices exceed max_matrix_bytes; reduce the gene/variant selection.")
-                state.vc_chunks.append(retained)
-                state.maf_chunks.append(maf[regular].clone())
+                if shared is None:
+                    # Only sites eligible for at least one mask need storage.
+                    reusable = [j for j, vid in enumerate(variant_ids)
+                                if ns[j] and macs[j] >= .5 and aacs[j] > self.config.collapse_mac
+                                and aafs[j] <= self.config.vc_max_aaf
+                                and any(self._eligible_annotation(vid, candidate, mafs[j])
+                                        for candidate in self.states
+                                        if candidate.upper == self.config.vc_max_aaf)]
+                    retained = minor[:, reusable]
+                    retained = torch.where(retained >= 0, retained, 2 * maf[reusable][None, :])
+                    if self.config.vc_storage == "sparse":
+                        retained = retained.to_sparse_coo().coalesce()
+                    shared = _SharedVC(retained, maf[reusable].clone())
+                    shared_lookup = {column: offset for offset, column in enumerate(reusable)}
+                    self.retained_bytes += _matrix_storage_bytes(retained)
+                    if self.retained_bytes > self.config.max_matrix_bytes:
+                        raise MemoryError("Unique gene VC genotypes exceed max_matrix_bytes.")
+                shared.references += 1
+                state.vc_chunks.append(_VCSelection(shared, torch.tensor(
+                    [shared_lookup[j] for j in regular], device=self.device, dtype=torch.long)))
 
-    def finish(self) -> list[PreparedMask]:
-        output = []
+    def _release_vc(self, state: _State):
+        for selection in state.vc_chunks:
+            shared = selection.shared
+            shared.references -= 1
+            if shared.references == 0:
+                self.retained_bytes -= _matrix_storage_bytes(shared.values)
+                shared.values, shared.mafs = None, None
+        state.vc_chunks.clear()
+
+    def finish_iter(self) -> Iterator[PreparedMask]:
+        """Materialize one mask's VC matrix at a time in original mask order.
+
+        Consumers should test a yielded mask before requesting the next one.
+        Previously used shared blocks are released after their last mask.
+        Burden/raw burden tensors stay available for SBAT and mask artifacts.
+        """
+        if self.finished:
+            raise RuntimeError("A gene mask builder can only be finalized once.")
+        self.finished = True
         for state in self.states:
             if not state.variant_ids:
                 continue
@@ -358,32 +519,63 @@ class GeneMaskBuilder:
             af = float((ac / (2 * max(n, 1))).item())
             mac = float(torch.minimum(ac, 2 * n - ac).item())
             if n == 0 or mac < self.config.min_mac:
+                self._release_vc(state)
                 continue
             burden = torch.where(observed, state.raw_alt, 2 * af)
             vc, mafs = None, None
             if state.upper == self.config.vc_max_aaf:
+                chunks, maf_chunks = [], []
                 rare_observed = state.raw_minor_rare >= 0
-                if bool((state.raw_minor_rare > 0).any()):
+                has_rare = bool((state.raw_minor_rare > 0).any())
+                width = sum(selection.columns.numel() for selection in state.vc_chunks) + int(has_rare)
+                matrix_bytes = self.n_samples * width * burden.element_size()
+                if self.config.vc_storage == "sparse":
+                    matrix_bytes = sum(_matrix_storage_bytes(selection.shared.values)
+                                       for selection in state.vc_chunks) + self.n_samples * 24 * int(has_rare)
+                covariance_bytes = width ** 2 * 8
+                # Check before allocating selections, concatenation and the
+                # double-precision projection/eigensolver working matrices.
+                workspace_bytes = 2 * matrix_bytes
+                if self.config.vc_score_method == "crossproduct":
+                    workspace_bytes = matrix_bytes
+                    if self.config.vc_storage == "sparse":
+                        workspace_bytes += self.n_samples * min(width, self.config.vc_score_block_size) * 8
+                if self.retained_bytes + workspace_bytes + 6 * covariance_bytes > self.config.max_matrix_bytes:
+                    raise MemoryError("One gene mask and covariance matrix exceed max_matrix_bytes.")
+                for selection in state.vc_chunks:
+                    shared = selection.shared
+                    chunks.append(_select_vc_columns(shared.values, selection.columns))
+                    maf_chunks.append(shared.mafs[selection.columns])
+                if has_rare:
                     rare_mean = torch.where(rare_observed, state.raw_minor_rare, 0.).sum() / rare_observed.sum()
                     rare_maf = torch.minimum(rare_mean / 2, 1.0 - rare_mean / 2)
-                    state.vc_chunks.append(torch.where(rare_observed, state.raw_minor_rare,
-                                                        rare_mean)[:, None])
-                    state.maf_chunks.append(rare_maf.reshape(1))
-                if state.vc_chunks:
-                    vc = torch.cat(state.vc_chunks, 1)
-                    mafs = torch.cat(state.maf_chunks).to(torch.float64)
-                    covariance_bytes = vc.shape[1] ** 2 * 8
-                    # Eigensolvers, rho kernels and residualized G need working space.
-                    if self.retained_bytes + 2 * vc.numel() * vc.element_size() + 6 * covariance_bytes > self.config.max_matrix_bytes:
-                        raise MemoryError("Gene genotype and covariance matrix exceed max_matrix_bytes.")
-                    state.vc_chunks.clear()
-                    state.maf_chunks.clear()
+                    chunks.append(torch.where(rare_observed, state.raw_minor_rare,
+                                              rare_mean)[:, None])
+                    maf_chunks.append(rare_maf.reshape(1))
+                if chunks:
+                    vc = _concatenate_vc_chunks(chunks, sparse=self.config.vc_storage == "sparse")
+                    mafs = torch.cat(maf_chunks).to(torch.float64)
+                # Free an imputed input block as soon as its last selection is
+                # materialized. The concatenated output owns independent data.
+                self._release_vc(state)
+                chunks.clear()
+                maf_chunks.clear()
             name = ("" if state.domain is None else state.domain + ".") + state.definition.name
-            output.append(PreparedMask(name, state.definition.name, state.domain, state.frequency,
-                                       state.upper, tuple(dict.fromkeys(state.variant_ids)), burden,
-                                       af, mac, n, vc, mafs, state.definition.score,
-                                       raw_burden=torch.where(observed, state.raw_alt, float("nan")),
-                                       beta_a=self.config.beta_a, beta_b=self.config.beta_b))
+            yield PreparedMask(name, state.definition.name, state.domain, state.frequency,
+                               state.upper, tuple(dict.fromkeys(state.variant_ids)), burden,
+                               af, mac, n, vc, mafs, state.definition.score,
+                               raw_burden=torch.where(observed, state.raw_alt, float("nan")),
+                               beta_a=self.config.beta_a, beta_b=self.config.beta_b)
+
+    def finish(self) -> list[PreparedMask]:
+        """Return all materialized masks for the in-memory Python interface."""
+        output, retained_outputs = [], 0
+        for mask in self.finish_iter():
+            if mask.vc_genotypes is not None:
+                retained_outputs += _matrix_storage_bytes(mask.vc_genotypes)
+                if retained_outputs + self.retained_bytes > self.config.max_matrix_bytes:
+                    raise MemoryError("All materialized gene masks exceed max_matrix_bytes; use finish_iter().")
+            output.append(mask)
         return output
 
 

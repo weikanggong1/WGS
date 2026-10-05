@@ -1,0 +1,166 @@
+{
+  "completed": true,
+  "n_source_variants": 13733596,
+  "raw_association_rows": 314209,
+  "native": {
+    "chromosome": 21,
+    "engine": "REGENIE 3.4.1 CPU",
+    "threads": 8,
+    "whole_chromosome": true,
+    "min_mac": 20,
+    "maf_filter_in_command": false,
+    "wall_seconds": 9646.819098740816,
+    "exit_code": 0
+  },
+  "gpu_process_wall_seconds": 1419.548315629363,
+  "gpu_analysis_wall_seconds": 1409.7683560401201,
+  "observed_cpu_to_gpu_wall_ratio": 6.795696203171398,
+  "gpu_peak_bytes": 937278464,
+  "comparison": {
+    "chromosome": 21,
+    "rows": 314209,
+    "header_equal": true,
+    "test_counts": {
+      "ADD": 314209
+    },
+    "result_file_bytes": {
+      "native": 32249179,
+      "gpu": 32249010
+    },
+    "ids_file_bytes": {
+      "native": 664621,
+      "gpu": 664621
+    },
+    "header_byte_exact": true,
+    "whitespace_layout_mismatches": 0,
+    "metadata_mismatches": 0,
+    "ids_byte_exact": true,
+    "numeric_errors": {
+      "A1FREQ": {
+        "max_abs": 0.0,
+        "finite_pairs": 314209,
+        "different_printed_values": 0,
+        "nan_mismatches": 0,
+        "nonfinite_token_mismatches": 0,
+        "outside_tolerance": 0,
+        "max_tolerance_ratio": 0.0,
+        "rmse": 0.0
+      },
+      "BETA": {
+        "max_abs": 1.0000000000287557e-06,
+        "finite_pairs": 314209,
+        "different_printed_values": 11275,
+        "nan_mismatches": 0,
+        "nonfinite_token_mismatches": 0,
+        "outside_tolerance": 0,
+        "max_tolerance_ratio": 0.4998125702866425,
+        "rmse": 3.72116957794501e-08
+      },
+      "SE": {
+        "max_abs": 1.000000000001e-06,
+        "finite_pairs": 314209,
+        "different_printed_values": 1811,
+        "nan_mismatches": 0,
+        "nonfinite_token_mismatches": 0,
+        "outside_tolerance": 0,
+        "max_tolerance_ratio": 0.4909228367490108,
+        "rmse": 3.766655062383847e-08
+      },
+      "CHISQ": {
+        "max_abs": 1.000000000139778e-05,
+        "finite_pairs": 314209,
+        "different_printed_values": 18724,
+        "nan_mismatches": 0,
+        "nonfinite_token_mismatches": 0,
+        "outside_tolerance": 0,
+        "max_tolerance_ratio": 0.09087967894086561,
+        "rmse": 4.6628969641638555e-07
+      },
+      "LOG10P": {
+        "max_abs": 1.0000000000065512e-05,
+        "finite_pairs": 314209,
+        "different_printed_values": 11917,
+        "nan_mismatches": 0,
+        "nonfinite_token_mismatches": 0,
+        "outside_tolerance": 0,
+        "max_tolerance_ratio": 0.10000000000065512,
+        "rmse": 1.6929531721482497e-07
+      }
+    },
+    "declared_tolerances": {
+      "A1FREQ": {
+        "atol": 2e-06,
+        "rtol": 0.0
+      },
+      "BETA": {
+        "atol": 1e-06,
+        "rtol": 1e-05
+      },
+      "SE": {
+        "atol": 1e-06,
+        "rtol": 1e-05
+      },
+      "CHISQ": {
+        "atol": 0.0001,
+        "rtol": 1e-05
+      },
+      "LOG10P": {
+        "atol": 0.0001,
+        "rtol": 0.0
+      }
+    },
+    "numeric_tolerance_rule": "abs(gpu-native) <= atol + rtol*abs(native)",
+    "numeric_tolerance_passed": true,
+    "posthoc_source_A1FREQ_gt_0001_rows": [
+      185552,
+      185552
+    ],
+    "all_raw_rows_compared": true,
+    "source_raw_filter": "minMAC >=20, no MAF filter",
+    "source_summary_filter": "A1FREQ >0.001",
+    "same_loco_and_phenotype": true,
+    "dtype": "float32",
+    "native_precision": "double (frozen REGENIE 3.4.1 quantitative-trait source)"
+  },
+  "timing_note": "Complete chromosome validation runs shared container CPU quota, storage, and GPU with other authorized validation jobs. This observed wall ratio is not an isolated speed benchmark.",
+  "scope": "Full chromosome 21, one continuous phenotype, all raw minMAC20 rows; same complete 509468-marker GPU LOCO in both Step2 programs",
+  "gpu_run": {
+    "chromosome": 21,
+    "n_source_samples": 59360,
+    "n_discovery_samples": 44365,
+    "n_active_samples": 41538,
+    "n_variants": 13733596,
+    "rows": 314209,
+    "dtype": "float32",
+    "tf32": true,
+    "apply_rint": true,
+    "maf_min_raw": 0.0,
+    "min_mac": 20,
+    "block_size": 1000,
+    "print_pheno": true,
+    "genotype_reader": "cuda_packed",
+    "genotype_payload_bytes": 203806564640,
+    "all_variants_decoded": true,
+    "analysis_wall_seconds": 1409.7683560401201,
+    "process_wall_seconds": 1419.548315629363,
+    "peak_gpu_bytes": 937278464,
+    "implementation_sha256": {
+      "single.py": "279b1145084280cc9237ec03f8c43882834ebcde8903f8bd44cecf62e0ef5da1",
+      "io.py": "caeafdfe684245d30231a961813007a783767c91baddaff570a59faca9eebf46",
+      "phenotype.py": "92234f702b70add5870bdcf4638ab0d9219aa2bbcf0e970bf48f95e8a34a2ae8",
+      "statistics.py": "9ede6e6a5f64c0cc0d847bb235fb1e7ae925742f001d230553e2a61c9d4274b7",
+      "output.py": "5a1cb93f0da7d509a59e1283d720c4d85255cc8cafc3914f4a47671db1736381",
+      "step1.py": "67a4794eedbc76340e1f8089102ce3c727bb66766820090b11181bc0831a7ea9"
+    },
+    "profile": {
+      "variants_decoded": 13733596,
+      "blocks": 13734,
+      "decode_seconds": 994.5973383337259,
+      "association_and_output_seconds": 415.1710177063942,
+      "rows_written": 314209
+    },
+    "timing_note": "Validation wall time with concurrent original CPU reference, old CPU decode GPU baseline, and whole-gene GPU work; not an isolated speed benchmark",
+    "trait": "continuous_trait_1"
+  },
+  "private_individual_records_exported": false
+}

@@ -1,0 +1,67 @@
+{
+  "device": "cpu",
+  "threads": 4,
+  "chromosome": 21,
+  "n_input": 44365,
+  "n_active": 41538,
+  "n_variants": 13733596,
+  "score_subset_columns": 256,
+  "gpu_budget_bytes": 21474836480,
+  "cases": [
+    {
+      "analysis": "RNA",
+      "selection": "maximum annotation R_records gene",
+      "R_records": 9066,
+      "annotation_records": 311510,
+      "selected_variants": 311510,
+      "base_masks": 10,
+      "unique_vc_peak_bytes": 31292688,
+      "compared_actual_columns": 256,
+      "max_score_difference": 1.7053025658242404e-13,
+      "max_covariance_difference": 9.777068044058979e-12,
+      "elapsed_preflight_seconds": 1185.7753043174744,
+      "mask_workspace_summary": {
+        "mask_count": 11,
+        "nonempty_mask_count": 7,
+        "budget_evaluated_mask_count": 7,
+        "fits_gpu_budget_count": 7,
+        "maximum_vc_columns": 7343,
+        "maximum_nonzeros": 1226388,
+        "maximum_retained_vc_bytes": 29433312,
+        "maximum_dense_equivalent_bytes": 2440108272,
+        "maximum_covariance_bytes": 431357192,
+        "maximum_estimated_sparse_workspace_bytes": 2733938976,
+        "maximum_estimated_old_dense_workspace_bytes": 9908467968
+      }
+    },
+    {
+      "analysis": "Intron",
+      "selection": "maximum annotation R_records gene",
+      "R_records": 13003,
+      "annotation_records": 454893,
+      "selected_variants": 454893,
+      "base_masks": 1,
+      "unique_vc_peak_bytes": 54600072,
+      "compared_actual_columns": 256,
+      "max_score_difference": 2.0605739337042905e-13,
+      "max_covariance_difference": 5.4569682106375694e-12,
+      "elapsed_preflight_seconds": 1654.1529448479414,
+      "mask_workspace_summary": {
+        "mask_count": 6,
+        "nonempty_mask_count": 4,
+        "budget_evaluated_mask_count": 4,
+        "fits_gpu_budget_count": 4,
+        "maximum_vc_columns": 11392,
+        "maximum_nonzeros": 2315015,
+        "maximum_retained_vc_bytes": 55560360,
+        "maximum_dense_equivalent_bytes": 3785607168,
+        "maximum_covariance_bytes": 1038221312,
+        "maximum_estimated_sparse_workspace_bytes": 6424558128,
+        "maximum_estimated_old_dense_workspace_bytes": 17586149376
+      }
+    }
+  ],
+  "all_checks_passed": true,
+  "scope": "Complete real largest-gene mask construction and 256-column score comparison; workspace estimates are not measured GPU peaks or full association benchmarks",
+  "individual_records_exported": false
+}

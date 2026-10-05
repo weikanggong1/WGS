@@ -1,0 +1,2741 @@
+{
+  "mode": "serial_subset",
+  "source_commit": "9141c0a8caab3797a2725d7c3fb7f8e19ced45e2",
+  "scope_full_26_groups": false,
+  "complete_groups": [
+    "PTV",
+    "Missense",
+    "Pseudo",
+    "Intron_Gnocchi4",
+    "RNA",
+    "Intron"
+  ],
+  "groups_completed": 6,
+  "rows": 32842,
+  "implementation_sha256": {
+    "pipeline.py": "395d145c5ed16baf667424b59059d9444e512de66bd5ec7981a82dabe66a4271",
+    "_rank_one.py": "5b6d63af894a62afcb1c0dc16e09c93227e2e4190e155b961ea2da099d8b529d",
+    "statistics.py": "fe9f6f3e120875f03b6224d1d557a7744b96ef18a35fba2f11bfaae3df8f6bac",
+    "_quadrature.py": "01ef6962410db503090256081779b168f9545293e17215ff83cbf95bd6d717b5",
+    "cli.py": "a6140c9370f1bbf302cb7089b20cf1678723c85661911f979bf563562a55b292",
+    "gene.py": "a73296cbf5e753e221171fdc7af03ef462b8f93fea9c96e8c2a564b76da1d8eb",
+    "io.py": "caeafdfe684245d30231a961813007a783767c91baddaff570a59faca9eebf46",
+    "chromosome.py": "4b30281fab3d906725be1288023042bf03cf1459faede86dfdc5bd65fc809659",
+    "__init__.py": "b512f406746d341f99241aa99a050cc284a6cb8b7947951e6756f29d37e3e178",
+    "output.py": "6df6b82ba7d6179a1e14cb87832e74038bf7b5050cd5adc4afe63ae4e5ba0efa",
+    "study.py": "69ce688df74ede507de2fb1c1e45f2d660aa2fc9a105867241106944afc10833",
+    "masks.py": "6be8be45d0870204bc223e573685f76961d15be5d456a8e291fae3beef1c6de7",
+    "step1.py": "67a4794eedbc76340e1f8089102ce3c727bb66766820090b11181bc0831a7ea9",
+    "_davies_bounds.py": "4a652f76e07456130153c68a079a83e97af2578109764735973e5c670623f823",
+    "mask_output.py": "9055cc915647a25a71ca715b1dcb75b1bf8d7f0e20c5dd718accc3be68962821",
+    "summary.py": "de97c34cdc230fbb1b1b347b92cbcb4d6ab2a70a7d7fad1ca0f5c2b88fd0b80f",
+    "_norm_gpu.py": "58bd5bbc04f5ffbb42179f419355e42cbd84dd4d1e97ca60953b5bab860398b7",
+    "config.py": "cdbe210d531b62656996cd2712f4c85fc548f1faf00bb4eec9949ff7ee23e939",
+    "single.py": "405544f9eba884c09ff61c2e7107087468e8f32d450872f14fcaa048ea23a7a3",
+    "execution.py": "79a45f254cd7c0dd01cc0490568529ab0b58894d1385dd6d9af59c7facf637d7",
+    "phenotype.py": "92234f702b70add5870bdcf4638ab0d9219aa2bbcf0e970bf48f95e8a34a2ae8"
+  },
+  "execution": {
+    "parallel_level": "serial",
+    "workers": 1,
+    "max_gpu_gb": 20.0
+  },
+  "per_job_matrix_budget_gib": 19.0,
+  "gpu_budget_gib": 20.0,
+  "process_wall_seconds": 6473.804485052824,
+  "pipeline_wall_seconds": 6470.960216626525,
+  "peak_gpu_bytes": 6605298688,
+  "groups_strict_structure_passed": 6,
+  "groups_artifact_bytes_passed": 6,
+  "groups_numeric_passed": 0,
+  "numeric_strict_acceptance_passed": false,
+  "memory_retry_count": 0,
+  "groups": {
+    "PTV": {
+      "rows": 3302,
+      "mask_definitions": 1,
+      "header_mask_definitions": 1,
+      "strict_structure_pass": true,
+      "artifact_bytes_pass": true,
+      "numeric_tolerance_pass": false
+    },
+    "Missense": {
+      "rows": 3888,
+      "mask_definitions": 1,
+      "header_mask_definitions": 1,
+      "strict_structure_pass": true,
+      "artifact_bytes_pass": true,
+      "numeric_tolerance_pass": false
+    },
+    "Pseudo": {
+      "rows": 4287,
+      "mask_definitions": 8,
+      "header_mask_definitions": 5,
+      "strict_structure_pass": true,
+      "artifact_bytes_pass": true,
+      "numeric_tolerance_pass": false
+    },
+    "Intron_Gnocchi4": {
+      "rows": 1242,
+      "mask_definitions": 1,
+      "header_mask_definitions": 1,
+      "strict_structure_pass": true,
+      "artifact_bytes_pass": true,
+      "numeric_tolerance_pass": false
+    },
+    "RNA": {
+      "rows": 16588,
+      "mask_definitions": 10,
+      "header_mask_definitions": 8,
+      "strict_structure_pass": true,
+      "artifact_bytes_pass": true,
+      "numeric_tolerance_pass": false
+    },
+    "Intron": {
+      "rows": 3535,
+      "mask_definitions": 1,
+      "header_mask_definitions": 1,
+      "strict_structure_pass": true,
+      "artifact_bytes_pass": true,
+      "numeric_tolerance_pass": false
+    }
+  },
+  "parallel_experiments": {
+    "status": "cancelled_by_user",
+    "required": false,
+    "results_used_for_current_delivery": false
+  },
+  "individual_identifiers_exported": false,
+  "private_paths_exported": false,
+  "private_inputs_or_results_exported": false,
+  "measurement_order": [
+    "serial_subset"
+  ],
+  "measurements_per_mode": 1,
+  "process_wall_includes_interpreter_imports_pipeline_and_save": true,
+  "process_wall_includes_concurrent_read_only_telemetry": true,
+  "process_wall_excludes_comparison_and_start_end_cgroup_sampler_join": true,
+  "stable_acceleration_or_full_26_group_claim_supported": false,
+  "cpu_cgroup": {
+    "start": {
+      "version": 1,
+      "quota_cores": 8.0,
+      "quota_period_usec": 100000,
+      "usage_usec": 246639410803.987,
+      "available": true,
+      "scope": "shared_container_total"
+    },
+    "end": {
+      "version": 1,
+      "quota_cores": 8.0,
+      "quota_period_usec": 100000,
+      "usage_usec": 259943074070.529,
+      "available": true,
+      "scope": "shared_container_total"
+    },
+    "usage_delta_usec": 13303663266.541992
+  },
+  "child_io_sampled_lower_bound_bytes": {
+    "read_bytes": 0,
+    "rchar": 4536323267,
+    "write_bytes": 53248,
+    "wchar": 189266488
+  },
+  "child_io_is_complete_final_total": false,
+  "resource_sample_interval_seconds": 30.0,
+  "gpu_samples_scope": "shared_total",
+  "gpu_samples": [
+    {
+      "elapsed_seconds": 0.0010738223791122437,
+      "collection_seconds": 0.02164393663406372,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 2753560576.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 30.001173958182335,
+      "collection_seconds": 0.013706058263778687,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 18.0,
+          "memory_used_bytes": 5048893440.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 60.00127363204956,
+      "collection_seconds": 0.015584304928779602,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 27.0,
+          "memory_used_bytes": 5050990592.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 90.00137975811958,
+      "collection_seconds": 0.039577677845954895,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 13.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 120.00148026645184,
+      "collection_seconds": 0.017328813672065735,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 26.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 150.00158488750458,
+      "collection_seconds": 0.019510850310325623,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 22.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 180.00168849527836,
+      "collection_seconds": 0.018379896879196167,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 210.00179171562195,
+      "collection_seconds": 0.013509228825569153,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 15.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 240.0018918067217,
+      "collection_seconds": 0.013218939304351807,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 27.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 270.0020011514425,
+      "collection_seconds": 0.028121232986450195,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 300.00210233032703,
+      "collection_seconds": 0.028146490454673767,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 8393850880.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 330.0022032260895,
+      "collection_seconds": 0.03230063617229462,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 8404336640.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 360.00230307877064,
+      "collection_seconds": 0.020982295274734497,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 95.0,
+          "memory_used_bytes": 8410628096.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 390.0024053454399,
+      "collection_seconds": 0.032306969165802,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 9127854080.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 420.0025047957897,
+      "collection_seconds": 0.03410103917121887,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 3.0,
+          "memory_used_bytes": 9127854080.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 450.002605676651,
+      "collection_seconds": 0.013905256986618042,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 10381950976.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 480.0027093887329,
+      "collection_seconds": 0.01929597556591034,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 10740563968.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 510.00281731784344,
+      "collection_seconds": 0.013103291392326355,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 11371806720.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 540.0029194504023,
+      "collection_seconds": 0.013174682855606079,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 8.0,
+          "memory_used_bytes": 12059672576.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 570.0030203610659,
+      "collection_seconds": 0.015209212899208069,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 12059672576.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 600.0031184405088,
+      "collection_seconds": 0.014589935541152954,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 12059672576.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 630.0032175481319,
+      "collection_seconds": 0.015283346176147461,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 49.0,
+          "memory_used_bytes": 12059672576.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 660.0033197700977,
+      "collection_seconds": 0.0138176828622818,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 12059672576.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 690.0034206062555,
+      "collection_seconds": 0.01378561556339264,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 17.0,
+          "memory_used_bytes": 12059672576.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 720.0035218149424,
+      "collection_seconds": 0.013808995485305786,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 750.0036229640245,
+      "collection_seconds": 0.050164595246315,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 780.0037265270948,
+      "collection_seconds": 0.017850056290626526,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 99.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 810.0038346797228,
+      "collection_seconds": 0.018254756927490234,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 840.0039387643337,
+      "collection_seconds": 0.012916728854179382,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 2.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 870.0040405988693,
+      "collection_seconds": 0.022291123867034912,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 900.0041439831257,
+      "collection_seconds": 0.022812262177467346,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 930.004245609045,
+      "collection_seconds": 0.018089041113853455,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 960.0043467134237,
+      "collection_seconds": 0.058668673038482666,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 990.0044524818659,
+      "collection_seconds": 0.016906484961509705,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1020.0045562535524,
+      "collection_seconds": 0.013105884194374084,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 22.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1050.0046622753143,
+      "collection_seconds": 0.013613253831863403,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1080.004768267274,
+      "collection_seconds": 0.013448283076286316,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 24.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1110.0048699378967,
+      "collection_seconds": 0.012801319360733032,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 12065964032.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1140.0049764811993,
+      "collection_seconds": 0.02132144570350647,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 100.0,
+          "memory_used_bytes": 17906532352.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1170.0050813108683,
+      "collection_seconds": 0.038092002272605896,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 97.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1200.0051820278168,
+      "collection_seconds": 0.01340530812740326,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 59.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1230.00530859828,
+      "collection_seconds": 0.013942882418632507,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 3.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1260.0054294019938,
+      "collection_seconds": 0.015242159366607666,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1290.0055490732193,
+      "collection_seconds": 0.013137966394424438,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1320.0056606680155,
+      "collection_seconds": 0.0165359228849411,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 29.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1350.0057778060436,
+      "collection_seconds": 0.024490833282470703,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1380.0059002786875,
+      "collection_seconds": 0.01722635328769684,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 8.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1410.0060193538666,
+      "collection_seconds": 0.05417346954345703,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 49.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1440.0061388164759,
+      "collection_seconds": 0.036839693784713745,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1470.006255313754,
+      "collection_seconds": 0.017255768179893494,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1500.0063703209162,
+      "collection_seconds": 0.01809832453727722,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 81.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1530.0064845085144,
+      "collection_seconds": 0.013291537761688232,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 31.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1560.006598904729,
+      "collection_seconds": 0.013522237539291382,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1590.0067165344954,
+      "collection_seconds": 0.01354604959487915,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1620.006855994463,
+      "collection_seconds": 0.013848140835762024,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 2.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1650.0069803446531,
+      "collection_seconds": 0.013642653822898865,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 15.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1680.0070934146643,
+      "collection_seconds": 0.018230736255645752,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1710.0072109252214,
+      "collection_seconds": 0.013277143239974976,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 50.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1740.0073214620352,
+      "collection_seconds": 0.016607552766799927,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 46.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1770.0074363648891,
+      "collection_seconds": 0.013271212577819824,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1800.0075482875109,
+      "collection_seconds": 0.04557250440120697,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 1.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1830.0076698064804,
+      "collection_seconds": 0.013586759567260742,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1860.0077604353428,
+      "collection_seconds": 0.013276740908622742,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 24.0,
+          "memory_used_bytes": 22069379072.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1890.007858067751,
+      "collection_seconds": 0.013190776109695435,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1920.0079718232155,
+      "collection_seconds": 0.013339012861251831,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1950.0080842375755,
+      "collection_seconds": 0.014820218086242676,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 1980.0081955194473,
+      "collection_seconds": 0.0329592227935791,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2010.0083131492138,
+      "collection_seconds": 0.0352180153131485,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2040.0084267258644,
+      "collection_seconds": 0.01362486183643341,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 3.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2070.008541509509,
+      "collection_seconds": 0.013111859560012817,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2100.008656024933,
+      "collection_seconds": 0.03835199773311615,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2130.008774071932,
+      "collection_seconds": 0.013302028179168701,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2160.008854404092,
+      "collection_seconds": 0.013684391975402832,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2190.0089706480503,
+      "collection_seconds": 0.013205394148826599,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2220.0090831816196,
+      "collection_seconds": 0.013597562909126282,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 45.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2250.0091977864504,
+      "collection_seconds": 0.013246700167655945,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2280.009311169386,
+      "collection_seconds": 0.01264384388923645,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 40.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2310.0094273388386,
+      "collection_seconds": 0.02172146737575531,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2340.0095429718494,
+      "collection_seconds": 0.013258099555969238,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2370.009663283825,
+      "collection_seconds": 0.01336623728275299,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 82.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2400.009779140353,
+      "collection_seconds": 0.017292901873588562,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 22.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2430.0098950713873,
+      "collection_seconds": 0.0197770893573761,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2460.010007172823,
+      "collection_seconds": 0.014175191521644592,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 25.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2490.010125055909,
+      "collection_seconds": 0.019867300987243652,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 57.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2520.0102423727512,
+      "collection_seconds": 0.013177603483200073,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2550.010354280472,
+      "collection_seconds": 0.015304118394851685,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 33.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2580.0104700773954,
+      "collection_seconds": 0.015582919120788574,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 25.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2610.010584935546,
+      "collection_seconds": 0.026378318667411804,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2640.010697990656,
+      "collection_seconds": 0.020982131361961365,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2670.010820776224,
+      "collection_seconds": 0.014179334044456482,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2700.0109353363514,
+      "collection_seconds": 0.014836534857749939,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 14.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2730.01104837656,
+      "collection_seconds": 0.02453802525997162,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 22.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2760.011161237955,
+      "collection_seconds": 0.03766751289367676,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 98.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2790.0112732946873,
+      "collection_seconds": 0.01339729130268097,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 19.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2820.0113829523325,
+      "collection_seconds": 0.015264153480529785,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 20.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2850.0114975720644,
+      "collection_seconds": 0.013824403285980225,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2880.0116070359945,
+      "collection_seconds": 0.027223125100135803,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2910.0117200315,
+      "collection_seconds": 0.013420775532722473,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 7.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2940.0118463635445,
+      "collection_seconds": 0.013802126049995422,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 18.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 2970.0119649618864,
+      "collection_seconds": 0.013359501957893372,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3000.012078985572,
+      "collection_seconds": 0.018847331404685974,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 22.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3030.012192159891,
+      "collection_seconds": 0.022915497422218323,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 23638048768.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3060.012304097414,
+      "collection_seconds": 0.013883635401725769,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3090.0124188512564,
+      "collection_seconds": 0.039207443594932556,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 24.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3120.012534454465,
+      "collection_seconds": 0.01510445773601532,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3150.0126479417086,
+      "collection_seconds": 0.02152128517627716,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 83.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3180.012761205435,
+      "collection_seconds": 0.03979910910129547,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 20.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3210.0128537863493,
+      "collection_seconds": 0.015659242868423462,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 13.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3240.0129664689302,
+      "collection_seconds": 0.03310824930667877,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3270.013081088662,
+      "collection_seconds": 0.026819869875907898,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3300.0131955444813,
+      "collection_seconds": 0.013483211398124695,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 41.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3330.0133104771376,
+      "collection_seconds": 0.013567492365837097,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3360.0134214162827,
+      "collection_seconds": 0.013043001294136047,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 8.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3390.013534218073,
+      "collection_seconds": 0.014485225081443787,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 15.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3420.0136465877295,
+      "collection_seconds": 0.020076021552085876,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3450.013761088252,
+      "collection_seconds": 0.013034090399742126,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 8.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3480.0138759166,
+      "collection_seconds": 0.01354914903640747,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3510.013992652297,
+      "collection_seconds": 0.01391594111919403,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 8.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3540.014109045267,
+      "collection_seconds": 0.013379618525505066,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 65.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3570.014224886894,
+      "collection_seconds": 0.013868212699890137,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 35.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3600.0143388807774,
+      "collection_seconds": 0.013651654124259949,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3630.0144498348236,
+      "collection_seconds": 0.021906927227973938,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3660.0145518779755,
+      "collection_seconds": 0.03787672519683838,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 26.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3690.014653131366,
+      "collection_seconds": 0.0458654910326004,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 38.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3720.0147588700056,
+      "collection_seconds": 0.013401269912719727,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3750.0148638635874,
+      "collection_seconds": 0.025119975209236145,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 19.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3780.0149725973606,
+      "collection_seconds": 0.04369601607322693,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3810.015080437064,
+      "collection_seconds": 0.027426570653915405,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3840.015182554722,
+      "collection_seconds": 0.022977933287620544,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 19.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3870.0152856856585,
+      "collection_seconds": 0.013448625802993774,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 66.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3900.015391752124,
+      "collection_seconds": 0.01381075382232666,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3930.015494182706,
+      "collection_seconds": 0.013488233089447021,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3960.0155967473984,
+      "collection_seconds": 0.013469681143760681,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 3990.0157015770674,
+      "collection_seconds": 0.01585651934146881,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 25596788736.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4020.0158003270626,
+      "collection_seconds": 0.013132095336914062,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 100.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4050.015902966261,
+      "collection_seconds": 0.016159892082214355,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 5.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4080.016004860401,
+      "collection_seconds": 0.016878128051757812,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4110.016114860773,
+      "collection_seconds": 0.015186592936515808,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4140.016215369105,
+      "collection_seconds": 0.013820827007293701,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 26.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4170.016321331263,
+      "collection_seconds": 0.038020744919776917,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4200.016424939036,
+      "collection_seconds": 0.013321682810783386,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 78.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4230.0165296942,
+      "collection_seconds": 0.013560682535171509,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 0.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4260.016632556915,
+      "collection_seconds": 0.013596802949905396,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4290.01673963666,
+      "collection_seconds": 0.013323381543159485,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4320.016845226288,
+      "collection_seconds": 0.01918034255504608,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 23.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4350.0169454813,
+      "collection_seconds": 0.013192728161811829,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4380.017047286034,
+      "collection_seconds": 0.021411314606666565,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 49.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4410.017157822847,
+      "collection_seconds": 0.030368492007255554,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 32.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4440.017269194126,
+      "collection_seconds": 0.01432083547115326,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 78.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4470.017376452684,
+      "collection_seconds": 0.019794657826423645,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4500.017485141754,
+      "collection_seconds": 0.018365830183029175,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 6.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4530.017592385411,
+      "collection_seconds": 0.02742399275302887,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 17.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4560.017702579498,
+      "collection_seconds": 0.013619109988212585,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 2.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4590.017823204398,
+      "collection_seconds": 0.013416081666946411,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 32.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4620.0179303735495,
+      "collection_seconds": 0.013487681746482849,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 17.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4650.018028408289,
+      "collection_seconds": 0.01307341456413269,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4680.018131196499,
+      "collection_seconds": 0.01327398419380188,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4710.01823541522,
+      "collection_seconds": 0.01666446030139923,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 2.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4740.01833409071,
+      "collection_seconds": 0.018446877598762512,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 3.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4770.0184386223555,
+      "collection_seconds": 0.013011947274208069,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 23.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4800.018542587757,
+      "collection_seconds": 0.013347834348678589,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 34.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4830.018652334809,
+      "collection_seconds": 0.013358905911445618,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4860.018756225705,
+      "collection_seconds": 0.01897270977497101,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4890.0188609957695,
+      "collection_seconds": 0.026724770665168762,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4920.018962725997,
+      "collection_seconds": 0.07914043962955475,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 8.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4950.019067525864,
+      "collection_seconds": 0.04162217676639557,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 4980.019172385335,
+      "collection_seconds": 0.013094425201416016,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5010.01927614212,
+      "collection_seconds": 0.013201132416725159,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5040.019382029772,
+      "collection_seconds": 0.013240545988082886,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 22.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5070.019497126341,
+      "collection_seconds": 0.0137530118227005,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5100.019600570202,
+      "collection_seconds": 0.013472124934196472,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5130.019702941179,
+      "collection_seconds": 0.01746596395969391,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5160.019818127155,
+      "collection_seconds": 0.013128489255905151,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 32.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5190.019921764731,
+      "collection_seconds": 0.013117879629135132,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5220.020024046302,
+      "collection_seconds": 0.03660304844379425,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 8.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5250.020121648908,
+      "collection_seconds": 0.01306384801864624,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 7.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5280.020222812891,
+      "collection_seconds": 0.013131335377693176,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 21.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5310.020329579711,
+      "collection_seconds": 0.019281134009361267,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 27.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5340.0204412043095,
+      "collection_seconds": 0.013329669833183289,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 24.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5370.02055002749,
+      "collection_seconds": 0.01719711720943451,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 47.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5400.020666435361,
+      "collection_seconds": 0.031395092606544495,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 42.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5430.0207682698965,
+      "collection_seconds": 0.014013320207595825,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 27.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5460.0208784639835,
+      "collection_seconds": 0.017534807324409485,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 17.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5490.020984694362,
+      "collection_seconds": 0.023603782057762146,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 32.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5520.0210929811,
+      "collection_seconds": 0.023602530360221863,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5550.021196603775,
+      "collection_seconds": 0.02490861713886261,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5580.021296918392,
+      "collection_seconds": 0.013054624199867249,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 28.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5610.0213996768,
+      "collection_seconds": 0.013655528426170349,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 7.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5640.021501779556,
+      "collection_seconds": 0.014624163508415222,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5670.021604478359,
+      "collection_seconds": 0.013383433222770691,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 19.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5700.021714180708,
+      "collection_seconds": 0.015231505036354065,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5730.021820381284,
+      "collection_seconds": 0.013610601425170898,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 27.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5760.021922677755,
+      "collection_seconds": 0.013848766684532166,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5790.022025614977,
+      "collection_seconds": 0.03468216955661774,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 15.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5820.02212716639,
+      "collection_seconds": 0.012807458639144897,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5850.022225424647,
+      "collection_seconds": 0.017493978142738342,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5880.022328853607,
+      "collection_seconds": 0.01796083152294159,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 3.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5910.022430405021,
+      "collection_seconds": 0.01762928068637848,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 16.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5940.022527754307,
+      "collection_seconds": 0.012840718030929565,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 9.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 5970.0226229429245,
+      "collection_seconds": 0.01354488730430603,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 17.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6000.022727489471,
+      "collection_seconds": 0.014576256275177002,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 25.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6030.022832676768,
+      "collection_seconds": 0.020027101039886475,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 10.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6060.022941783071,
+      "collection_seconds": 0.013046279549598694,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 13.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6090.023044139147,
+      "collection_seconds": 0.019371137022972107,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 17.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6120.023148968816,
+      "collection_seconds": 0.025041475892066956,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 12.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6150.0232527107,
+      "collection_seconds": 0.04045522212982178,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6180.023358285427,
+      "collection_seconds": 0.0350993275642395,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6210.023459404707,
+      "collection_seconds": 0.014557480812072754,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 14.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6240.023563280702,
+      "collection_seconds": 0.028665512800216675,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 32.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6270.02366758883,
+      "collection_seconds": 0.01573723554611206,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 14.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6300.023767948151,
+      "collection_seconds": 0.013185679912567139,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6330.0238414257765,
+      "collection_seconds": 0.05935122072696686,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 11.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6360.023943066597,
+      "collection_seconds": 0.012930124998092651,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 16.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6390.0240433216095,
+      "collection_seconds": 0.0133247971534729,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 4.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6420.024142935872,
+      "collection_seconds": 0.018983647227287292,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 32.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    },
+    {
+      "elapsed_seconds": 6450.024243608117,
+      "collection_seconds": 0.01561860740184784,
+      "gpus": [
+        {
+          "gpu_index": 0,
+          "utilization_percent": 20.0,
+          "memory_used_bytes": 27899461632.0,
+          "memory_total_bytes": 85197848576.0
+        }
+      ]
+    }
+  ]
+}

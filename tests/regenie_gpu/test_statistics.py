@@ -2,18 +2,22 @@
 
 import math
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from unittest.mock import patch
 
 import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import brentq
-from scipy.special import log_ndtr, erf
+from scipy.special import log_ndtr, erf, ndtr
 from scipy.stats import chi2, multivariate_normal
 import torch
 
 from torchwgs.statistics import (
     DEFAULT_RHOS, acat_logp, chi2_isf_logp, chi2_logsf, chi_bar_weights,
     eigen_compatible_column_norm,
-    davies_logsf, kuonen_logsf, nnls_coefficients, normal_orthant_probability, numerical_diagnostics,
+    davies_logsf, diagnostics_scope, kuonen_logsf, nnls_coefficients,
+    normal_orthant_probability, numerical_diagnostics,
     sbat_logp, skat_logp, skato_logp, weighted_chi2_logsf,
 )
 
@@ -32,6 +36,38 @@ def acat_reference(pvalues, weights=None):
 
 
 class TailTests(unittest.TestCase):
+    def test_nested_numerical_diagnostic_scopes_restore_the_outer_ledger(self):
+        q = torch.tensor([1., 2.], dtype=torch.float64)
+        eigenvalues = torch.tensor([.2, .5], dtype=torch.float64)
+        before = numerical_diagnostics()
+        with diagnostics_scope() as outer:
+            davies_logsf(q, eigenvalues)
+            self.assertEqual(outer["davies_tail_values"], 2)
+            with diagnostics_scope() as inner:
+                self.assertEqual(numerical_diagnostics()["davies_tail_values"], 0)
+                davies_logsf(q[:1], eigenvalues)
+            self.assertEqual(inner["davies_tail_values"], 1)
+            self.assertEqual(numerical_diagnostics()["davies_tail_values"], 2)
+        self.assertEqual(outer["davies_tail_values"], 2)
+        self.assertEqual(numerical_diagnostics(), before)
+
+    def test_parallel_diagnostics_do_not_reset_or_count_another_worker(self):
+        barrier = Barrier(2)
+        def worker(count):
+            with diagnostics_scope() as ledger:
+                davies_logsf(torch.arange(1, count+1, dtype=torch.float64),
+                             torch.tensor([.2, .5], dtype=torch.float64))
+                barrier.wait()
+                actual = numerical_diagnostics()["davies_tail_values"]
+                numerical_diagnostics(reset=True)
+                barrier.wait()
+                self.assertEqual(numerical_diagnostics()["davies_tail_values"], 0)
+            self.assertEqual(ledger["davies_tail_values"], 0)
+            return actual
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(worker, count) for count in (1, 3)]
+            self.assertEqual([future.result() for future in futures], [1, 3])
+
     def test_gpu_ordered_norm_matches_frozen_eigen_sse2_bits(self):
         # Public, participant-free numeric fixture evaluated independently
         # by Eigen3.4 compiled g++ -O3/SSE2, without fast-math.  The test does
@@ -129,10 +165,24 @@ class TailTests(unittest.TestCase):
                  ([.2, .2, .8, .8, 1., 1.], 4., .3892731621546953),
                  ([.2, .2, .8, .8, 1., 1.], 12., 1.9016187887339528)]
         for spectrum, q, expected in cases:
-            observed, fault = davies_logsf(tensor(q), tensor(spectrum))
-            self.assertEqual(int(fault), 0)
-            self.assertAlmostEqual(float(observed), expected, delta=2e-12)
-            self.assertEqual(observed.device, DEVICE)
+            for controller in ('scalar','numpy','auto'):
+                observed, fault = davies_logsf(tensor(q), tensor(spectrum), controller=controller)
+                self.assertEqual(int(fault), 0)
+                self.assertAlmostEqual(float(observed), expected, delta=2e-12)
+                self.assertEqual(observed.device, DEVICE)
+
+    def test_davies_large_spectrum_controllers_agree_with_chi_square(self):
+        spectrum=tensor([1.]*1024)
+        q=tensor([900.,1024.,1150.])
+        expected=tensor(-np.log10(chi2.sf(q.cpu().numpy(),1024)))
+        scalar,scalar_fault=davies_logsf(q,spectrum,controller='scalar')
+        for controller in ('numpy','auto'):
+            value,fault=davies_logsf(q,spectrum,controller=controller)
+            torch.testing.assert_close(value,scalar,rtol=0,atol=2e-13)
+            torch.testing.assert_close(fault,scalar_fault,rtol=0,atol=0)
+            torch.testing.assert_close(value,expected,rtol=0,atol=2e-5)
+        with self.assertRaises(ValueError):
+            davies_logsf(q,spectrum,controller='invalid')
 
     def test_davies_budget_failure_switches_moderate_p_to_kuonen(self):
         spectrum = tensor([1e-5, 3e-5, 1e-4, 3e-4, .001, .003, .1, 1.])
@@ -141,6 +191,10 @@ class TailTests(unittest.TestCase):
         lp, fault = davies_logsf(q, spectrum)
         self.assertEqual(int(fault), 1)  # native consumes its auxiliary budget
         self.assertTrue(bool(torch.isnan(lp)))
+        for controller in ('scalar','numpy'):
+            alternate,alternate_fault=davies_logsf(q,spectrum,controller=controller)
+            self.assertTrue(bool(torch.isnan(alternate)))
+            self.assertEqual(int(alternate_fault),1)
         score = torch.zeros_like(spectrum)
         score[0] = q.sqrt()
         observed = skat_logp(score, torch.diag(spectrum))
@@ -205,6 +259,19 @@ class TailTests(unittest.TestCase):
 
 
 class GeneInferenceTests(unittest.TestCase):
+    def test_sbat_subset_policy_is_repeatable_and_preserves_independent_mixture(self):
+        gram = torch.eye(6, dtype=torch.float64)
+        expected = torch.tensor([math.comb(6, df)/64 for df in range(7)], dtype=torch.float64)
+        for policy in ("unique", "with_replacement"):
+            first = chi_bar_weights(gram, max_subsets=2, qmc_samples=32, seed=19,
+                                    subset_sampling=policy)
+            repeated = chi_bar_weights(gram, max_subsets=2, qmc_samples=32, seed=19,
+                                       subset_sampling=policy)
+            torch.testing.assert_close(first, repeated, atol=0, rtol=0)
+            torch.testing.assert_close(first, expected, atol=2e-15, rtol=2e-15)
+        with self.assertRaises(ValueError):
+            chi_bar_weights(gram, subset_sampling="invalid")
+
     def test_skat_with_weights_equals_weighted_chi_square(self):
         u = tensor([2., -.5, 1.])
         k = tensor([[2., .1, 0.], [.1, 1., .2], [0., .2, 3.]])
@@ -256,6 +323,31 @@ class GeneInferenceTests(unittest.TestCase):
         zero = skato_logp(tensor([0.]), tensor([[2.]]))
         self.assertEqual(float(zero["SKATO-ACAT"]), 0.)
 
+    def test_native_skato_gate_distinguishes_one_site_from_rank_one_multisite(self):
+        # Native get_lambdas accepts its scalar specialization even when the
+        # burden-deflated scalar is zero. A multi-site zero spectrum fails.
+        single = skato_logp(tensor([3.]), tensor([[2.]]), native_validity=True)
+        self.assertTrue(single["kernel_valid"])
+        self.assertAlmostEqual(float(single["SKATO"]),
+                               float(chi2_logsf(tensor(4.5))), places=11)
+        duplicated = tensor([[8., 8., 8.], [8., 8., 8.], [8., 8., 8.]])
+        score = tensor([1., 1., 1.])
+        failed = skato_logp(score, duplicated, native_validity=True)
+        self.assertFalse(failed["kernel_valid"])
+        self.assertEqual(failed["kernel_failure"], "empty_residual_spectrum")
+        self.assertEqual(failed["rho_log10ps"].numel(), 0)
+        self.assertNotIn("SKAT", failed)
+        # The standalone mathematical API still reports the valid rank-one
+        # chi-square distribution when native output validity is not requested.
+        mathematical = skato_logp(score, duplicated)
+        self.assertAlmostEqual(float(mathematical["SKAT"]),
+                               float(chi2_logsf(tensor(.125))), places=11)
+        # REGENIE's fixed-rho route does not need a deflated spectrum.
+        fixed = skato_logp(score, duplicated, rhos=(.3,), native_validity=True)
+        self.assertTrue(fixed["kernel_valid"])
+        self.assertAlmostEqual(float(fixed["SKATO"]),
+                               float(chi2_logsf(tensor(.125))), places=11)
+
     def test_skato_extreme_probability_and_scale_invariance(self):
         u = tensor([50., -30.])
         k = torch.eye(2, dtype=torch.float64, device=DEVICE)
@@ -266,6 +358,259 @@ class GeneInferenceTests(unittest.TestCase):
                                 float(result["rho_log10ps"].max())-math.log10(8)-1e-9)
         scaled = skato_logp(u*1e-9, k*1e-18)
         self.assertAlmostEqual(float(scaled["SKATO"]), float(result["SKATO"]), delta=1e-7)
+
+    def test_adaptive_skato_backends_match_independent_null_and_keep_extreme_tails(self):
+        reference = skato_logp(tensor([2., -1.]), torch.eye(2, device=DEVICE, dtype=torch.float64),
+                              tail_method="exact", integral_rtol=2e-6)
+        for backend in ("adaptive_x", "adaptive_sqrt"):
+            result = skato_logp(tensor([2., -1.]), torch.eye(2, device=DEVICE, dtype=torch.float64),
+                tail_method="exact", integral_backend=backend, integral_epsabs=0., integral_epsrel=2e-6)
+            self.assertTrue(result["integral_diagnostics"]["converged"])
+            self.assertAlmostEqual(float(result["SKATO"]), float(reference["SKATO"]), delta=2e-5)
+            self.assertEqual(result["SKATO"].device, DEVICE)
+            extreme = skato_logp(tensor([50., -30.]), torch.eye(2, device=DEVICE, dtype=torch.float64),
+                integral_backend=backend, integral_epsabs=0., integral_epsrel=2e-6)
+            self.assertTrue(bool(torch.isfinite(extreme["SKATO"])))
+            self.assertGreater(float(extreme["SKATO"]), 308.)
+            self.assertGreaterEqual(float(extreme["SKATO"]),
+                float(extreme["rho_log10ps"].max())-math.log10(8)-1e-9)
+        with self.assertRaises(ValueError):
+            skato_logp(tensor([1.]), tensor([[1.]]), integral_backend="unknown")
+
+    def test_adaptive_skato_budget_failure_uses_source_fallback(self):
+        for score, available in (([3., -2.], True), ([.4, -.2], False)):
+            result = skato_logp(tensor(score), torch.eye(2, device=DEVICE, dtype=torch.float64),
+                integral_backend="adaptive_sqrt", integral_epsabs=0., integral_epsrel=1e-12,
+                integral_max_intervals=1)
+            self.assertFalse(result["integral_diagnostics"]["converged"])
+            self.assertTrue(result["kernel_valid"])
+            self.assertIn("SKAT", result)
+            self.assertIn("SKATO-ACAT", result)
+            if available:
+                self.assertEqual(result["integral_fallback"], "bonferroni")
+                self.assertAlmostEqual(float(result["SKATO"]),
+                    float(result["rho_log10ps"].max())-math.log10(8), places=12)
+            else:
+                self.assertEqual(result["integral_fallback"], "unavailable")
+                self.assertIsNone(result["SKATO"])
+
+    def test_successful_skato_integral_rejects_probability_above_one(self):
+        # Inject an over-one integral estimate without changing the actual
+        # score, spectra, rho tests, or Bonferroni bound. This exercises the
+        # original get_logp validity gate after a successful integration.
+        def integration_patch(backend):
+            if backend == "segmented":
+                return patch("torchwgs.statistics._legendre", return_value=(
+                    tensor([0.]), tensor([1e6])))
+            return patch("torchwgs._quadrature.integrate_log_gk21", return_value=(
+                tensor(math.log(2.)), {"converged": True, "status": "converged",
+                                     "evaluations": 21, "intervals": 1}))
+
+        covariance = torch.eye(2, device=DEVICE, dtype=torch.float64)
+        for backend in ("adaptive_x", "adaptive_sqrt", "segmented"):
+            with self.subTest(backend=backend), integration_patch(backend):
+                mathematical = skato_logp(tensor([.4, -.2]), covariance,
+                                          integral_backend=backend)
+                native = skato_logp(tensor([.4, -.2]), covariance,
+                                    integral_backend=backend, native_validity=True)
+                self.assertLess(float(native["rho_log10ps"].max()), math.log10(8))
+                self.assertIsNone(native["SKATO"])
+                self.assertEqual(float(mathematical["SKATO"]), 0.)
+                self.assertTrue(native["kernel_valid"])
+                for name in ("SKAT", "BURDEN", "SKATO-ACAT", "rho_log10ps", "rhos"):
+                    torch.testing.assert_close(native[name], mathematical[name])
+                if backend != "segmented":
+                    self.assertTrue(native["integral_diagnostics"]["converged"])
+                    self.assertNotIn("integral_fallback", native)
+                restored = skato_logp(tensor([3., -2.]), covariance,
+                                      integral_backend=backend, native_validity=True)
+                expected = float(restored["rho_log10ps"].max())-math.log10(8)
+                self.assertGreater(expected, 0.)
+                self.assertAlmostEqual(float(restored["SKATO"]), expected, places=12)
+                # Bonferroni P=1 is valid: the rejection is strictly P>1.
+                with patch("torchwgs.statistics._association_tail",
+                           return_value=tensor(math.log10(8))):
+                    boundary = skato_logp(tensor([.4, -.2]), covariance,
+                        integral_backend=backend, native_validity=True)
+                self.assertEqual(float(boundary["SKATO"]), 0.)
+
+    def test_native_skato_near_one_gate_includes_its_source_boundary(self):
+        source_boundary = -math.log10(1-torch.finfo(torch.float32).eps)
+        with patch("torchwgs.statistics._association_tail", return_value=tensor(source_boundary)), \
+                patch("torchwgs._quadrature.integrate_log_gk21") as integral:
+            result = skato_logp(tensor([.4, -.2]),
+                torch.eye(2, device=DEVICE, dtype=torch.float64),
+                integral_backend="adaptive_x", native_validity=True)
+        self.assertEqual(float(result["SKATO"]), 0.)
+        integral.assert_not_called()
+
+    def test_native_skato_conditional_underflow_preserves_source_failure(self):
+        from torchwgs import statistics as stats
+        original_tail = stats._association_tail
+
+        def underflow_tail(q, eigenvalues, method, **kwargs):
+            if kwargs.get("rank_one_exact") is False:
+                return torch.full_like(q, 1000.)  # finite LP, ordinary SF=0
+            return original_tail(q, eigenvalues, method, **kwargs)
+
+        def checked_integral(function, upper, **kwargs):
+            function((upper*.1).reshape(1))
+            return tensor(math.log(.5)), {"converged": True, "status": "converged",
+                                         "evaluations": 21, "intervals": 1}
+
+        covariance = torch.eye(2, device=DEVICE, dtype=torch.float64)
+        for backend in ("adaptive_x", "adaptive_sqrt", "segmented"):
+            integration = (patch("torchwgs.statistics._legendre", return_value=(tensor([0.]), tensor([2.])))
+                           if backend == "segmented" else
+                           patch("torchwgs._quadrature.integrate_log_gk21", side_effect=checked_integral))
+            with self.subTest(backend=backend), integration, \
+                    patch("torchwgs.statistics._association_tail", side_effect=underflow_tail):
+                raw = skato_logp(tensor([.4, -.2]), covariance, integral_backend=backend)
+                failed = skato_logp(tensor([.4, -.2]), covariance,
+                                    integral_backend=backend, native_validity=True)
+                self.assertIsNone(failed["SKATO"])
+                self.assertEqual(failed["integral_fallback"], "unavailable")
+                self.assertTrue(failed["kernel_valid"])
+                self.assertNotIn("integral_fallback", raw)
+                self.assertIsNotNone(raw["SKATO"])
+                for name in ("SKAT", "BURDEN", "SKATO-ACAT", "rho_log10ps", "rhos"):
+                    torch.testing.assert_close(failed[name], raw[name])
+                if backend != "segmented":
+                    self.assertEqual(failed["integral_diagnostics"]["status"], "integrand_failure")
+                restored = skato_logp(tensor([3., -2.]), covariance,
+                                      integral_backend=backend, native_validity=True)
+                self.assertEqual(restored["integral_fallback"], "bonferroni")
+                self.assertAlmostEqual(float(restored["SKATO"]),
+                    float(restored["rho_log10ps"].max())-math.log10(8), places=12)
+
+    def test_native_skato_intentional_zero_is_exempt_from_underflow_failure(self):
+        from torchwgs import statistics as stats
+        original_tail = stats._association_tail
+        intentional_underflow_values = []
+        forced_logp = 1000.
+
+        def intentional_zero_tail(q, eigenvalues, method, **kwargs):
+            if kwargs.get("rank_one_exact") is False:
+                # Residual mu is 1e-6 for this covariance; q>.1 implies
+                # envelope>mu*1e4, where the source deliberately returns zero.
+                large = q > .1
+                intentional_underflow_values.append(int(large.sum()))
+                return torch.where(large, torch.full_like(q, forced_logp), torch.zeros_like(q))
+            return original_tail(q, eigenvalues, method, **kwargs)
+
+        def checked_integral(function, upper, **kwargs):
+            values = function((upper*.01).reshape(1))
+            self.assertTrue(bool(torch.isneginf(values).all()))
+            return tensor(-math.inf), {"converged": True, "status": "converged",
+                                      "evaluations": 21, "intervals": 1}
+
+        covariance = tensor([[1., .999999], [.999999, 1.]])
+        for backend in ("adaptive_x", "adaptive_sqrt", "segmented"):
+            results = []
+            for forced_logp in (1000., 0.):
+                intentional_underflow_values.clear()
+                integration = (patch("torchwgs.statistics._legendre", return_value=(tensor([0.]), tensor([2.])))
+                               if backend == "segmented" else
+                               patch("torchwgs._quadrature.integrate_log_gk21", side_effect=checked_integral))
+                with self.subTest(backend=backend, forced_logp=forced_logp), integration, \
+                        patch("torchwgs.statistics._association_tail", side_effect=intentional_zero_tail):
+                    result = skato_logp(tensor([1., 1.]), covariance,
+                                        integral_backend=backend, native_validity=True)
+                self.assertGreater(sum(intentional_underflow_values), 0)
+                self.assertNotIn("integral_fallback", result)
+                self.assertIsNotNone(result["SKATO"])
+                results.append(result["SKATO"])
+            # The source forces S=0 here even when the tail calculator
+            # would produce the representable probability S=1.
+            torch.testing.assert_close(results[0], results[1], rtol=0, atol=0)
+
+    def test_native_skato_underflow_boundary_matches_cpu_ordinary_probability(self):
+        from torchwgs import statistics as stats
+        original_tail = stats._association_tail
+        cutoff = -1075*math.log(2.)
+        requested_logs = [-745., math.nextafter(cutoff, math.inf), cutoff,
+                          math.nextafter(cutoff, -math.inf), -1000.]
+        conditional_lp = tensor(0.)
+
+        def boundary_tail(q, eigenvalues, method, **kwargs):
+            if kwargs.get("rank_one_exact") is False:
+                return torch.full_like(q, float(conditional_lp))
+            return original_tail(q, eigenvalues, method, **kwargs)
+
+        def checked_integral(function, upper, **kwargs):
+            function((upper*.1).reshape(1))
+            return tensor(-math.inf), {"converged": True, "status": "converged",
+                                      "evaluations": 21, "intervals": 1}
+
+        covariance = torch.eye(2, device=DEVICE, dtype=torch.float64)
+        for backend in ("adaptive_x", "adaptive_sqrt", "segmented"):
+            for requested_log in requested_logs:
+                conditional_lp = tensor(-requested_log/math.log(10.))
+                # Use the actual tensor log after the LP round trip. libm
+                # exp is independent of the CUDA exp underflow boundary.
+                actual_log = float(-conditional_lp*math.log(10.))
+                ordinary_probability_failed = math.exp(actual_log) == 0
+                integration = (patch("torchwgs.statistics._legendre", return_value=(tensor([0.]), tensor([2.])))
+                               if backend == "segmented" else
+                               patch("torchwgs._quadrature.integrate_log_gk21", side_effect=checked_integral))
+                with self.subTest(backend=backend, requested_log=requested_log), integration, \
+                        patch("torchwgs.statistics._association_tail", side_effect=boundary_tail):
+                    native = skato_logp(tensor([.4, -.2]), covariance,
+                        integral_backend=backend, native_validity=True)
+                    raw = skato_logp(tensor([.4, -.2]), covariance, integral_backend=backend)
+                if ordinary_probability_failed:
+                    self.assertIsNone(native["SKATO"])
+                    self.assertEqual(native["integral_fallback"], "unavailable")
+                else:
+                    self.assertIsNotNone(native["SKATO"])
+                    self.assertNotIn("integral_fallback", native)
+                if requested_log == -745.:
+                    self.assertGreater(math.exp(actual_log), 0.)
+                    self.assertIsNotNone(native["SKATO"])
+                self.assertIsNotNone(raw["SKATO"])
+                self.assertNotIn("integral_fallback", raw)
+                for name in ("SKAT", "SKATO-ACAT", "rho_log10ps"):
+                    torch.testing.assert_close(native[name], raw[name])
+
+    def test_native_skato_probability_floor_leaves_bypasses_and_raw_api_unchanged(self):
+        from torchwgs import statistics as stats
+        original_chi2_tail = stats.chi2_logsf
+        maximum_native_logp = -math.log10(10*torch.finfo(torch.float64).tiny)
+
+        def mixture_tail(q, eigenvalues, method, **kwargs):
+            return torch.full_like(q, 0. if kwargs.get("rank_one_exact") is False else 1000.)
+
+        def extreme_scalar_tail(q, df=1.):
+            if torch.as_tensor(q).numel() == 1 and torch.as_tensor(df).numel() == 1 and float(df) == 1:
+                return torch.full_like(torch.as_tensor(q), 1000.)
+            return original_chi2_tail(q, df)
+
+        covariance = torch.eye(2, device=DEVICE, dtype=torch.float64)
+        for backend in ("adaptive_x", "adaptive_sqrt", "segmented"):
+            integration = (patch("torchwgs.statistics._legendre", return_value=(tensor([0.]), tensor([0.])))
+                           if backend == "segmented" else
+                           patch("torchwgs._quadrature.integrate_log_gk21", return_value=(
+                               tensor(-math.inf), {"converged": True, "status": "converged",
+                                                   "evaluations": 21, "intervals": 1})))
+            with self.subTest(backend=backend), integration, \
+                    patch("torchwgs.statistics._association_tail", side_effect=mixture_tail), \
+                    patch("torchwgs.statistics.chi2_logsf", side_effect=extreme_scalar_tail), \
+                    patch("torchwgs.statistics.chi2_isf_logp", wraps=stats.chi2_isf_logp) as inverse:
+                result = skato_logp(tensor([2., -1.]), covariance,
+                                    integral_backend=backend, native_validity=True)
+                self.assertTrue(bool((inverse.call_args[0][0] == maximum_native_logp).all()))
+                self.assertEqual(float(result["SKATO"]), maximum_native_logp)
+                inverse.reset_mock()
+                raw = skato_logp(tensor([2., -1.]), covariance, integral_backend=backend)
+                self.assertTrue(bool((inverse.call_args[0][0] == 1000.).all()))
+                self.assertAlmostEqual(float(raw["SKATO"]), 1000., places=12)
+                inverse.reset_mock()
+                single = skato_logp(tensor([2.]), tensor([[1.]]), native_validity=True)
+                fixed = skato_logp(tensor([2., -1.]), covariance,
+                                  rhos=(.3,), native_validity=True)
+                self.assertEqual(float(single["SKATO"]), 1000.)
+                self.assertEqual(float(fixed["SKATO"]), 1000.)
+                inverse.assert_not_called()
 
     def test_sbat_nnls_kkt_and_independent_mixture(self):
         k = tensor([[1., .6, .2], [.6, 1., .3], [.2, .3, 1.]])
@@ -297,7 +642,25 @@ class GeneInferenceTests(unittest.TestCase):
         b = result["coefficients_positive"]
         self.assertAlmostEqual(float(result["statistic_positive"]), float(b@k@b)/2., places=12)
 
-    def test_normal_orthant_qmc_against_scalar_mvn_reference(self):
+    def test_four_dimensional_orthant_against_independent_conditional_integral(self):
+        # Equicorrelation admits a separate one-factor conditional integral.
+        # Integrate the boundary deficit, which stays resolved even when the
+        # shared normal factor makes the probability approach one half.
+        for rho in (.2, .8, .99, .9999999, 1-1e-12):
+            factor = math.sqrt(rho/(1-rho))
+            deficit = quad(lambda u: math.exp(-(u/factor)**2/2)/math.sqrt(2*math.pi)
+                           * (1-ndtr(u)**4-ndtr(-u)**4)/factor,
+                           0, 12, epsabs=1e-12, epsrel=1e-12)[0]
+            covariance = torch.eye(4, dtype=torch.float64, device=DEVICE)*(1-rho)+rho
+            observed = normal_orthant_probability(covariance, seed=13)
+            self.assertAlmostEqual(float(observed), .5-deficit, delta=3e-9)
+            self.assertEqual(float(observed), float(normal_orthant_probability(covariance, seed=177)))
+        pairs = tensor([[1., .7, 0, 0], [.7, 1., 0, 0],
+                        [0, 0, 1., -.8], [0, 0, -.8, 1.]])
+        expected = (.25+math.asin(.7)/(2*math.pi))*(.25-math.asin(.8)/(2*math.pi))
+        self.assertAlmostEqual(float(normal_orthant_probability(pairs)), expected, delta=2e-12)
+
+    def test_four_dimensional_orthant_against_scalar_mvn_reference(self):
         k = tensor([[1., .35, .2, .1], [.35, 1., .25, .15],
                     [.2, .25, 1., .3], [.1, .15, .3, 1.]])
         observed = normal_orthant_probability(k, qmc_samples=32768, seed=73)
@@ -308,6 +671,20 @@ class GeneInferenceTests(unittest.TestCase):
         w = chi_bar_weights(torch.eye(4, dtype=torch.float64, device=DEVICE), max_subsets=10)
         np.testing.assert_allclose(w.cpu(), [1/16, 4/16, 6/16, 4/16, 1/16], atol=2e-12)
 
+
+
+class SecularSkatoIntegrationTests(unittest.TestCase):
+    def test_complete_skato_matches_dense_with_duplicate_spectrum(self):
+        devices=['cpu']+(['cuda'] if torch.cuda.is_available() else [])
+        for device in devices:
+            covariance=torch.tensor([[2.,.5,.5,0.],[.5,2.,.5,0.],[.5,.5,2.,0.],[0.,0.,0.,1.5]],dtype=torch.float64,device=device)
+            score=torch.tensor([1.1,-.7,.3,.2],dtype=torch.float64,device=device)
+            dense=skato_logp(score,covariance,eigen_backend='dense')
+            secular=skato_logp(score,covariance,eigen_backend='secular')
+            for key in ('SKAT','BURDEN','SKATO','SKATO-ACAT','rho_log10ps'):
+                torch.testing.assert_close(dense[key],secular[key],atol=2e-8,rtol=2e-8)
+            with self.assertRaises(ValueError):
+                skato_logp(score,covariance,eigen_backend='unknown')
 
 if __name__ == "__main__":
     unittest.main()

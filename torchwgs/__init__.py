@@ -1,5 +1,6 @@
 """PyTorch GPU discovery WGS association."""
 from .config import WGSConfig, SignificanceConfig
+from .execution import ExecutionConfig
 from .step1 import Step1Config, NullModel, fit_null
 from .single import SingleVariantConfig, TestContext, create_test_context, test_single_variant
 from .masks import GeneConfig, FrequencyDomain, MaskDefinition

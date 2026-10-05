@@ -8,9 +8,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from scipy.stats import chi2, rankdata, norm
-from torchwgs.io import BedReader, Variant, write_bed, read_sample_ids, materialize_bed
+from torchwgs.io import (BedReader, Variant, write_bed, read_sample_ids, materialize_bed,
+                         materialize_discovery_bed)
 from torchwgs.mask_output import MaskWriter
-from torchwgs.single import create_test_context, score_genotypes
+from torchwgs.single import (create_test_context, score_genotypes,
+                            iter_single_variant_results, SingleVariantConfig)
 from torchwgs.output import RegenieWriter
 from torchwgs.config import WGSConfig
 from torchwgs.summary import select_loci
@@ -18,6 +20,147 @@ import pandas as pd
 
 
 class SingleIOTests(unittest.TestCase):
+    def test_packed_torch_decode_is_bit_exact_with_missing_and_sample_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ids=[(str(i),str(i)) for i in range(11)]
+            variants=[Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(9)]
+            values=(np.arange(99).reshape(11,9)%4).astype(float)
+            values[values==3]=np.nan
+            prefix=Path(directory)/'source';write_bed(prefix,values,variants,ids)
+            reader=BedReader(prefix,sample_ids=[ids[i] for i in [10,3,0,7,1]])
+            indices=[8,1,0,5]
+            rows=torch.tensor([4,0,2])
+            expected=reader.read_variants(indices)[rows]
+            devices=['cpu']+(['cuda'] if torch.cuda.is_available() else [])
+            for device in devices:
+                for dtype in [torch.float32,torch.float64]:
+                    observed=reader.read_packed_variants(indices,sample_rows=rows,
+                                                        device=device,dtype=dtype).cpu()
+                    np.testing.assert_array_equal(observed.numpy(),expected.to(dtype).numpy())
+                    # Compare the actual floating-point bits, including NaN calls.
+                    bits=torch.int32 if dtype==torch.float32 else torch.int64
+                    self.assertTrue(torch.equal(observed.view(bits),expected.to(dtype).contiguous().view(bits)))
+                chunks=list(reader.iter_variant_blocks(2,indices,genotype_reader='cuda_packed',
+                                                       sample_rows=rows,device=device))
+                observed=torch.cat([chunk for _,chunk in chunks],dim=1).cpu()
+                expected_order=sorted(indices)
+                np.testing.assert_array_equal(observed,reader.read_variants(expected_order)[rows])
+            self.assertLessEqual(len(reader._packed_decoder_cache),4)
+            self.assertEqual(reader.read_packed_variants([],device='cpu').shape,(reader.n_samples,0))
+            with self.assertRaises(IndexError):reader.read_packed_variants([reader.n_variants],device='cpu')
+            with self.assertRaises(IndexError):reader.read_packed_variants([0],sample_rows=[5],device='cpu')
+
+    @unittest.skipUnless(torch.cuda.is_available(),'CUDA needed for GPU decoder equivalence')
+    def test_packed_single_reader_matches_cpu_decoder_all_result_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ids=[(str(i),str(i)) for i in range(37)]
+            variants=[Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(13)]
+            rng=np.random.default_rng(65)
+            values=rng.binomial(2,.2,size=(37,13)).astype(float)
+            values[rng.random(values.shape)<.07]=np.nan
+            prefix=Path(directory)/'source';write_bed(prefix,values,variants,ids)
+            rows=list(range(35,0,-1))
+            for dtype in ['float32','float64']:
+                context=create_test_context(rng.normal(size=len(rows)),sample_ids=[ids[i] for i in rows],
+                                           apply_rint=True,device='cuda',dtype=dtype)
+                common=dict(maf_min=0,min_mac=1,block_size=4,device='cuda',dtype=dtype)
+                cpu=list(iter_single_variant_results(BedReader(prefix),context,
+                         config=SingleVariantConfig(**common,genotype_reader='cpu')))
+                packed=list(iter_single_variant_results(BedReader(prefix),context,
+                            config=SingleVariantConfig(**common,genotype_reader='cuda_packed')))
+                self.assertEqual(cpu,packed)
+
+    def test_streaming_discovery_bed_preserves_all_variants_calls_and_fam(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'source'
+            ids=[(str(i),str(i)) for i in range(11)]
+            variants=[Variant(i,'21',f'v{i}',i+10,'A','G') for i in range(9)]
+            rng=np.random.default_rng(40)
+            values=rng.integers(0,4,size=(11,9)).astype(float)
+            values[values==3]=np.nan
+            write_bed(prefix,values,variants,ids)
+            fam=Path(str(prefix)+'.fam')
+            fam.write_text(''.join(f'{fid} {iid} 10 20 {1+i%2} -9\n'
+                                   for i,(fid,iid) in enumerate(ids)))
+            bed=Path(str(prefix)+'.bed');original_bed=bed.read_bytes()
+            original_fam=fam.read_bytes()
+            keep={ids[i] for i in [0,2,3,5,7,9,10]};remove={ids[3]}
+            selected=[i for i,sid in enumerate(ids) if sid in keep and sid not in remove]
+            cached=materialize_discovery_bed(prefix,Path(directory)/'plain',keep=keep,
+                                             remove=remove,block_variants=2)
+            reader=BedReader(cached)
+            self.assertEqual(reader.n_variants,len(variants))
+            self.assertEqual(reader.sample_ids,[ids[i] for i in selected])
+            self.assertEqual(reader.sample_sex,[1+i%2 for i in selected])
+            np.testing.assert_allclose(reader.read_variants(range(9)),values[selected],equal_nan=True)
+            self.assertEqual(Path(str(cached)+'.fam').read_text(),
+                             ''.join(fam.read_text().splitlines(True)[i] for i in selected))
+            target_bed=Path(str(cached)+'.bed');before=target_bed.stat().st_mtime_ns
+            self.assertEqual(cached,materialize_discovery_bed(prefix,Path(directory)/'plain',
+                             keep=keep,remove=remove,block_variants=3))
+            self.assertEqual(before,target_bed.stat().st_mtime_ns)
+            compressed=Path(str(prefix)+'.bed.gz')
+            with gzip.open(compressed,'wb') as stream:stream.write(original_bed)
+            bed.unlink()
+            cached_gz=materialize_discovery_bed(prefix,Path(directory)/'gzip',keep=keep,
+                                               remove=remove,block_variants=4)
+            self.assertEqual(target_bed.read_bytes(),Path(str(cached_gz)+'.bed').read_bytes())
+            requested=[ids[i] for i in selected[::-1]]
+            reordered=materialize_discovery_bed(prefix,Path(directory)/'gzip',keep=keep,
+                        remove=remove,sample_ids=requested,block_variants=2)
+            np.testing.assert_allclose(BedReader(reordered).read_variants(range(9)),
+                                       values[selected[::-1]],equal_nan=True)
+            self.assertEqual(fam.read_bytes(),original_fam)
+            self.assertFalse(bed.exists())
+
+    def test_streaming_discovery_bed_rejects_truncated_and_corrupt_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix=Path(directory)/'source'
+            write_bed(prefix,torch.zeros((5,3)),
+                      [Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(3)],
+                      [(str(i),str(i)) for i in range(5)])
+            bed=Path(str(prefix)+'.bed');original=bed.read_bytes()
+            bed.write_bytes(original[:-1])
+            with self.assertRaisesRegex(ValueError,'Source BED'):
+                materialize_discovery_bed(prefix,Path(directory)/'cache',block_variants=1)
+            self.assertFalse(list(Path(directory).rglob('*.partial')))
+            compressed=Path(str(prefix)+'.bed.gz')
+            with gzip.open(compressed,'wb') as stream:stream.write(original)
+            bed.unlink()
+            raw=bytearray(compressed.read_bytes());raw[-8]^=1
+            compressed.write_bytes(raw)
+            with self.assertRaises(gzip.BadGzipFile):
+                materialize_discovery_bed(prefix,Path(directory)/'cache',block_variants=1)
+            self.assertFalse(list(Path(directory).rglob('*.partial')))
+
+    def test_single_prefilter_keeps_full_score_values_in_reader_order(self):
+        from torchwgs.single import _score_counted_genotypes
+        with tempfile.TemporaryDirectory() as directory:
+            ids=[(str(i),str(i)) for i in range(31)]
+            variants=[Variant(i,'21',f'v{i}',i+1,'A','G') for i in range(5)]
+            rng=np.random.default_rng(42)
+            values=rng.binomial(2,.2,size=(31,5)).astype(float)
+            values[:,0]=0.;values[:2,0]=1.
+            values[:,2]=np.nan
+            values[:,3]=2.
+            values[4,4]=np.nan
+            prefix=Path(directory)/'source';write_bed(prefix,values,variants,ids)
+            # Context may be a reordered subset of the reader's FAM.
+            rows=[i for i in range(30,-1,-1) if i!=5]
+            context=create_test_context(rng.normal(size=len(rows)),sample_ids=[ids[i] for i in rows],
+                                       apply_rint=False,device='cpu',dtype='float64')
+            expected=score_genotypes(values[rows],context)
+            config=SingleVariantConfig(maf_min=.05,min_mac=3,block_size=2,device='cpu',dtype='float64')
+            with patch('torchwgs.single._score_counted_genotypes',wraps=_score_counted_genotypes) as score:
+                observed=list(iter_single_variant_results(BedReader(prefix),context,config=config))
+                self.assertEqual(sum(call.args[0].shape[1] for call in score.call_args_list),2)
+            selected=((expected['MAC']>=3)&(expected['MAF']>.05)&expected['VALID']).nonzero().flatten().tolist()
+            self.assertEqual([row['ID'] for row in observed],[variants[i].id for i in selected])
+            for row,index in zip(observed,selected):
+                for key in ['N','A1FREQ','MAF','MAC','BETA','SE','CHISQ','LOG10P']:
+                    self.assertAlmostEqual(row[key],float(expected[key][index]),places=12)
+            self.assertEqual(expected['A1FREQ'].dtype,torch.float64)
+
     def test_bim_cache_preserves_new_missing_ids_and_bim_order(self):
         with tempfile.TemporaryDirectory() as directory:
             prefix=Path(directory)/'genotype'

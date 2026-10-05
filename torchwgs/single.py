@@ -9,18 +9,21 @@ from .phenotype import inverse_normal_transform, covariate_basis
 @dataclass
 class SingleVariantConfig:
     block_size: int = 1000
-    maf_min: float = 0.001
+    maf_min: float = 0.
     min_mac: float = 20.
     apply_rint: bool = True
     device: str = 'cuda'
     dtype: str = 'float32'
     tf32: bool = True
+    genotype_reader: str = 'cpu'
 
     def __post_init__(self):
         if self.block_size<1 or self.min_mac<0 or not 0<=self.maf_min<=.5:
             raise ValueError('Require block_size>0, min_mac>=0, and 0<=maf_min<=0.5')
         if self.dtype not in ('float32','float64'):
             raise ValueError('Supported analysis dtypes: float32, float64')
+        if self.genotype_reader not in ('cpu','cuda_packed'):
+            raise ValueError('genotype_reader must be cpu or cuda_packed')
 
 
 @dataclass
@@ -65,6 +68,8 @@ def create_test_context(phenotype, loco=None, *, covariates=None, sample_ids=Non
         raise ValueError('LOCO and phenotype must have equal aligned sample counts')
     valid &= torch.isfinite(predictions)
     indices = valid.nonzero().flatten()
+    if not indices.numel():
+        raise ValueError('No finite aligned phenotype/LOCO samples remain')
     y, predictions = y[indices], predictions[indices]
     if apply_rint: y = inverse_normal_transform(y)
     q = covariate_basis(None if x is None else x[indices], len(y), device=device)
@@ -83,15 +88,18 @@ def create_test_context(phenotype, loco=None, *, covariates=None, sample_ids=Non
                         'dtype': dtype, 'device': device, 'tf32': tf32},residual/residual_scale,q)
 
 
-def score_genotypes(genotypes, context):
-    """Return observed N/AAF/MAC and QT score statistics on original A1 scale."""
-    g = torch.as_tensor(genotypes, device=context.y.device, dtype=context.y.dtype)
+def _allele_counts(g):
+    """Exact observed counts before imputation or projection."""
     called = torch.isfinite(g)
     n_called = called.sum(0)
-    alt_count = torch.where(called, g, 0.).sum(0)
+    alt_count = torch.where(called, g, 0.).sum(0, dtype=torch.float64)
     aaf = alt_count/(2*n_called.clamp_min(1))
     maf = torch.minimum(aaf, 1-aaf)
     mac = torch.minimum(alt_count, 2*n_called-alt_count)
+    return {'N': n_called, 'A1FREQ': aaf, 'MAF': maf, 'MAC': mac}
+
+
+def _score_counted_genotypes(g, context, counts):
     centered = context.residualize(g)
     # Float64 reductions retain small/rare score signals; large projection is GPU.
     u = (centered.double()*context.y.double()[:, None]).sum(0)
@@ -102,9 +110,15 @@ def score_genotypes(genotypes, context):
     chi2 = u.square()/v
     from .statistics import chi2_logsf
     logp = chi2_logsf(chi2, 1.)
-    return {'N': n_called, 'A1FREQ': aaf, 'MAF': maf, 'MAC': mac,
+    return {**counts,
             'BETA': beta, 'SE': se, 'CHISQ': chi2, 'LOG10P': logp,
-            'VALID': (n_called > 0) & (v > torch.finfo(torch.float64).eps)}
+            'VALID': (counts['N'] > 0) & (v > torch.finfo(torch.float64).eps)}
+
+
+def score_genotypes(genotypes, context):
+    """Return observed N/AAF/MAC and QT score statistics on original A1 scale."""
+    g = torch.as_tensor(genotypes, device=context.y.device, dtype=context.y.dtype)
+    return _score_counted_genotypes(g, context, _allele_counts(g))
 
 
 def iter_single_variant_results(reader, context, *, config=None, variant_indices=None):
@@ -116,10 +130,24 @@ def iter_single_variant_results(reader, context, *, config=None, variant_indices
         except KeyError as error:raise ValueError('Context sample absent from genotype reader') from error
     elif reader.n_samples!=len(context.y):
         sample_rows=context.sample_indices
-    for variants, genotypes in reader.iter_variant_blocks(config.block_size, variant_indices):
-        if sample_rows is not None:genotypes=genotypes[sample_rows]
-        stats = score_genotypes(genotypes, context)
-        keep = stats['VALID'] & (stats['MAC'] >= config.min_mac) & (stats['MAF'] > config.maf_min)
+    if config.genotype_reader=='cuda_packed' and context.y.device.type!='cuda':
+        raise ValueError('cuda_packed single-variant reader requires a CUDA context')
+    blocks = reader.iter_variant_blocks(config.block_size,variant_indices,
+             genotype_reader=config.genotype_reader,sample_rows=sample_rows,
+             device=context.y.device,dtype=context.y.dtype)
+    for variants, genotypes in blocks:
+        g = torch.as_tensor(genotypes, device=context.y.device, dtype=context.y.dtype)
+        counts = _allele_counts(g)
+        # WGS contains many ultra-rare variants.  Reject them before building
+        # projected N x B matrices; the observed-count filter is unchanged.
+        selected = ((counts['N'] > 0) & (counts['MAC'] >= config.min_mac)
+                    & (counts['MAF'] > config.maf_min)).nonzero().flatten()
+        if not selected.numel():
+            continue
+        variants = [variants[j] for j in selected.cpu().tolist()]
+        counts = {name: values[selected] for name, values in counts.items()}
+        stats = _score_counted_genotypes(g[:, selected], context, counts)
+        keep = stats['VALID']
         columns = {k: v.detach().cpu().tolist() for k, v in stats.items() if k != 'VALID'}
         for j in keep.nonzero().flatten().cpu().tolist():
             variant = variants[j]

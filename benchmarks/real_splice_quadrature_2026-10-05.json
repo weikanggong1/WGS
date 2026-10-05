@@ -1,0 +1,215 @@
+{
+  "scope": "Two confirmed Splice SKAT-O CHISQ failures from complete chr21 mask tests; CPU validation only",
+  "date": "2026-10-05",
+  "source_math_version": "discovery_all26_adaptive_final_v2",
+  "source_and_product_default_integral_budget": {
+    "epsabs": 1e-25,
+    "epsrel": 0.0001220703125,
+    "max_intervals": 1000
+  },
+  "strict_thresholds": {
+    "CHISQ": {
+      "atol": 0.0001,
+      "rtol": 1e-05
+    },
+    "LOG10P": {
+      "atol": 0.0001,
+      "rtol": 0.0
+    }
+  },
+  "device": "cpu",
+  "torch_threads": 2,
+  "gpu_used": false,
+  "runtime_default_parameters_or_acceptance_thresholds_changed": false,
+  "raw_chisq_log10p_gene_variant_mask_identities_matrices_or_private_paths_exported": false,
+  "case_count": 2,
+  "wall_seconds": 33.719466388225555,
+  "interpretation": {
+    "source_default_qags_matches_native_strict_gates_for_these_two_cases": true,
+    "tighter_qags_and_product_qag_converge_together": true,
+    "tighter_qags_still_fails_native_chisq_gate_for_these_two_cases": true,
+    "difference_attributed_to_source_default_qags_extrapolation_and_stopping_path": true,
+    "nonintegral_math_is_bit_identical_between_diagnostic_methods": true,
+    "strict_native_parity_not_claimed": true,
+    "scope_limit": "This diagnosis covers exactly the two captured cases; it does not attribute any future failures."
+  },
+  "vc_columns_range": {
+    "minimum": 2,
+    "maximum": 4
+  },
+  "source_gene_variants_decoded_range": {
+    "minimum": 65,
+    "maximum": 220
+  },
+  "method_summaries": {
+    "own_qag_x_0.0001220703125": {
+      "case_count": 2,
+      "maximum_absolute_chisq_difference_from_tight_qags_1e7": 7.908521091337661e-07,
+      "maximum_absolute_log10p_difference_from_tight_qags_1e7": 2.1824038132223222e-07,
+      "maximum_absolute_native_chisq_error": 0.00014566353824640998,
+      "maximum_absolute_native_log10p_error": 4.787766604408272e-05,
+      "chisq_gate_passed_count": 0,
+      "complete_count": 2,
+      "log10p_gate_passed_count": 2,
+      "nonintegral_bit_equal_to_default_counts": {
+        "BURDEN": 2,
+        "SKAT": 2,
+        "SKATO-ACAT": 2,
+        "rho_log10ps": 2,
+        "rhos": 2
+      },
+      "total_wall_seconds": 1.7113937586545944,
+      "maximum_wall_seconds": 1.0192338079214096,
+      "integral_diagnostics": {
+        "diagnostics_count": 2,
+        "converged_count": 2,
+        "status_counts": {
+          "converged": 2
+        },
+        "evaluations_range": {
+          "minimum": 1617,
+          "maximum": 1785
+        },
+        "intervals_range": {
+          "minimum": 39,
+          "maximum": 43
+        },
+        "maximum_absolute_relative_error_estimate": 0.00011583790048442675,
+        "maximum_absolute_log_error_estimate": 12.496715835849988
+      }
+    },
+    "own_qag_x_2e-06": {
+      "case_count": 2,
+      "maximum_absolute_native_chisq_error": 0.00014644839087996075,
+      "maximum_absolute_native_log10p_error": 4.800322316844685e-05,
+      "chisq_gate_passed_count": 0,
+      "complete_count": 2,
+      "log10p_gate_passed_count": 2,
+      "nonintegral_bit_equal_to_default_counts": {
+        "BURDEN": 2,
+        "SKAT": 2,
+        "SKATO-ACAT": 2,
+        "rho_log10ps": 2,
+        "rhos": 2
+      },
+      "total_wall_seconds": 2.901756376028061,
+      "maximum_wall_seconds": 1.658799558877945,
+      "integral_diagnostics": {
+        "diagnostics_count": 2,
+        "converged_count": 2,
+        "status_counts": {
+          "converged": 2
+        },
+        "evaluations_range": {
+          "minimum": 2583,
+          "maximum": 3129
+        },
+        "intervals_range": {
+          "minimum": 62,
+          "maximum": 75
+        },
+        "maximum_absolute_relative_error_estimate": 1.8640076655694213e-06,
+        "maximum_absolute_log_error_estimate": 16.685979425837264
+      }
+    },
+    "scipy_qags_x_0.0001220703125": {
+      "case_count": 2,
+      "maximum_absolute_native_chisq_error": 4.227546571478058e-06,
+      "maximum_absolute_native_log10p_error": 2.826165844682649e-07,
+      "chisq_gate_passed_count": 2,
+      "complete_count": 2,
+      "log10p_gate_passed_count": 2,
+      "nonintegral_bit_equal_to_default_counts": {
+        "BURDEN": 2,
+        "SKAT": 2,
+        "SKATO-ACAT": 2,
+        "rho_log10ps": 2,
+        "rhos": 2
+      },
+      "total_wall_seconds": 1.0963342934846878,
+      "maximum_wall_seconds": 0.5861850082874298,
+      "integral_diagnostics": {
+        "diagnostics_count": 2,
+        "converged_count": 2,
+        "status_counts": {
+          "converged": 2
+        },
+        "evaluations_range": {
+          "minimum": 273,
+          "maximum": 273
+        },
+        "intervals_range": {
+          "minimum": 7,
+          "maximum": 7
+        },
+        "maximum_absolute_relative_error_estimate": 5.25006856597115e-05
+      }
+    },
+    "scipy_qags_x_1e-07": {
+      "case_count": 2,
+      "maximum_absolute_native_chisq_error": 0.00014645439035554375,
+      "maximum_absolute_native_log10p_error": 4.800576346908336e-05,
+      "chisq_gate_passed_count": 0,
+      "complete_count": 2,
+      "log10p_gate_passed_count": 2,
+      "nonintegral_bit_equal_to_default_counts": {
+        "BURDEN": 2,
+        "SKAT": 2,
+        "SKATO-ACAT": 2,
+        "rho_log10ps": 2,
+        "rhos": 2
+      },
+      "total_wall_seconds": 13.428661987185478,
+      "maximum_wall_seconds": 8.089170768857002,
+      "integral_diagnostics": {
+        "diagnostics_count": 2,
+        "converged_count": 2,
+        "status_counts": {
+          "converged": 2
+        },
+        "evaluations_range": {
+          "minimum": 2331,
+          "maximum": 3339
+        },
+        "intervals_range": {
+          "minimum": 56,
+          "maximum": 80
+        },
+        "maximum_absolute_relative_error_estimate": 3.0091305311031546e-08
+      }
+    },
+    "scipy_qags_x_2e-06": {
+      "case_count": 2,
+      "maximum_absolute_native_chisq_error": 0.00014639082578327134,
+      "maximum_absolute_native_log10p_error": 4.8006050878623974e-05,
+      "chisq_gate_passed_count": 0,
+      "complete_count": 2,
+      "log10p_gate_passed_count": 2,
+      "nonintegral_bit_equal_to_default_counts": {
+        "BURDEN": 2,
+        "SKAT": 2,
+        "SKATO-ACAT": 2,
+        "rho_log10ps": 2,
+        "rhos": 2
+      },
+      "total_wall_seconds": 8.784954130649567,
+      "maximum_wall_seconds": 4.97634744644165,
+      "integral_diagnostics": {
+        "diagnostics_count": 2,
+        "converged_count": 2,
+        "status_counts": {
+          "converged": 2
+        },
+        "evaluations_range": {
+          "minimum": 1659,
+          "maximum": 2037
+        },
+        "intervals_range": {
+          "minimum": 40,
+          "maximum": 49
+        },
+        "maximum_absolute_relative_error_estimate": 1.9903680983327316e-06
+      }
+    }
+  }
+}

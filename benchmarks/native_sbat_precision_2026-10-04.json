@@ -1,0 +1,85 @@
+{
+  "scope": "Real complete chr21 Inframe SBAT diagnosis; actual original-binary covariance captured in a separate validation child",
+  "source_version": "REGENIE 3.4.1",
+  "original_reference_cpu_threads": 8,
+  "original_binary_modified": false,
+  "public_individual_identifiers_or_matrices": false,
+  "strict_log10p_absolute_tolerance": 0.0001,
+  "strict_full_gene_equivalence_claimed": false,
+  "cause": "Native inverse and Schur subtraction produce nonpositive covariance diagonals in one ill-conditioned model; stable Gram formulation avoids this cancellation",
+  "mathematical_diagnostics": {
+    "full_capture": {
+      "group": "Inframe",
+      "private_capture_order_matches_rows": true,
+      "valid_sbat_rows": 97,
+      "full_native_repeat_nonSBAT_max_abs_lp_difference": 0.0,
+      "full_native_repeat_allSBAT_max_abs_lp_difference": 0.00011400000000000299,
+      "full_native_repeat_SBAt_rows_over_1e4": 1,
+      "full_vs_subset_actual_basis_order_equal": true,
+      "full_vs_subset_actual_design_bit_exact": false,
+      "full_vs_subset_actual_design_max_abs_difference": 6.938893903907228e-18,
+      "full_vs_subset_actual_trait_bit_exact": true,
+      "full_vs_subset_actual_trait_max_abs_difference": 0.0,
+      "full_vs_subset_actual_V_relative_frobenius_difference": 2.504560980853898e-16,
+      "full_vs_subset_actual_weights_max_abs_difference": 0.04402782250189485,
+      "private_values_exported": false,
+      "maximum_targeted_native_vs_reference_log10p_error": 4.0000000000040004e-05
+    },
+    "weights_isolation": {
+      "OLS_df": 41533,
+      "Gram_condition_number": 878312751.0983325,
+      "coefficient_V_condition_number": 878312651.8999423,
+      "native_V_vs_own_native_design_inverse_relative_frobenius_error": 2.0017234247940844e-07,
+      "direct_gram_weights_vs_native_max_abs_difference": 0.035018088714772744,
+      "native_trace_weights_reconstructed_max_abs_error": 1.1102230246251565e-16,
+      "orthant_same_native_matrix_max_abs_difference": 0.0005902316218642789,
+      "orthant_same_native_matrix_errors_by_dimension": {
+        "1": 0.0,
+        "2": 1.886268918838141e-13,
+        "3": 0.0005902316218642789,
+        "4": 0.00014037099685085264
+      },
+      "largest_native_orthant_correlation_asymmetry": 1.7811857272974352e-08,
+      "native_nonpositive_diagonal_orthant_counts": {
+        "1": 1,
+        "2": 1
+      },
+      "using_native_weights_log10p_errors": {
+        "SBAT": 1.7367317934890991e-06,
+        "SBAT_POS": 1.1646168474044316e-07,
+        "SBAT_NEG": 1.911321972913882e-06
+      },
+      "using_stable_directGram_weights_log10p_errors": {
+        "SBAT": 0.01704623474015765,
+        "SBAT_POS": 0.009497427360968258,
+        "SBAT_NEG": 0.01612276286576475
+      },
+      "using_deterministic_integrals_same_native_Schur_log10p_errors": null,
+      "private_values_exported": false,
+      "captured_source_design_rows": 44365,
+      "captured_source_design_columns": 4
+    },
+    "cancellation": {
+      "dimension": 4,
+      "precision_decimal_digits": 80,
+      "exact_binary64_row_patterns": 7,
+      "native_XX_relative_frobenius_error_vs_exact_input_Gram": 5.3399751579265956e-15,
+      "native_XX_asymmetry_relative_frobenius": 0.0,
+      "native_V_relative_frobenius_error_vs_high_precision_native_XX_inverse": 5.840572768450815e-09,
+      "native_V_asymmetry_relative_frobenius": 1.446008930837259e-16,
+      "captured_OLS_V_equals_weights_V_bit_exact": true,
+      "source_schur_nonpositive_diagonal_count": 2,
+      "source_schur_nonpositive_diagonal_dimensions": [
+        1,
+        2
+      ],
+      "high_precision_same_actual_V_source_order_nonpositive_diagonal_count": 0,
+      "source_negative_diagonal_but_80digit_same_input_positive_count": 2,
+      "native_inverse_Schur_max_relative_frobenius_error_vs_80digit_same_actual_V": 2.3911892120637646,
+      "native_inverse_Schur_lower_correlation_max_abs_error_vs_80digit_same_actual_V": 0.3689056295368686,
+      "current_stable_weights_max_abs_error_vs_80digit_exact_input_Gram": 8.622685898629356e-13,
+      "native_weights_max_abs_error_vs_80digit_exact_input_Gram": 0.03501808871397988,
+      "private_values_exported": false
+    }
+  }
+}

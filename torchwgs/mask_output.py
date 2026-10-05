@@ -8,6 +8,7 @@ class MaskWriter:
         self.prefix=str(prefix)+'_masks'
         Path(prefix).parent.mkdir(parents=True,exist_ok=True)
         self.n=len(sample_ids);self.stride=(self.n+3)//4
+        self.n_masks=0
         self.closed=False
         self.bed=open(self.prefix+'.bed.partial','wb');self.bed.write(b'\x6c\x1b\x01')
         self.bim=open(self.prefix+'.bim.partial','w');self.snplist=open(self.prefix+'.snplist.partial','w')
@@ -32,6 +33,7 @@ class MaskWriter:
             self.bed.write(packed.tobytes())
             self.bim.write(f'{gene.chrom}\t{identifier}\t0\t{gene.position}\t{allele}\tref\n')
             self.snplist.write(identifier+'\t'+','.join(mask.variant_ids)+'\n')
+            self.n_masks+=1
 
     def close(self,commit=True):
         if self.closed:return

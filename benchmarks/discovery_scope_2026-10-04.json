@@ -1,0 +1,1190 @@
+{
+  "generated": "2026-10-04T12:14:37Z",
+  "individual_records_exported": false,
+  "mask_definitions": {
+    "Downstream": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Downstream"
+          ]
+        }
+      ]
+    },
+    "Inframe": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Inframe"
+          ]
+        }
+      ]
+    },
+    "Intergenic": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Intergenic"
+          ]
+        }
+      ]
+    },
+    "Intron": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Intron"
+          ]
+        }
+      ]
+    },
+    "Missense": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Missense"
+          ]
+        }
+      ]
+    },
+    "PTV": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "PTV"
+          ]
+        }
+      ]
+    },
+    "Pseudo": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "transcribed_unprocessed_pseudogene"
+          ]
+        },
+        {
+          "mask": "Mask2",
+          "categories": [
+            "processed_pseudogene"
+          ]
+        },
+        {
+          "mask": "Mask3",
+          "categories": [
+            "transcribed_processed_pseudogene"
+          ]
+        },
+        {
+          "mask": "Mask4",
+          "categories": [
+            "unprocessed_pseudogene"
+          ]
+        },
+        {
+          "mask": "Mask5",
+          "categories": [
+            "transcribed_unitary_pseudogene"
+          ]
+        },
+        {
+          "mask": "Mask6",
+          "categories": [
+            "rRNA_pseudogene"
+          ]
+        },
+        {
+          "mask": "Mask7",
+          "categories": [
+            "unitary_pseudogene"
+          ]
+        },
+        {
+          "mask": "Mask8",
+          "categories": [
+            "translated_processed_pseudogene"
+          ]
+        }
+      ]
+    },
+    "RNA": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "ribozyme"
+          ]
+        },
+        {
+          "mask": "Mask2",
+          "categories": [
+            "lncRNA"
+          ]
+        },
+        {
+          "mask": "Mask3",
+          "categories": [
+            "miRNA"
+          ]
+        },
+        {
+          "mask": "Mask4",
+          "categories": [
+            "snRNA"
+          ]
+        },
+        {
+          "mask": "Mask5",
+          "categories": [
+            "misc_RNA"
+          ]
+        },
+        {
+          "mask": "Mask6",
+          "categories": [
+            "scaRNA"
+          ]
+        },
+        {
+          "mask": "Mask7",
+          "categories": [
+            "snoRNA"
+          ]
+        },
+        {
+          "mask": "Mask8",
+          "categories": [
+            "rRNA"
+          ]
+        },
+        {
+          "mask": "Mask9",
+          "categories": [
+            "mature_miRNA_variant"
+          ]
+        },
+        {
+          "mask": "Mask10",
+          "categories": [
+            "non_coding_transcript_exon_variant"
+          ]
+        }
+      ]
+    },
+    "Splice": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Splice"
+          ]
+        }
+      ]
+    },
+    "Synonymous": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Synonymous"
+          ]
+        }
+      ]
+    },
+    "UTR_3": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "UTR_3"
+          ]
+        }
+      ]
+    },
+    "UTR_5": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "UTR_5"
+          ]
+        }
+      ]
+    },
+    "Upstream": {
+      "rows": [
+        {
+          "mask": "Mask1",
+          "categories": [
+            "Upstream"
+          ]
+        }
+      ]
+    },
+    "nctev": {
+      "rows": [
+        {
+          "mask": "Mask10",
+          "categories": [
+            "non_coding_transcript_exon_variant"
+          ]
+        }
+      ]
+    }
+  },
+  "base_mask_count_all_files": 30,
+  "chromosomes": [
+    {
+      "chromosome": 1,
+      "variants": 79841014,
+      "samples": 59360,
+      "bed_bytes": null,
+      "gzip_bytes": 10539862389,
+      "logical_bytes": 1184840647763
+    },
+    {
+      "chromosome": 2,
+      "variants": 88023206,
+      "samples": 59360,
+      "bed_bytes": null,
+      "gzip_bytes": 10789546370,
+      "logical_bytes": 1306264377043
+    },
+    {
+      "chromosome": 3,
+      "variants": 70015511,
+      "samples": 59360,
+      "bed_bytes": null,
+      "gzip_bytes": 8157325283,
+      "logical_bytes": 1039030183243
+    },
+    {
+      "chromosome": 4,
+      "variants": 72397934,
+      "samples": 59360,
+      "bed_bytes": null,
+      "gzip_bytes": 8766631630,
+      "logical_bytes": 1074385340563
+    },
+    {
+      "chromosome": 5,
+      "variants": 66638800,
+      "samples": 59360,
+      "bed_bytes": 988919792003,
+      "gzip_bytes": null,
+      "logical_bytes": 988919792003
+    },
+    {
+      "chromosome": 6,
+      "variants": 61265730,
+      "samples": 59360,
+      "bed_bytes": 909183433203,
+      "gzip_bytes": null,
+      "logical_bytes": 909183433203
+    },
+    {
+      "chromosome": 7,
+      "variants": 60124148,
+      "samples": 59360,
+      "bed_bytes": 892242356323,
+      "gzip_bytes": null,
+      "logical_bytes": 892242356323
+    },
+    {
+      "chromosome": 8,
+      "variants": 58076839,
+      "samples": 59360,
+      "bed_bytes": 861860290763,
+      "gzip_bytes": null,
+      "logical_bytes": 861860290763
+    },
+    {
+      "chromosome": 9,
+      "variants": 48711725,
+      "samples": 59360,
+      "bed_bytes": 722881999003,
+      "gzip_bytes": null,
+      "logical_bytes": 722881999003
+    },
+    {
+      "chromosome": 10,
+      "variants": 46845827,
+      "samples": 59360,
+      "bed_bytes": 695192072683,
+      "gzip_bytes": null,
+      "logical_bytes": 695192072683
+    },
+    {
+      "chromosome": 11,
+      "variants": 50255603,
+      "samples": 59360,
+      "bed_bytes": 745793148523,
+      "gzip_bytes": null,
+      "logical_bytes": 745793148523
+    },
+    {
+      "chromosome": 12,
+      "variants": 51303389,
+      "samples": 59360,
+      "bed_bytes": 761342292763,
+      "gzip_bytes": null,
+      "logical_bytes": 761342292763
+    },
+    {
+      "chromosome": 13,
+      "variants": 37241523,
+      "samples": 59360,
+      "bed_bytes": 552664201323,
+      "gzip_bytes": null,
+      "logical_bytes": 552664201323
+    },
+    {
+      "chromosome": 14,
+      "variants": 34249455,
+      "samples": 59360,
+      "bed_bytes": 508261912203,
+      "gzip_bytes": null,
+      "logical_bytes": 508261912203
+    },
+    {
+      "chromosome": 15,
+      "variants": 29944988,
+      "samples": 59360,
+      "bed_bytes": 444383621923,
+      "gzip_bytes": null,
+      "logical_bytes": 444383621923
+    },
+    {
+      "chromosome": 16,
+      "variants": 31101660,
+      "samples": 59360,
+      "bed_bytes": 461548634403,
+      "gzip_bytes": null,
+      "logical_bytes": 461548634403
+    },
+    {
+      "chromosome": 17,
+      "variants": 31389059,
+      "samples": 59360,
+      "bed_bytes": 465813635563,
+      "gzip_bytes": null,
+      "logical_bytes": 465813635563
+    },
+    {
+      "chromosome": 18,
+      "variants": 31791405,
+      "samples": 59360,
+      "bed_bytes": 471784450203,
+      "gzip_bytes": null,
+      "logical_bytes": 471784450203
+    },
+    {
+      "chromosome": 19,
+      "variants": 24510502,
+      "samples": 59360,
+      "bed_bytes": 363735849683,
+      "gzip_bytes": null,
+      "logical_bytes": 363735849683
+    },
+    {
+      "chromosome": 20,
+      "variants": 21846172,
+      "samples": 59360,
+      "bed_bytes": 324197192483,
+      "gzip_bytes": null,
+      "logical_bytes": 324197192483
+    },
+    {
+      "chromosome": 21,
+      "variants": 13733596,
+      "samples": 59360,
+      "bed_bytes": 203806564643,
+      "gzip_bytes": null,
+      "logical_bytes": 203806564643
+    },
+    {
+      "chromosome": 22,
+      "variants": 14866221,
+      "samples": 59360,
+      "bed_bytes": null,
+      "gzip_bytes": 2226830107,
+      "logical_bytes": 220614719643
+    }
+  ],
+  "smallest_logical_chromosome": 21,
+  "main_script_types": [
+    "Downstream",
+    "Inframe",
+    "Intron",
+    "Missense",
+    "PTV",
+    "Pseudo",
+    "RNA",
+    "Splice",
+    "Synonymous",
+    "UTR_3",
+    "UTR_5",
+    "Upstream",
+    "nctev"
+  ],
+  "sub_script_combinations": [
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Downstream",
+      "score": "GERP2",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Downstream",
+      "score": "JARVIS99",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Intergenic",
+      "score": "GERP2",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Intergenic",
+      "score": "Gnocchi4",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Intron",
+      "score": "GERP2",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Intron",
+      "score": "Gnocchi4",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Missense",
+      "score": "REVEL50",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Splice",
+      "score": "splice05",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "UTR_3",
+      "score": "GERP2",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "UTR_5",
+      "score": "GERP2",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Upstream",
+      "score": "GERP2",
+      "trait": "continuous_trait_1"
+    },
+    {
+      "modality": "t2",
+      "chrom": "21",
+      "type": "Upstream",
+      "score": "JARVIS99",
+      "trait": "continuous_trait_1"
+    }
+  ],
+  "chr21_annotation_inventory": {
+    "Downstream": {
+      "annotation": {
+        "rows": 145511,
+        "genes": 102,
+        "columns": {
+          "4": 145511
+        },
+        "domains": {
+          "R": 4031,
+          "UR": 140262,
+          "C": 1218
+        },
+        "categories": {
+          "Downstream": 145511
+        },
+        "records_per_gene": {
+          "p50": 1718,
+          "p90": 2250,
+          "p99": 2892,
+          "max": 3788
+        },
+        "R_records_per_gene": {
+          "p50": 40,
+          "p90": 69,
+          "p99": 97,
+          "max": 112
+        },
+        "bytes": 6959629
+      },
+      "setlist": {
+        "rows": 102,
+        "genes": 102,
+        "variant_references": 145511,
+        "max_variants_per_gene": 3788,
+        "variants_per_gene": {
+          "p50": 1718,
+          "p90": 2250,
+          "p99": 2892,
+          "max": 3788
+        },
+        "bytes": 2602404
+      },
+      "base_masks": 1
+    },
+    "Inframe": {
+      "annotation": {
+        "rows": 1339,
+        "genes": 138,
+        "columns": {
+          "4": 1339
+        },
+        "domains": {
+          "UR": 1296,
+          "R": 37,
+          "C": 6
+        },
+        "categories": {
+          "Inframe": 1339
+        },
+        "records_per_gene": {
+          "p50": 6,
+          "p90": 18,
+          "p99": 44,
+          "max": 190
+        },
+        "R_records_per_gene": {
+          "p50": 0,
+          "p90": 1,
+          "p99": 3,
+          "max": 8
+        },
+        "bytes": 77699
+      },
+      "setlist": {
+        "rows": 138,
+        "genes": 138,
+        "variant_references": 1339,
+        "max_variants_per_gene": 190,
+        "variants_per_gene": {
+          "p50": 6,
+          "p90": 18,
+          "p99": 44,
+          "max": 190
+        },
+        "bytes": 45453
+      },
+      "base_masks": 1
+    },
+    "Intergenic": {
+      "annotation": {
+        "rows": 4212878,
+        "genes": 203,
+        "columns": {
+          "4": 4212878
+        },
+        "domains": {
+          "UR": 4065571,
+          "R": 117280,
+          "C": 30027
+        },
+        "categories": {
+          "Intergenic": 4212878
+        },
+        "records_per_gene": {
+          "p50": 9334,
+          "p90": 55442,
+          "p99": 150923,
+          "max": 190208
+        },
+        "R_records_per_gene": {
+          "p50": 251,
+          "p90": 1500,
+          "p99": 4110,
+          "max": 6760
+        },
+        "bytes": 268554159
+      },
+      "setlist": {
+        "rows": 203,
+        "genes": 203,
+        "variant_references": 4212877,
+        "max_variants_per_gene": 190208,
+        "variants_per_gene": {
+          "p50": 9334,
+          "p90": 55442,
+          "p99": 150923,
+          "max": 190208
+        },
+        "bytes": 75138521
+      },
+      "base_masks": 1
+    },
+    "Intron": {
+      "annotation": {
+        "rows": 4160338,
+        "genes": 121,
+        "columns": {
+          "4": 4160338
+        },
+        "domains": {
+          "UR": 4008884,
+          "R": 118091,
+          "C": 33363
+        },
+        "categories": {
+          "Intron": 4160338
+        },
+        "records_per_gene": {
+          "p50": 14504,
+          "p90": 79427,
+          "p99": 243509,
+          "max": 454893
+        },
+        "R_records_per_gene": {
+          "p50": 414,
+          "p90": 2316,
+          "p99": 6126,
+          "max": 13003
+        },
+        "bytes": 184744593
+      },
+      "setlist": {
+        "rows": 121,
+        "genes": 121,
+        "variant_references": 4160338,
+        "max_variants_per_gene": 454893,
+        "variants_per_gene": {
+          "p50": 14504,
+          "p90": 79427,
+          "p99": 243509,
+          "max": 454893
+        },
+        "bytes": 76730647
+      },
+      "base_masks": 1
+    },
+    "Missense": {
+      "annotation": {
+        "rows": 50325,
+        "genes": 146,
+        "columns": {
+          "4": 50325
+        },
+        "domains": {
+          "UR": 49116,
+          "R": 1048,
+          "C": 161
+        },
+        "categories": {
+          "Missense": 50325
+        },
+        "records_per_gene": {
+          "p50": 216,
+          "p90": 750,
+          "p99": 1552,
+          "max": 1797
+        },
+        "R_records_per_gene": {
+          "p50": 5,
+          "p90": 15,
+          "p99": 37,
+          "max": 41
+        },
+        "bytes": 2225169
+      },
+      "setlist": {
+        "rows": 146,
+        "genes": 146,
+        "variant_references": 50325,
+        "max_variants_per_gene": 1797,
+        "variants_per_gene": {
+          "p50": 216,
+          "p90": 750,
+          "p99": 1552,
+          "max": 1797
+        },
+        "bytes": 821366
+      },
+      "base_masks": 1
+    },
+    "PTV": {
+      "annotation": {
+        "rows": 6745,
+        "genes": 147,
+        "columns": {
+          "4": 6745
+        },
+        "domains": {
+          "UR": 6646,
+          "R": 85,
+          "C": 14
+        },
+        "categories": {
+          "PTV": 6745
+        },
+        "records_per_gene": {
+          "p50": 37,
+          "p90": 92,
+          "p99": 204,
+          "max": 222
+        },
+        "R_records_per_gene": {
+          "p50": 0,
+          "p90": 2,
+          "p99": 3,
+          "max": 6
+        },
+        "bytes": 277318
+      },
+      "setlist": {
+        "rows": 147,
+        "genes": 147,
+        "variant_references": 6745,
+        "max_variants_per_gene": 222,
+        "variants_per_gene": {
+          "p50": 37,
+          "p90": 92,
+          "p99": 204,
+          "max": 222
+        },
+        "bytes": 126398
+      },
+      "base_masks": 1
+    },
+    "Pseudo": {
+      "annotation": {
+        "rows": 579889,
+        "genes": 157,
+        "columns": {
+          "4": 579889
+        },
+        "domains": {
+          "UR": 558861,
+          "R": 16527,
+          "C": 4501
+        },
+        "categories": {
+          "processed_pseudogene": 242813,
+          "transcribed_unprocessed_pseudogene": 167966,
+          "transcribed_processed_pseudogene": 25316,
+          "unprocessed_pseudogene": 143541,
+          "rRNA_pseudogene": 253
+        },
+        "records_per_gene": {
+          "p50": 2221,
+          "p90": 6206,
+          "p99": 26843,
+          "max": 40181
+        },
+        "R_records_per_gene": {
+          "p50": 68,
+          "p90": 222,
+          "p99": 865,
+          "max": 1184
+        },
+        "bytes": 36200944
+      },
+      "setlist": {
+        "rows": 157,
+        "genes": 157,
+        "variant_references": 579889,
+        "max_variants_per_gene": 40181,
+        "variants_per_gene": {
+          "p50": 2221,
+          "p90": 6206,
+          "p99": 26843,
+          "max": 40181
+        },
+        "bytes": 10089657
+      },
+      "base_masks": 8
+    },
+    "RNA": {
+      "annotation": {
+        "rows": 4036133,
+        "genes": 415,
+        "columns": {
+          "4": 4036133
+        },
+        "domains": {
+          "UR": 3893186,
+          "R": 112227,
+          "C": 30720
+        },
+        "categories": {
+          "lncRNA": 3680922,
+          "non_coding_transcript_exon_variant": 273053,
+          "misc_RNA": 25842,
+          "miRNA": 15886,
+          "mature_miRNA_variant": 179,
+          "rRNA": 71,
+          "snoRNA": 8377,
+          "snRNA": 31803
+        },
+        "records_per_gene": {
+          "p50": 2393,
+          "p90": 23773,
+          "p99": 97245,
+          "max": 311510
+        },
+        "R_records_per_gene": {
+          "p50": 65,
+          "p90": 711,
+          "p99": 2546,
+          "max": 9066
+        },
+        "bytes": 185302827
+      },
+      "setlist": {
+        "rows": 415,
+        "genes": 415,
+        "variant_references": 4036132,
+        "max_variants_per_gene": 311510,
+        "variants_per_gene": {
+          "p50": 2393,
+          "p90": 23773,
+          "p99": 97245,
+          "max": 311510
+        },
+        "bytes": 72866034
+      },
+      "base_masks": 10
+    },
+    "Splice": {
+      "annotation": {
+        "rows": 13323,
+        "genes": 121,
+        "columns": {
+          "4": 13323
+        },
+        "domains": {
+          "UR": 12925,
+          "R": 308,
+          "C": 90
+        },
+        "categories": {
+          "Splice": 13323
+        },
+        "records_per_gene": {
+          "p50": 82,
+          "p90": 233,
+          "p99": 362,
+          "max": 388
+        },
+        "R_records_per_gene": {
+          "p50": 2,
+          "p90": 6,
+          "p99": 10,
+          "max": 11
+        },
+        "bytes": 570951
+      },
+      "setlist": {
+        "rows": 121,
+        "genes": 121,
+        "variant_references": 13323,
+        "max_variants_per_gene": 388,
+        "variants_per_gene": {
+          "p50": 82,
+          "p90": 233,
+          "p99": 362,
+          "max": 388
+        },
+        "bytes": 228339
+      },
+      "base_masks": 1
+    },
+    "Synonymous": {
+      "annotation": {
+        "rows": 21314,
+        "genes": 146,
+        "columns": {
+          "4": 21314
+        },
+        "domains": {
+          "UR": 20529,
+          "R": 642,
+          "C": 143
+        },
+        "categories": {
+          "Synonymous": 21314
+        },
+        "records_per_gene": {
+          "p50": 98,
+          "p90": 319,
+          "p99": 701,
+          "max": 829
+        },
+        "R_records_per_gene": {
+          "p50": 3,
+          "p90": 9,
+          "p99": 23,
+          "max": 31
+        },
+        "bytes": 985243
+      },
+      "setlist": {
+        "rows": 146,
+        "genes": 146,
+        "variant_references": 21314,
+        "max_variants_per_gene": 829,
+        "variants_per_gene": {
+          "p50": 98,
+          "p90": 319,
+          "p99": 701,
+          "max": 829
+        },
+        "bytes": 350696
+      },
+      "base_masks": 1
+    },
+    "UTR_3": {
+      "annotation": {
+        "rows": 122364,
+        "genes": 149,
+        "columns": {
+          "4": 122364
+        },
+        "domains": {
+          "UR": 118128,
+          "R": 3309,
+          "C": 927
+        },
+        "categories": {
+          "UTR_3": 122364
+        },
+        "records_per_gene": {
+          "p50": 470,
+          "p90": 1979,
+          "p99": 4807,
+          "max": 9735
+        },
+        "R_records_per_gene": {
+          "p50": 12,
+          "p90": 59,
+          "p99": 123,
+          "max": 324
+        },
+        "bytes": 5539479
+      },
+      "setlist": {
+        "rows": 149,
+        "genes": 149,
+        "variant_references": 122364,
+        "max_variants_per_gene": 9735,
+        "variants_per_gene": {
+          "p50": 470,
+          "p90": 1979,
+          "p99": 4807,
+          "max": 9735
+        },
+        "bytes": 2488787
+      },
+      "base_masks": 1
+    },
+    "UTR_5": {
+      "annotation": {
+        "rows": 34351,
+        "genes": 147,
+        "columns": {
+          "4": 34351
+        },
+        "domains": {
+          "UR": 33344,
+          "R": 830,
+          "C": 177
+        },
+        "categories": {
+          "UTR_5": 34351
+        },
+        "records_per_gene": {
+          "p50": 118,
+          "p90": 531,
+          "p99": 1693,
+          "max": 1786
+        },
+        "R_records_per_gene": {
+          "p50": 3,
+          "p90": 12,
+          "p99": 28,
+          "max": 53
+        },
+        "bytes": 1461057
+      },
+      "setlist": {
+        "rows": 147,
+        "genes": 147,
+        "variant_references": 34351,
+        "max_variants_per_gene": 1786,
+        "variants_per_gene": {
+          "p50": 118,
+          "p90": 531,
+          "p99": 1693,
+          "max": 1786
+        },
+        "bytes": 607405
+      },
+      "base_masks": 1
+    },
+    "Upstream": {
+      "annotation": {
+        "rows": 214456,
+        "genes": 128,
+        "columns": {
+          "4": 214456
+        },
+        "domains": {
+          "UR": 206861,
+          "R": 6028,
+          "C": 1567
+        },
+        "categories": {
+          "Upstream": 214456
+        },
+        "records_per_gene": {
+          "p50": 1885,
+          "p90": 2376,
+          "p99": 2897,
+          "max": 3960
+        },
+        "R_records_per_gene": {
+          "p50": 49,
+          "p90": 75,
+          "p99": 97,
+          "max": 136
+        },
+        "bytes": 9894360
+      },
+      "setlist": {
+        "rows": 128,
+        "genes": 128,
+        "variant_references": 214456,
+        "max_variants_per_gene": 3960,
+        "variants_per_gene": {
+          "p50": 1885,
+          "p90": 2376,
+          "p99": 2897,
+          "max": 3960
+        },
+        "bytes": 3900771
+      },
+      "base_masks": 1
+    },
+    "nctev": {
+      "annotation": {
+        "rows": 273053,
+        "genes": 396,
+        "columns": {
+          "4": 273053
+        },
+        "domains": {
+          "UR": 264020,
+          "R": 7165,
+          "C": 1868
+        },
+        "categories": {
+          "non_coding_transcript_exon_variant": 273053
+        },
+        "records_per_gene": {
+          "p50": 288,
+          "p90": 1508,
+          "p99": 5199,
+          "max": 24339
+        },
+        "R_records_per_gene": {
+          "p50": 7,
+          "p90": 41,
+          "p99": 153,
+          "max": 672
+        },
+        "bytes": 19375554
+      },
+      "setlist": {
+        "rows": 396,
+        "genes": 396,
+        "variant_references": 4020292,
+        "max_variants_per_gene": 311510,
+        "variants_per_gene": {
+          "p50": 2818,
+          "p90": 24231,
+          "p99": 101484,
+          "max": 311510
+        },
+        "bytes": 72563412
+      },
+      "base_masks": 1
+    }
+  },
+  "paper_total_autosomal_variants": 1024174307,
+  "RNA_Pseudo_category_structure": {
+    "RNA": {
+      "category_count_per_gene": {
+        "1": 142,
+        "2": 266,
+        "3": 7
+      },
+      "max_R_records_per_gene_category": 8394,
+      "max_R_records_second_category": 672
+    },
+    "Pseudo": {
+      "category_count_per_gene": {
+        "1": 157
+      },
+      "max_R_records_per_gene_category": 1184,
+      "max_R_records_second_category": 0
+    }
+  },
+  "scope": "Complete discovery input and mask inventory, not association acceptance or a performance benchmark",
+  "main_analysis_groups": 14,
+  "sub_analysis_groups": 12,
+  "analysis_groups": 26,
+  "base_mask_definitions_across_analysis_groups": 42,
+  "additional_main_group": "Intergenic: existing source annotation/setlist/mask, added to cover every mask file",
+  "raw_single_parameters": {
+    "min_mac": 20,
+    "maf_prefilter": 0.0,
+    "post_result_paper_maf": 0.001,
+    "post_result_source_field": "A1FREQ"
+  },
+  "data_choice": "Original discovery whole-genome inputs and annotation layout; chromosome 21 has the smallest logical input size.",
+  "cohort_counts": {
+    "discovery_formal": 44441,
+    "after_qc": 44365,
+    "phenotype_active": 41538,
+    "trait": "continuous_trait_1"
+  }
+}

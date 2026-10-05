@@ -9,7 +9,23 @@
 
 ## REGENIE discovery
 
-2026-10-04新增`torchwgs` GPU实现，默认按论文参数运行，RINT可选：`WGSConfig.paper(apply_rint=False)`或CLI `--no-rint`。完整芯片Step1与真实WGS子集已对照原程序，58项CUDA测试通过。安装和22条染色体Main/Sub调用见[REGENIE指南](docs/REGENIE.md)。
+`torchwgs` 用 PyTorch 计算连续单表型的完整 discovery：芯片 ridge/LOCO、全染色体 single-variant、coding/noncoding gene-based，以及显著性和 locus 汇总。运行时不调用 REGENIE、PLINK 或 R。`WGSConfig.paper()`采用核对后的论文参数，Python/JSON 可以修改；RINT 可设为 `WGSConfig.paper(apply_rint=False)`或 CLI `--no-rint`。
+
+`study_gene_analyses()`展开全部 14 Main + 12 Sub，共 26 组、42 个源 mask 定义，并保留每组的 domain、overall、singleton 和 AAF masks。本次交付使用 `ExecutionConfig(parallel_level="serial", workers=1, max_gpu_gb=20.)`，在 GPU 上串行完成各组；API 另支持在 mask 组或染色体层级使用独立 CUDA streams 并行。完整参数、输入格式、原软件命令和流程图见 [REGENIE指南](docs/REGENIE.md)及 [Python参数](docs/API.md)。
+
+GeneConfig 的 SKAT-O 积分默认采用原 REGENIE 的 χ² 坐标（adaptive_x），绝对/相对误差预算为 10⁻²⁵ / 2⁻¹³、最多 1,000 个区间，四个参数均可修改。平方根坐标 adaptive_sqrt 保留为可选项；真实 9 维 mask 曾出现节点漏过窄特征却报告收敛，原坐标对照及限制见 [真实验证](docs/VALIDATION.md)。
+
+真实验证使用最小的 chr21：13,733,596 个 WGS 位点，41,538 名有效样本。完整 509,468 位点 Step1 已独立对照。当前全串行运行 `discovery_all26_gpu_serial_final_v5` 沿用同一份已冻结的 21 个实现模块，源码通过 SHA-256 核对一致；single 已完成全位点扫描，314,209 行格式及五项数值门槛全部通过，阶段耗时为 424.529767 秒。全部 26 组 gene 和汇总仍在验证；本轮导入已验证的完整 Step1 LOCO，整体耗时、显存与最终验收结果待运行完成后登记。
+
+同源六个完整组的 GPU 串行测量已完成，共 32,842 行，进程墙钟为 6473.804485 秒，pipeline 函数计时为 6470.960217 秒，峰值分配为 6,605,298,688 字节（约 6.15 GiB）。六组结构及附属文件全部通过，严格数值为 0/6 组通过；该测量覆盖六组，不代表全部 26 组的最终串行结果。[匿名计时和显存记录](benchmarks/real_gpu_serial_resources_2026-10-05.json)、[测量图](benchmarks/gpu_serial_2026-10-05.png)仅保留串行结果。
+
+历史 v4 使用 2 workers，已完成 single、全部 26 组 gene 和汇总：single 314,209 行格式及五项数值门槛全部通过；gene 97,222 行、26/26 组结构及附属文件全部通过，严格数值仅 `Splice_splice05` 全组通过（1/26）。ADD-SKATO 38 行、ADD-SKAT 1 行仅 CHISQ 超门槛，LOG10P 均通过；SBAT/POS/NEG 和 GENE_P 仍有 LOG10P 差异。v4 统一 pipeline 函数计时为 10945.423 秒，峰值约 7.49 GiB；这些数值属于历史 2 workers 运行，详情见 [真实验证](docs/VALIDATION.md)。
+
+同一冻结源码的本地与验证服务器 111 项回归均通过，测试报告耗时分别为 119.770 和 54.939 秒。全量 GPU 串行验证尚未完成；共享资源下的不同计时范围不换算受控倍速。
+
+历史 v4 在论文阈值下两边的显著性决策一致，均无显著命中；该[匿名记录](benchmarks/real_discovery_significance_2026-10-05.json)仅覆盖本连续表型 chr21 的无命中场景，尚未验证阳性命中一致性或数值等价。v5 的汇总将随全串行运行重新核验。
+
+上一冻结版 v3 的 single 阶段耗时 225.320409 秒，314,209 行格式与数值均通过；该轮因 Pseudo 多一行 ADD-SKATO 而停止。原生条件 double 概率下溢规则修复后，v4 的 Pseudo 已与原程序同为 4,287 行。single 阶段没有独立进程墙钟或峰值记录，不与旧 CPU 计时换算加速倍数。
 
 ```bash
 conda env create -f environment.yml

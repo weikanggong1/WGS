@@ -26,7 +26,11 @@ import itertools
 import math
 import time
 import warnings
+import threading
+from collections.abc import MutableMapping
+from contextlib import contextmanager
 from functools import lru_cache
+from numbers import Integral
 from typing import Optional
 
 import torch
@@ -34,17 +38,67 @@ import torch
 _LN10 = math.log(10.0)
 _LOGPI = math.log(math.pi)
 DEFAULT_RHOS = (0.0, 0.01, 0.04, 0.09, 0.16, 0.25, 0.5, 1.0)
-_DIAGNOSTICS = {"gpu_tail_calls": 0, "cpu_tail_fallback_calls": 0,
+_DIAGNOSTIC_DEFAULTS = {"gpu_tail_calls": 0, "cpu_tail_fallback_calls": 0,
                 "torch_cpu_tail_calls": 0,
                 "davies_tail_values": 0, "davies_failure_values": 0,
                 "davies_integration_terms": 0, "davies_controller_seconds": 0.0,
                 "kuonen_tail_values": 0, "liu_fallback_values": 0,
                 "cpu_tail_fallback_seconds": 0.0, "orthant_qmc_calls": 0,
-                "skato_integral_calls": 0}
+                "orthant_plackett_calls": 0,
+                "skato_integral_calls": 0, "skato_quadrature_values": 0,
+                "skato_quadrature_intervals": 0, "skato_integral_failures": 0,
+                "secular_eigen_calls": 0, "dense_rho_eigen_calls": 0}
+
+
+class _ThreadDiagnostics(MutableMapping):
+    """Counters belong to the current worker, rather than other CUDA streams."""
+    def __init__(self):
+        self.local = threading.local()
+
+    def current(self):
+        if not hasattr(self.local, "counters"):
+            self.local.counters = dict(_DIAGNOSTIC_DEFAULTS)
+        return self.local.counters
+
+    def __getitem__(self, key):
+        return self.current()[key]
+
+    def __setitem__(self, key, value):
+        self.current()[key] = value
+
+    def __delitem__(self, key):
+        del self.current()[key]
+
+    def __iter__(self):
+        return iter(self.current())
+
+    def __len__(self):
+        return len(self.current())
+
+
+_DIAGNOSTICS = _ThreadDiagnostics()
+
+
+@contextmanager
+def diagnostics_scope():
+    """Isolate one analysis' tail counters in the current thread.
+
+    The yielded dictionary keeps its final counters after leaving the scope.
+    Nested scopes restore the caller's ledger; a worker cannot reset or add to
+    another worker's counters. The existing numerical_diagnostics() API reads
+    the currently active ledger and remains unchanged for serial callers.
+    """
+    previous = _DIAGNOSTICS.current()
+    counters = dict(_DIAGNOSTIC_DEFAULTS)
+    _DIAGNOSTICS.local.counters = counters
+    try:
+        yield counters
+    finally:
+        _DIAGNOSTICS.local.counters = previous
 
 
 def numerical_diagnostics(reset: bool = False) -> dict:
-    """Return backend counts and scalar fallback elapsed wall time.
+    """Return this thread/scope's backend counts and fallback wall time.
 
     Tensor-tail counters count quadrature batches; the fallback counter
     counts scalar statistics.  Their ratio is not a GPU/CPU time fraction.
@@ -677,16 +731,21 @@ class _DaviesPlan:
             return None
 
 
-def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000):
+def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000, controller="auto"):
     """Davies AS155 tails for positive central chi-square(1) mixtures.
 
     Return ``(-log10(P), ifault)`` tensors.  NaN and a nonzero fault mark a
     failed budget, invalid probability or rounding check.  Fourier inversion
     is float64 PyTorch on the input device.  Scalar error-bound planning is
-    CPU; diagnostics include its actual wall time separately.  No matrix or
+    CPU; diagnostics include its actual wall time separately. ``controller``
+    is auto/scalar/numpy; auto vectorizes bounds for spectra of 1024 or more
+    values, retaining ordered float64 sums and the original budget protocol.
+    No matrix or
     participant data enters the CPU controller.  These defaults and failures
     drive REGENIE's Kuonen switch even for moderate P.
     """
+    if controller not in {"auto", "scalar", "numpy"}:
+        raise ValueError("Davies controller must be auto, scalar or numpy")
     ev = _positive_eigenvalues(eigenvalues)
     statistic = _tensor(q, ev)
     if accuracy <= 0 or limit < 1 or bool(((statistic < 0) | ~torch.isfinite(statistic)).any()):
@@ -699,9 +758,13 @@ def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000):
     start = time.perf_counter()
     spectrum = normalized.detach().cpu().tolist()
     scalar_q = scaled.detach().cpu().tolist()
+    plan_class = _DaviesPlan
+    if controller == "numpy" or (controller == "auto" and len(spectrum) >= 1024):
+        from ._davies_bounds import NumpyDaviesPlan
+        plan_class = NumpyDaviesPlan
     jobs, probabilities, fault_codes = [], [], []
     for i, point in enumerate(scalar_q):
-        plan = _DaviesPlan(spectrum, point, accuracy, limit)
+        plan = plan_class(spectrum, point, accuracy, limit)
         try:
             known_probability = plan.build()
             fault_code = 0
@@ -762,7 +825,8 @@ def davies_logsf(q, eigenvalues, *, accuracy=1e-6, limit=10000):
     return output.reshape(statistic.shape), faults.reshape(statistic.shape)
 
 
-def _association_tail(q, eigenvalues, tail_method, *, rank_one_exact=True):
+def _association_tail(q, eigenvalues, tail_method, *, rank_one_exact=True,
+                      davies_controller="auto"):
     """Davies(1e-6/10000) -> Kuonen -> Davies(1e-9/1e6) -> Liu.
 
     The Kuonen branch is also taken after a Davies budget/rounding failure,
@@ -778,7 +842,7 @@ def _association_tail(q, eigenvalues, tail_method, *, rank_one_exact=True):
     if not ev.numel():
         return weighted_chi2_logsf(qq, ev)
     flat = qq.flatten()
-    output, faults = davies_logsf(flat, ev)
+    output, faults = davies_logsf(flat, ev, controller=davies_controller)
     need_spa = (faults != 0) | ~torch.isfinite(output) | (output >= 5)
     output[need_spa] = torch.nan
     if bool(need_spa.any()):
@@ -789,7 +853,8 @@ def _association_tail(q, eigenvalues, tail_method, *, rank_one_exact=True):
         _DIAGNOSTICS["kuonen_tail_values"] += int(valid.sum())
     failed = ~torch.isfinite(output)
     if bool(failed.any()):
-        strict, strict_fault = davies_logsf(flat[failed], ev, accuracy=1e-9, limit=1000000)
+        strict, strict_fault = davies_logsf(flat[failed], ev, accuracy=1e-9, limit=1000000,
+                                           controller=davies_controller)
         valid_strict = (strict_fault == 0) & torch.isfinite(strict)
         indices = torch.where(failed)[0]
         output[indices[valid_strict]] = strict[valid_strict]
@@ -806,24 +871,33 @@ def _weighted_inputs(score, covariance, weights=None):
         raise ValueError("score/covariance dimensions differ")
     if bool((~torch.isfinite(u)).any() | (~torch.isfinite(k)).any()):
         raise ValueError("finite score and covariance are required")
-    k = (k + k.T) / 2
+    k = k + k.T
+    k.mul_(.5)
     if weights is not None:
         w = _tensor(weights, u).flatten()
         if w.shape != u.shape or bool((w < 0).any()):
             raise ValueError("variant weights must match score and be nonnegative")
-        u, k = u * w, k * w[:, None] * w[None, :]
+        u = u*w
+        k.mul_(w[:, None])
+        k.mul_(w[None, :])
     return u, k
 
 
-def skat_logp(score_vec, cov_mat, weights=None, *, tail_method="regenie"):
+def skat_logp(score_vec, cov_mat, weights=None, *, tail_method="regenie",
+              davies_controller="auto"):
     """SKAT score form, using the source's small-P Kuonen rule by default."""
     u, k = _weighted_inputs(score_vec, cov_mat, weights)
     eigenvalues = _positive_eigenvalues(torch.linalg.eigvalsh(k), 1e-5)
-    return _association_tail(u.square().sum(), eigenvalues, tail_method)
+    return _association_tail(u.square().sum(), eigenvalues, tail_method,
+                             davies_controller=davies_controller)
 
 
 def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-4,
-              tail_method="regenie"):
+              tail_method="regenie", eigen_backend="dense", secular_min_size=4096,
+              secular_root_chunk=256, secular_iterations=64, davies_controller="auto",
+              native_validity=False, integral_backend="segmented",
+              integral_epsabs=1e-25, integral_epsrel=2.**-13,
+              integral_max_intervals=1000):
     """SKAT, burden, rho p-values, actual SKAT-O and SKAT-O-ACAT.
 
     Returns a dict with SKAT/BURDEN/SKATO/SKATO-ACAT and ``rho_log10ps``/
@@ -834,18 +908,83 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
     than use an exact rho=1 endpoint. ``rhos`` reports the effective values.
     ``tail_method='regenie'`` uses Davies with the original budget failures
     and P<=1e-5 Kuonen switch; ``'exact'`` retains checked mixture tails.
+    ``native_validity=True`` also applies REGENIE's multi-rho validity gate.
+    An empty deflated spectrum or negative moment variance returns
+    ``kernel_valid=False`` without numerical kernel results. ACAT-V is a
+    separate test and remains available to the gene caller. The default
+    retains the mathematical API's treatment of degenerate kernels.
+    ``integral_backend`` is segmented (the original mathematical API),
+    adaptive_x (original chi-square coordinate), or adaptive_sqrt (remove
+    the density singularity). Adaptive backends use independent device-side
+    Gauss-Kronrod 21 rules with an absolute/relative error budget. An unmet
+    budget uses REGENIE's Bonferroni fallback, or returns SKATO=None when
+    that fallback is unavailable. Native validity also preserves the
+    conditional probability underflow failure and the 10*DBL_MIN probability
+    floor, and omits SKATO if its integrated probability exceeds one.
+    Other kernel tests remain valid.
     """
+    from ._rank_one import rank_one_eigvalsh
+    from ._quadrature import integrate_log_gk21, validate_quadrature_parameters
+    if integral_backend not in {"segmented", "adaptive_x", "adaptive_sqrt"}:
+        raise ValueError("SKAT-O integral backend must be segmented, adaptive_x or adaptive_sqrt")
+    validate_quadrature_parameters(integral_epsabs, integral_epsrel, integral_max_intervals)
+    if davies_controller not in {"auto", "scalar", "numpy"}:
+        raise ValueError("Davies controller must be auto, scalar or numpy")
+    if eigen_backend not in {"dense", "secular", "auto"}:
+        raise ValueError("SKAT-O eigen_backend must be dense, secular, or auto")
+    for name,value in (("secular_min_size",secular_min_size),("secular_root_chunk",secular_root_chunk),
+                       ("secular_iterations",secular_iterations)):
+        if isinstance(value,bool) or not isinstance(value,Integral) or value<1:
+            raise ValueError(f"{name} must be a positive integer")
     u, k = _weighted_inputs(score_vec, cov_mat, weights)
+    use_secular=eigen_backend=="secular" or (eigen_backend=="auto" and k.is_cuda and u.numel()>=secular_min_size)
     rho = _tensor(DEFAULT_RHOS if rhos is None else rhos, u).flatten()
     if not rho.numel() or bool(((rho < 0) | (rho > 1)).any()):
         raise ValueError("SKAT-O rho values must be in [0,1]")
     if rho.numel() > 1:
         rho = rho.clamp(max=0.999)
     ev, basis = torch.linalg.eigh(k)
+    raw_ev=ev
     _positive_eigenvalues(ev)
     skat_eigenvalues = _positive_eigenvalues(ev, 1e-5)
     ev = ev.clamp_min(0)
-    v = ev.sqrt() * basis.sum(0)
+    basis_sum=basis.sum(0)
+    v = ev.sqrt() * basis_sum
+    del basis  # the M x M eigenvector matrix is no longer needed
+    row_sum = k.sum(-1) if native_validity else None
+    gamma1 = row_sum.sum() if native_validity else k.sum()
+    residual_ev = None
+    native_ve = None
+    if native_validity and u.numel() > 1 and rho.numel() > 1:
+        invalid = {"kernel_valid": False, "rhos": rho,
+                   "rho_log10ps": u.new_empty(0)}
+        if float(gamma1) <= 0:
+            return dict(invalid, kernel_failure="empty_residual_spectrum")
+        gamma2 = row_sum.square().sum()
+        gamma3 = row_sum @ k @ row_sum
+        if use_secular:
+            residual_vector = raw_ev*basis_sum/gamma1.sqrt()
+            residual_values = rank_one_eigvalsh(raw_ev, residual_vector, -1.,
+                    backend="secular", root_chunk=secular_root_chunk,
+                    max_iterations=secular_iterations)
+            _DIAGNOSTICS["secular_eigen_calls"] += 1
+        else:
+            # Match get_ztz_evals' division before the outer product. Dividing
+            # a completed outer product can turn an exactly zero rank-one
+            # residual into small positive eigenvalues and invent kernel rows.
+            residual = row_sum[:, None] * (row_sum/gamma1)[None, :]
+            residual.neg_().add_(k)
+            residual_values = torch.linalg.eigvalsh(residual)
+            del residual
+            _DIAGNOSTICS["dense_rho_eigen_calls"] += 1
+        nonnegative = residual_values[residual_values >= 0]
+        cutoff = nonnegative.mean()*1e-5 if nonnegative.numel() else u.new_tensor(0.)
+        residual_ev = residual_values[residual_values > cutoff]
+        if not residual_ev.numel():
+            return dict(invalid, kernel_failure="empty_residual_spectrum")
+        native_ve = 4*(gamma3/gamma1 - gamma2.square()/gamma1.square())
+        if float(2*residual_ev.square().sum() + native_ve) < 0:
+            return dict(invalid, kernel_failure="negative_moment_variance")
     qskat, qburden = u.square().sum(), u.sum().square()
     q = (1 - rho) * qskat + rho * qburden
     rho_eigenvalues = []
@@ -855,39 +994,72 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
             values = skat_eigenvalues
         elif float(ri) == 1:
             values = v.square().sum().reshape(1)
+        elif use_secular:
+            values=_positive_eigenvalues(rank_one_eigvalsh((1-ri)*ev,v,float(ri),
+                    backend="secular",root_chunk=secular_root_chunk,
+                    max_iterations=secular_iterations),1e-5)
+            _DIAGNOSTICS["secular_eigen_calls"]+=1
         else:
-            transformed = (1 - ri) * torch.diag(ev) + ri * v[:, None] * v[None, :]
+            _DIAGNOSTICS["dense_rho_eigen_calls"]+=1
+            # One dense rho kernel, with the same separately rounded multiply
+            # then add. Building a diagonal matrix and multiple M x M scaled
+            # terms can exceed the budget for large noncoding masks.
+            transformed = (ri*v)[:, None] * v[None, :]
+            transformed.diagonal().add_((1-ri)*ev)
             values = _positive_eigenvalues(torch.linalg.eigvalsh(transformed), 1e-5)
+            del transformed
         rho_eigenvalues.append(values)
-        lp.append(_association_tail(qi, values, tail_method))
+        lp.append(_association_tail(qi, values, tail_method, davies_controller=davies_controller))
     rho_lp = torch.stack(lp)
-    skat = _association_tail(qskat, skat_eigenvalues, tail_method)
-    gamma1 = k.sum()
+    skat = _association_tail(qskat, skat_eigenvalues, tail_method, davies_controller=davies_controller)
     burden = chi2_logsf(qburden / gamma1) if float(gamma1) > 0 else u.new_tensor(0.)
     result = {"SKAT": skat, "BURDEN": burden, "SKATO-ACAT": acat_logp(rho_lp),
-              "rho_log10ps": rho_lp, "rhos": rho}
+              "rho_log10ps": rho_lp, "rhos": rho, "kernel_valid": True}
     if u.numel() == 1 or rho.numel() == 1:
         result["SKATO"] = rho_lp.max()
         result["SKATO-ACAT"] = rho_lp[0]
         return result
-    if float(gamma1) <= 1e-14 * float(k.diagonal().sum()):
+    if not native_validity and float(gamma1) <= 1e-14 * float(k.diagonal().sum()):
         result["SKATO"] = skat
         return result
     row_sum = k.sum(-1)
     gamma2 = row_sum.square().sum()
     gamma3 = row_sum @ k @ row_sum
-    residual = k - row_sum[:, None] * row_sum[None, :] / gamma1
-    residual_ev = _positive_eigenvalues(torch.linalg.eigvalsh(residual), 1e-5)
-    if not residual_ev.numel() or float(residual_ev.square().sum()) < float(ev.square().sum()) * 1e-20:
+    if residual_ev is not None:
+        pass  # The native validity gate already computed the deflated spectrum.
+    elif use_secular:
+        # K=B diag(lambda) B.T and K@1=B(lambda*(B.T@1)). Keep
+        # raw lambda for this representation, including harmless zero rounding.
+        residual_vector=raw_ev*basis_sum/gamma1.sqrt()
+        residual_ev=_positive_eigenvalues(rank_one_eigvalsh(raw_ev,residual_vector,-1.,
+                    backend="secular",root_chunk=secular_root_chunk,
+                    max_iterations=secular_iterations),1e-5)
+        _DIAGNOSTICS["secular_eigen_calls"]+=1
+    else:
+        _DIAGNOSTICS["dense_rho_eigen_calls"]+=1
+        residual = row_sum[:, None] * row_sum[None, :]
+        residual.div_(gamma1)
+        residual.neg_()
+        residual.add_(k)
+        residual_ev = _positive_eigenvalues(torch.linalg.eigvalsh(residual), 1e-5)
+    if not residual_ev.numel() or (not native_validity and
+            float(residual_ev.square().sum()) < float(ev.square().sum()) * 1e-20):
         result["SKATO"] = rho_lp.max()
         return result
     mu = residual_ev.sum()
     v0 = 2 * residual_ev.square().sum()
-    ve = (4 * (gamma3 / gamma1 - gamma2.square() / gamma1.square())).clamp_min(0)
+    ve = native_ve if native_ve is not None else (
+        4 * (gamma3 / gamma1 - gamma2.square() / gamma1.square())).clamp_min(0)
     correction = (v0 / (v0 + ve)).sqrt()
     tau = gamma1 * rho + gamma2 / gamma1 * (1 - rho)
     minlp = rho_lp.max()
-    if float(minlp) < 1e-14:
+    maximum_native_logp = -math.log10(10*torch.finfo(torch.float64).tiny)
+    if native_validity:
+        # Source get_Qmin receives max(10*DBL_MIN, minP). Keep this after
+        # the single-site/fixed-rho bypasses, which do not use that integral.
+        minlp = minlp.clamp(max=maximum_native_logp)
+    minimum_logp = -math.log10(1-torch.finfo(torch.float32).eps) if native_validity else 1e-14
+    if float(minlp) <= minimum_logp:
         result["SKATO"] = u.new_tensor(0.)
         return result
     moments1 = torch.stack([e.sum() for e in rho_eigenvalues])
@@ -898,6 +1070,57 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
     upper = ((critical + (1 - rho) * mu * (1 - correction) / correction) / tau).min()
     if float(upper) <= 0:
         result["SKATO"] = u.new_tensor(0.)
+        return result
+    if integral_backend != "segmented":
+        _DIAGNOSTICS["skato_integral_calls"] += 1
+
+        def log_integrand(coordinate):
+            x = coordinate.square() if integral_backend == "adaptive_sqrt" else coordinate
+            # Preserve source subtraction before dividing by 1-rho. Integrate
+            # the entire interval, as the original adaptive route does.
+            envelope = ((critical[:, None]-tau[:, None]*x[None, :]) /
+                        (1-rho[:, None])).amin(0)
+            threshold = ((envelope-mu)*correction+mu).clamp_min(0)
+            conditional_lp = _association_tail(threshold, residual_ev, tail_method,
+                                              rank_one_exact=False, davies_controller=davies_controller)
+            log_survival = -conditional_lp*_LN10
+            active = (threshold > 0) & (envelope <= mu*1e4)
+            # IEEE float64 rounds half the smallest subnormal to zero.
+            # CUDA exp can round to zero earlier at its extreme lower end.
+            if native_validity and bool((active & (log_survival <= -1075*math.log(2.))).any()):
+                # SKATO_integral_fn treats S<=0 as a failed integral. Its
+                # deliberate zero for envelope>mu*1e4 is exempt from failure.
+                raise ArithmeticError("SKAT-O conditional probability underflowed.")
+            log_survival = torch.where(envelope > mu*1e4,
+                                        torch.full_like(log_survival, -torch.inf), log_survival)
+            if integral_backend == "adaptive_sqrt":
+                return log_survival-x/2 + .5*math.log(2/math.pi)
+            return log_survival-x/2 - .5*(math.log(2*math.pi)+x.log())
+
+        integration_upper = upper.sqrt() if integral_backend == "adaptive_sqrt" else upper
+        try:
+            log_integral, integral_info = integrate_log_gk21(log_integrand, integration_upper,
+                epsabs=integral_epsabs, epsrel=integral_epsrel, max_intervals=integral_max_intervals)
+        except ArithmeticError:
+            integral_info = {"converged": False, "status": "integrand_failure",
+                             "evaluations": 0, "intervals": 0}
+            log_integral = u.new_tensor(-torch.inf)
+        result["integral_diagnostics"] = integral_info
+        _DIAGNOSTICS["skato_quadrature_values"] += integral_info["evaluations"]
+        _DIAGNOSTICS["skato_quadrature_intervals"] += integral_info["intervals"]
+        bonferroni_lp = minlp-math.log10(rho.numel())
+        if not integral_info["converged"]:
+            _DIAGNOSTICS["skato_integral_failures"] += 1
+            result["SKATO"] = bonferroni_lp if float(bonferroni_lp) >= 0 else None
+            result["integral_fallback"] = "bonferroni" if result["SKATO"] is not None else "unavailable"
+            return result
+        log_probability = torch.logaddexp(log_integral, -chi2_logsf(upper)*_LN10)
+        selected_lp = torch.maximum(-log_probability/_LN10, bonferroni_lp)
+        # REGENIE first applies Bonferroni, then rejects a probability > 1.
+        # Clamping either candidate beforehand would invent a P=1 result.
+        result["SKATO"] = (None if native_validity and float(selected_lp) < 0
+                           else selected_lp.clamp(min=0, max=maximum_native_logp)
+                           if native_validity else selected_lp.clamp_min(0))
         return result
     keep = rho < 1
     intercept = critical[keep] / (1 - rho[keep])
@@ -925,8 +1148,19 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
             envelope = (intercept[:, None] - slope[:, None] * t.square()).amin(0)
             threshold = ((envelope - mu) * correction + mu).clamp_min(0)
             conditional_lp = _association_tail(threshold, residual_ev, tail_method,
-                                               rank_one_exact=False)
-            terms = -conditional_lp * _LN10 - t.square() / 2
+                                              rank_one_exact=False, davies_controller=davies_controller)
+            log_survival = -conditional_lp*_LN10
+            active = (threshold > 0) & (envelope <= mu*1e4)
+            if native_validity and bool((active & (log_survival <= -1075*math.log(2.))).any()):
+                _DIAGNOSTICS["skato_integral_failures"] += 1
+                bonferroni_lp = minlp-math.log10(rho.numel())
+                result["SKATO"] = bonferroni_lp if float(bonferroni_lp) >= 0 else None
+                result["integral_fallback"] = "bonferroni" if result["SKATO"] is not None else "unavailable"
+                return result
+            terms = log_survival - t.square() / 2
+            if native_validity:
+                terms = torch.where(envelope > mu*1e4,
+                                    torch.full_like(terms, -torch.inf), terms)
             terms += (quadrature_weights * (hi - lo) / 2).log() + 0.5 * math.log(2 / math.pi)
             logparts.append(torch.logsumexp(terms, 0))
         logparts.append(-chi2_logsf(upper) * _LN10)
@@ -937,8 +1171,11 @@ def skato_logp(score_vec, cov_mat, weights=None, rhos=None, *, integral_rtol=2e-
     else:
         raise ArithmeticError("SKAT-O rho integral failed its convergence check")
     # This is the same upper bound on the approximation used by REGENIE.
-    bonferroni_lp = (minlp - math.log10(rho.numel())).clamp_min(0)
-    result["SKATO"] = torch.maximum((-log_probability / _LN10).clamp_min(0), bonferroni_lp)
+    bonferroni_lp = minlp - math.log10(rho.numel())
+    selected_lp = torch.maximum(-log_probability / _LN10, bonferroni_lp)
+    result["SKATO"] = (None if native_validity and float(selected_lp) < 0
+                       else selected_lp.clamp(min=0, max=maximum_native_logp)
+                       if native_validity else selected_lp.clamp_min(0))
     return result
 
 
@@ -954,10 +1191,73 @@ def _normal_quantile_logp(logp):
     return torch.where(moderate, regular, x)
 
 
+def _normal_orthant_four(correlation, *, absolute_tolerance=2e-10):
+    """Plackett's correlation derivative integrated along I+t*(R-I).
+
+    For each of the six pairs, the derivative is its bivariate density at
+    zero times the remaining conditional bivariate orthant probability.
+    Reference: Plackett (1954), Biometrika 41, 351-360,
+    https://doi.org/10.1093/biomet/41.3-4.351.
+    The substitution t=sin(theta) smooths the square-root singularity when
+    a pair correlation approaches one. Adaptive 32/64-point integration
+    checks each interval on the tensor device; no sample matrix leaves it.
+    """
+    corr = (correlation + correlation.T) / 2
+    torch.linalg.cholesky(corr)
+    pairs = tuple(itertools.combinations(range(4), 2))
+    pair = torch.tensor(pairs, device=corr.device)
+    remaining = torch.tensor([[k for k in range(4) if k not in ij]
+                              for ij in pairs], device=corr.device)
+    i, j, a, b = pair[:, 0], pair[:, 1], remaining[:, 0], remaining[:, 1]
+    rij = corr[i, j]
+    ria, rja, rib, rjb, rab = (corr[i, a], corr[j, a], corr[i, b], corr[j, b], corr[a, b])
+
+    def integrate(intervals, order):
+        nodes, weights = _legendre(order, corr)
+        half = (intervals[:, 1] - intervals[:, 0]) / 2
+        theta = (intervals[:, 1] + intervals[:, 0])[:, None] / 2 + half[:, None] * nodes
+        t = theta.sin()[..., None]
+        rho = t * rij
+        denominator = (1-rho) * (1+rho)
+        ua, va, ub, vb = t*ria, t*rja, t*rib, t*rjb
+        # Diagonalize the conditioned 2x2 pair. Forming the usual quadratic
+        # numerator before dividing loses two powers of (1-|rho|) near one.
+        plus_a, plus_b = (ua+va)/(2*(1+rho)).sqrt(), (ub+vb)/(2*(1+rho)).sqrt()
+        minus_a, minus_b = (ua-va)/(2*(1-rho)).sqrt(), (ub-vb)/(2*(1-rho)).sqrt()
+        conditional_a = 1-plus_a.square()-minus_a.square()
+        conditional_b = 1-plus_b.square()-minus_b.square()
+        conditional_ab = t*rab-plus_a*plus_b-minus_a*minus_b
+        conditional_rho = conditional_ab / (conditional_a*conditional_b).clamp_min(
+            torch.finfo(corr.dtype).tiny).sqrt()
+        conditional_probability = .25 + conditional_rho.clamp(-1, 1).asin()/(2*math.pi)
+        derivative = rij/(2*math.pi) / denominator.sqrt() * conditional_probability
+        values = derivative.sum(-1) * theta.cos()
+        return half * (values * weights).sum(-1)
+
+    intervals = corr.new_tensor([[0., math.pi/2]])
+    for _ in range(25):
+        low, high = integrate(intervals, 32), integrate(intervals, 64)
+        error = (high-low).abs()
+        if float(error.sum()) <= absolute_tolerance:
+            probability = corr.new_tensor(1/16) + high.sum()
+            if not bool(torch.isfinite(probability)) or not -absolute_tolerance <= float(probability) <= .5+absolute_tolerance:
+                raise ArithmeticError("four-dimensional orthant integral is outside its probability range")
+            return probability.clamp(0, .5)
+        if intervals.shape[0] > 4096:
+            break
+        refine = error > absolute_tolerance / intervals.shape[0]
+        selected = intervals[refine]
+        midpoint = selected.mean(-1)
+        intervals = torch.cat((intervals[~refine], torch.stack((selected[:, 0], midpoint), -1),
+                               torch.stack((midpoint, selected[:, 1]), -1)))
+    raise ArithmeticError("four-dimensional orthant integral failed its convergence check")
+
+
 def normal_orthant_probability(covariance, *, qmc_samples=8192, seed=0):
     """Zero-mean positive orthant probability, analytic for dimension<=3.
 
-    Larger dimensions use a scrambled Sobol Genz conditional integral.  Only
+    Dimension four uses checked deterministic Plackett integration. Larger
+    dimensions use a scrambled Sobol Genz conditional integral. Only
     the Sobol constants originate on CPU; triangular integration is on the
     covariance device.  ``qmc_samples`` controls numerical approximation.
     """
@@ -976,6 +1276,9 @@ def normal_orthant_probability(covariance, *, qmc_samples=8192, seed=0):
     if n == 3:
         return 0.125 + (torch.asin(corr[0, 1]) + torch.asin(corr[0, 2])
                         + torch.asin(corr[1, 2])) / (4 * math.pi)
+    if n == 4:
+        _DIAGNOSTICS["orthant_plackett_calls"] += 1
+        return _normal_orthant_four(corr)
     _DIAGNOSTICS["orthant_qmc_calls"] += 1
     chol = torch.linalg.cholesky((corr + corr.T) / 2)
     sobol = torch.quasirandom.SobolEngine(n - 1, scramble=True, seed=seed)
@@ -992,15 +1295,21 @@ def normal_orthant_probability(covariance, *, qmc_samples=8192, seed=0):
     return torch.exp(torch.logsumexp(log_product, 0) - math.log(qmc_samples))
 
 
-def chi_bar_weights(gram, *, max_subsets=10, qmc_samples=8192, seed=0):
+def chi_bar_weights(gram, *, max_subsets=10, qmc_samples=8192, seed=0,
+                    subset_sampling="unique"):
     """NNLS null weights indexed by df=0,...,m.
 
     Enumerate each active-set size when it has <=max_subsets combinations;
     otherwise sample subsets uniformly, multiply by their number, and
     normalize only the sampled weights to preserve the exact endpoint
-    weights.  Set max_subsets=0 for complete subset enumeration.
+    weights. Set max_subsets=0 for complete subset enumeration. Native
+    REGENIE draws subsets with replacement; subset_sampling='with_replacement'
+    selects that policy, while 'unique' preserves the earlier release's policy.
+    The local generator/seed makes each analysis independent of worker order.
     """
     k = _tensor(gram)
+    if subset_sampling not in {"unique", "with_replacement"}:
+        raise ValueError("subset_sampling must be unique or with_replacement")
     m = k.shape[0]
     norm = k.diagonal().sqrt()
     k = k / norm[:, None] / norm[None, :]
@@ -1017,10 +1326,15 @@ def chi_bar_weights(gram, *, max_subsets=10, qmc_samples=8192, seed=0):
         approximate = max_subsets > 0 and total > max_subsets
         if approximate:
             sampled.append(active_count)
-            subsets = set()
-            while len(subsets) < max_subsets:
-                subset = torch.randperm(m, generator=generator, device=k.device)[:active_count]
-                subsets.add(tuple(sorted(subset.tolist())))
+            if subset_sampling == "with_replacement":
+                subsets = [tuple(sorted(torch.randperm(m, generator=generator,
+                                       device=k.device)[:active_count].tolist()))
+                           for _ in range(max_subsets)]
+            else:
+                subsets = set()
+                while len(subsets) < max_subsets:
+                    subset = torch.randperm(m, generator=generator, device=k.device)[:active_count]
+                    subsets.add(tuple(sorted(subset.tolist())))
         else:
             subsets = itertools.combinations(indices, active_count)
         contributions = []
@@ -1094,7 +1408,7 @@ def _chi_bar_logsf(statistic, weights):
 
 
 def sbat_logp(score_vec, cov_mat, *, variance_scale=1.0, max_subsets=10,
-              qmc_samples=8192, seed=0, mixture_weights=None):
+              qmc_samples=8192, seed=0, mixture_weights=None, subset_sampling="unique"):
     """SBAT from mask score/covariance, with an explicit full-OLS variance.
 
     To reproduce QT REGENIE, pass ``variance_scale = (r'r-U'K^-1 U)/(N-q-m)``;
@@ -1116,7 +1430,7 @@ def sbat_logp(score_vec, cov_mat, *, variance_scale=1.0, max_subsets=10,
     positive = nnls_coefficients(normalized_u, normalized)
     negative = nnls_coefficients(-normalized_u, normalized)
     w = chi_bar_weights(normalized, max_subsets=max_subsets, qmc_samples=qmc_samples,
-                        seed=seed) if mixture_weights is None else _tensor(mixture_weights, u)
+                        seed=seed, subset_sampling=subset_sampling) if mixture_weights is None else _tensor(mixture_weights, u)
     if (w.shape != (u.numel() + 1,) or bool((w < 0).any())
             or not bool(torch.isfinite(w).all()) or not bool(w.sum() > 0)):
         raise ValueError("SBAT mixture weights must have m+1 finite nonnegative entries")

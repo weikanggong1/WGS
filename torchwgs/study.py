@@ -3,7 +3,7 @@ from pathlib import Path
 from .pipeline import GeneAnalysis
 
 MAIN_TYPES=('PTV','Missense','Splice','Inframe','Synonymous','Intron',
-            'UTR_5','UTR_3','Upstream','Downstream','nctev')
+            'UTR_5','UTR_3','Upstream','Downstream','Intergenic','Pseudo','RNA','nctev')
 SUB_COMBINATIONS=(
     ('Intron','GERP2'),('Intergenic','GERP2'),('UTR_5','GERP2'),
     ('UTR_3','GERP2'),('Upstream','GERP2'),('Downstream','GERP2'),
@@ -15,7 +15,7 @@ SUB_COMBINATIONS=(
 def study_gene_analyses(annotation_root, *, chromosomes=range(1,23),
                         main_types=MAIN_TYPES, sub_combinations=SUB_COMBINATIONS,
                         require_files=True):
-    """Build 11 Main + 12 Sub entries/chromosome from existing annotation files.
+    """Build all 14 Main + 12 Sub entries/chromosome from inspected mask files.
 
     Score names identify supplied whitelist files. They do not infer the numeric
     comparison from a filename, and do not replace the unpublished Table S24.

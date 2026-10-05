@@ -1,0 +1,2 @@
+mode,complete_groups,rows,process_wall_seconds,pipeline_wall_seconds,peak_allocated_bytes,peak_allocated_gib,groups_strict_structure_passed,groups_numeric_passed,memory_retry_count
+serial_subset,6,32842,6473.804485052824,6470.960216626525,6605298688,6.151663780212402,6,0,0

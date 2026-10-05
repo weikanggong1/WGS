@@ -1,0 +1,165 @@
+{
+  "scope": "One captured real RNA 7343-column score/covariance; numerical and stage timing, not full pipeline speed",
+  "vc_columns": 7343,
+  "device": "cuda:0",
+  "eigen_backend": "dense",
+  "davies_controller": "auto",
+  "native_validity": true,
+  "epsabs": 1e-25,
+  "epsrel": 0.0001220703125,
+  "max_intervals": 1000,
+  "source_sha256": {
+    "pipeline.py": "9def3ba81b078758a5e684bbffd7003edbf7be0edb49af4168b455af9bfda8cc",
+    "_rank_one.py": "5b6d63af894a62afcb1c0dc16e09c93227e2e4190e155b961ea2da099d8b529d",
+    "statistics.py": "7afd15862cf811cfe69ed1c151624cdd62dff763f69f2edd019f4d21bf30497b",
+    "_quadrature.py": "01ef6962410db503090256081779b168f9545293e17215ff83cbf95bd6d717b5",
+    "cli.py": "a6140c9370f1bbf302cb7089b20cf1678723c85661911f979bf563562a55b292",
+    "gene.py": "a73296cbf5e753e221171fdc7af03ef462b8f93fea9c96e8c2a564b76da1d8eb",
+    "io.py": "caeafdfe684245d30231a961813007a783767c91baddaff570a59faca9eebf46",
+    "chromosome.py": "790aa3b2664a985a72337bf8a157b7c6dbe1d576c18964fc38cbe9720f433702",
+    "__init__.py": "b512f406746d341f99241aa99a050cc284a6cb8b7947951e6756f29d37e3e178",
+    "output.py": "5a1cb93f0da7d509a59e1283d720c4d85255cc8cafc3914f4a47671db1736381",
+    "study.py": "69ce688df74ede507de2fb1c1e45f2d660aa2fc9a105867241106944afc10833",
+    "masks.py": "058e9aa5a0d91edd2814815235965c5a2df48dbe835c7f18206138ae6206b387",
+    "step1.py": "67a4794eedbc76340e1f8089102ce3c727bb66766820090b11181bc0831a7ea9",
+    "_davies_bounds.py": "4a652f76e07456130153c68a079a83e97af2578109764735973e5c670623f823",
+    "mask_output.py": "9055cc915647a25a71ca715b1dcb75b1bf8d7f0e20c5dd718accc3be68962821",
+    "summary.py": "850bf0dbb64b63650bbd01180e37d9d5294e60e004139fd47d6a2c9395553375",
+    "_norm_gpu.py": "58bd5bbc04f5ffbb42179f419355e42cbd84dd4d1e97ca60953b5bab860398b7",
+    "config.py": "cbc074116979949279594d396d747aa8b20019289e7da2dcb644e587d8243729",
+    "single.py": "279b1145084280cc9237ec03f8c43882834ebcde8903f8bd44cecf62e0ef5da1",
+    "execution.py": "5e8380848e9de541652e84d4376999a82d48137bc56e6290af099c089076730e",
+    "phenotype.py": "92234f702b70add5870bdcf4638ab0d9219aa2bbcf0e970bf48f95e8a34a2ae8"
+  },
+  "stages": {
+    "segmented": {
+      "wall_seconds": 13.822763428092003,
+      "peak_gpu_bytes": 3031618048,
+      "kernel_valid": true,
+      "integral_diagnostics": null,
+      "numerical_diagnostics": {
+        "gpu_tail_calls": 0,
+        "cpu_tail_fallback_calls": 0,
+        "torch_cpu_tail_calls": 0,
+        "davies_tail_values": 585,
+        "davies_failure_values": 1,
+        "davies_integration_terms": 15762,
+        "davies_controller_seconds": 2.6442874372005463,
+        "kuonen_tail_values": 1,
+        "liu_fallback_values": 0,
+        "cpu_tail_fallback_seconds": 0.0,
+        "orthant_qmc_calls": 0,
+        "orthant_plackett_calls": 0,
+        "skato_integral_calls": 1,
+        "skato_quadrature_values": 0,
+        "skato_quadrature_intervals": 0,
+        "skato_integral_failures": 0,
+        "secular_eigen_calls": 0,
+        "dense_rho_eigen_calls": 8
+      }
+    },
+    "adaptive_sqrt": {
+      "wall_seconds": 12.984932199120522,
+      "peak_gpu_bytes": 3031618048,
+      "kernel_valid": true,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 819,
+        "intervals": 20,
+        "relative_error_estimate": 9.815205493924633e-05,
+        "log_error_estimate": -11.50216852707054
+      },
+      "numerical_diagnostics": {
+        "gpu_tail_calls": 0,
+        "cpu_tail_fallback_calls": 0,
+        "torch_cpu_tail_calls": 0,
+        "davies_tail_values": 828,
+        "davies_failure_values": 1,
+        "davies_integration_terms": 18762,
+        "davies_controller_seconds": 3.7370792478322983,
+        "kuonen_tail_values": 1,
+        "liu_fallback_values": 0,
+        "cpu_tail_fallback_seconds": 0.0,
+        "orthant_qmc_calls": 0,
+        "orthant_plackett_calls": 0,
+        "skato_integral_calls": 1,
+        "skato_quadrature_values": 819,
+        "skato_quadrature_intervals": 20,
+        "skato_integral_failures": 0,
+        "secular_eigen_calls": 0,
+        "dense_rho_eigen_calls": 8
+      }
+    },
+    "adaptive_x": {
+      "wall_seconds": 18.474413976073265,
+      "peak_gpu_bytes": 3031619584,
+      "kernel_valid": true,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 1869,
+        "intervals": 45,
+        "relative_error_estimate": 9.588703875722711e-05,
+        "log_error_estimate": -11.525517344028298
+      },
+      "numerical_diagnostics": {
+        "gpu_tail_calls": 0,
+        "cpu_tail_fallback_calls": 0,
+        "torch_cpu_tail_calls": 0,
+        "davies_tail_values": 1878,
+        "davies_failure_values": 1,
+        "davies_integration_terms": 30298,
+        "davies_controller_seconds": 8.52566796541214,
+        "kuonen_tail_values": 1,
+        "liu_fallback_values": 0,
+        "cpu_tail_fallback_seconds": 0.0,
+        "orthant_qmc_calls": 0,
+        "orthant_plackett_calls": 0,
+        "skato_integral_calls": 1,
+        "skato_quadrature_values": 1869,
+        "skato_quadrature_intervals": 45,
+        "skato_integral_failures": 0,
+        "secular_eigen_calls": 0,
+        "dense_rho_eigen_calls": 8
+      }
+    }
+  },
+  "comparisons": {
+    "adaptive_sqrt_versus_segmented": {
+      "bit_equal": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      },
+      "absolute_skato_log10p_difference": 2.491459294429177e-08
+    },
+    "adaptive_x_versus_segmented": {
+      "bit_equal": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      },
+      "absolute_skato_log10p_difference": 3.0621503732675137e-07
+    },
+    "adaptive_sqrt_versus_adaptive_x": {
+      "absolute_skato_log10p_difference": 3.3112963027104314e-07
+    }
+  },
+  "completed": true,
+  "private_identity_exported": false,
+  "wall_seconds": 45.307626977562904,
+  "source_unchanged_during_run": true,
+  "torch_threads": 2,
+  "gpu_budget_gib": 20.0,
+  "timing_note": "One stage-level check on shared A100, not full pipeline or isolated-hardware speed.",
+  "privacy_audit": {
+    "gene_site_sample_ids_present": false,
+    "private_paths_present": false,
+    "statistics_matrices_included": false
+  }
+}

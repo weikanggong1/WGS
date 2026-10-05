@@ -4,14 +4,15 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import json
 import unittest
+import weakref
 from unittest.mock import patch
 
 import torch
 
-from torchwgs.masks import (Annotation, FrequencyDomain, GeneConfig, GeneSet,
+from torchwgs.masks import (Annotation, FrequencyDomain, GeneConfig, GeneMaskBuilder, GeneSet,
                             MaskDefinition, PreparedMask, beta_maf_weights,
                             build_gene_masks, load_annotations, load_mask_definitions,
-                            load_setlist, orient_alt)
+                            load_setlist, load_variant_whitelist, orient_alt)
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,6 +35,59 @@ class Context:
 
 
 class MaskTests(unittest.TestCase):
+    def test_score_whitelist_candidate_filter_matches_complete_source_membership(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "score.extract"
+            path.write_text("# original annotation score ids\nv0\nv1 .7\n\nv1 .7\nv2 .8\nv3\n")
+            complete = load_variant_whitelist(path)
+            candidates = {"v1", "v3", "not_in_source"}
+            self.assertEqual(load_variant_whitelist(path, variant_ids=candidates),
+                             complete.intersection(candidates))
+            self.assertEqual(load_variant_whitelist(path, variant_ids=[]), frozenset())
+            self.assertEqual(candidates, {"v1", "v3", "not_in_source"})
+
+    def test_all_masks_share_regular_vc_storage_and_release_after_last_mask(self):
+        genotype = torch.zeros((1000, 4), device=DEVICE, dtype=torch.float64)
+        for column in range(4):
+            genotype[column*12:(column+1)*12, column] = 1
+        identifiers = [f"v{i}" for i in range(4)]
+        annotations = [Annotation(identifier, "G", "A", "R") for identifier in identifiers]
+        definitions = [MaskDefinition(f"Mask{i}", frozenset(["A"])) for i in range(10)]
+        # Ten masks times domain/overall would exceed this limit if every VC
+        # input were copied. One shared input plus one mask's working matrix fits.
+        configuration = GeneConfig(include_singletons=False, max_matrix_bytes=110000)
+        builder = GeneMaskBuilder(annotations, definitions, 1000, DEVICE,
+                                  torch.float64, configuration)
+        builder.update(identifiers, genotype)
+        self.assertEqual(builder.retained_bytes, genotype.numel()*8)
+        references = [state.vc_chunks[0].shared for state in builder.states]
+        self.assertTrue(all(shared is references[0] for shared in references))
+        masks = builder.finish_iter()
+        count = 0
+        for mask in masks:
+            count += 1
+            torch.testing.assert_close(mask.vc_genotypes, genotype, atol=0, rtol=0)
+            self.assertEqual(mask.variant_ids, tuple(identifiers))
+        self.assertEqual(count, 20)
+        self.assertEqual(builder.retained_bytes, 0)
+        self.assertIsNone(references[0].values)
+        with self.assertRaises(RuntimeError):
+            list(builder.finish_iter())
+
+    def test_empty_and_low_mac_masks_release_shared_storage(self):
+        genotype = torch.zeros((1000, 2), device=DEVICE, dtype=torch.float64)
+        genotype[:12, 0] = 1
+        genotype[12:24, 1] = 1
+        definitions = [MaskDefinition("M1", frozenset(["A"])),
+                       MaskDefinition("M2", frozenset(["B"]))]
+        annotations = [Annotation("v1", "G", "A", "R"),
+                       Annotation("v2", "G", "B", "UR")]
+        builder = GeneMaskBuilder(annotations, definitions, 1000, DEVICE, torch.float64,
+                                  GeneConfig(min_mac=30))
+        builder.update(["v1", "v2"], genotype)
+        self.assertEqual(list(builder.finish_iter()), [])
+        self.assertEqual(builder.retained_bytes, 0)
+
     def test_json_configuration_roundtrip_builds_actual_masks(self):
         from torchwgs.config import WGSConfig
         original = WGSConfig.paper(apply_rint=False)
@@ -47,8 +101,16 @@ class MaskTests(unittest.TestCase):
                          {(None, "singleton"), (None, "0.01"),
                           ("UR", "singleton"), ("UR", "0.01")})
         self.assertFalse(loaded.gene_based.apply_rint)
+        self.assertEqual(loaded.gene_based.skato_integral_backend, "adaptive_x")
+        self.assertEqual(loaded.gene_based.skato_integral_epsabs, 1e-25)
+        self.assertEqual(loaded.gene_based.skato_integral_epsrel, 2.**-13)
+        self.assertEqual(loaded.gene_based.skato_integral_max_intervals, 1000)
         with self.assertRaises(ValueError):
             GeneConfig(skato_rhos=[float("nan")])
+        for values in ({"skato_integral_backend": "unknown"}, {"skato_integral_epsabs": -1},
+                       {"skato_integral_epsrel": 0}, {"skato_integral_max_intervals": 0}):
+            with self.assertRaises(ValueError):
+                GeneConfig(**values)
 
     def test_custom_beta_weights_use_gpu_beta_density(self):
         maf = torch.tensor([.001, .01, .5], device=DEVICE, dtype=torch.float64)
@@ -137,6 +199,177 @@ class MaskTests(unittest.TestCase):
 
 
 class GeneTests(unittest.TestCase):
+    def test_failed_kernel_retains_acatv_and_uses_separate_joint_mask_counts(self):
+        from torchwgs.gene import test_prepared_gene
+        from torchwgs.statistics import acat_logp
+        n = 1024
+        y = torch.sin(torch.arange(n, device=DEVICE, dtype=torch.float64)*.37)
+        y -= y.mean()
+        y *= ((n-1)/y.square().sum()).sqrt()
+        context = Context(y)
+        first = torch.zeros(n, device=DEVICE, dtype=torch.float64)
+        second = torch.zeros_like(first)
+        first[:16], second[32:48] = 1., 1.
+        duplicate = first[:, None].expand(n, 3).clone()
+        masks = [PreparedMask("failed", "failed", None, "0.01", .01,
+                    ("a", "b", "c"), first, .0078125, 16., n, duplicate,
+                    first.new_full((3,), .0078125), beta_a=1., beta_b=1.),
+                 PreparedMask("valid", "valid", None, "0.01", .01,
+                    ("d",), second, .0078125, 16., n, second[:, None],
+                    first.new_tensor([.0078125]), beta_a=1., beta_b=1.)]
+        configuration = GeneConfig(run_sbat=False)
+        gene = GeneSet("G", "21", 1, ("a", "b", "c", "d"))
+        for selected, expected_components in ((masks[:1], 2), (masks, 3)):
+            rows = test_prepared_gene(gene, selected, context, configuration)
+            failed_tests = {row["TEST"] for row in rows
+                            if row["ID"] == "G.failed.0.01"}
+            self.assertEqual(failed_tests, {"ADD", "ADD-ACATV"})
+            joint = {row["TEST"]: row for row in rows if row["ID"] == "G"}
+            self.assertEqual(joint["ADD-ACATV-ACAT"]["EXTRA"], f"DF={len(selected)}")
+            if len(selected) == 1:
+                self.assertNotIn("ADD-SKATO-ACAT", joint)
+            else:
+                self.assertEqual(joint["ADD-SKATO-ACAT"]["EXTRA"], "DF=1")
+            self.assertTrue(joint["GENE_P"]["EXTRA"].startswith(f"DF={expected_components}"))
+            component_tests = ["ADD-BURDEN-ACAT", "ADD-ACATV-ACAT"]
+            if len(selected) > 1:
+                component_tests.append("ADD-SKATO-ACAT")
+            expected = acat_logp(first.new_tensor([joint[test]["LOG10P"]
+                                                  for test in component_tests]))
+            self.assertAlmostEqual(joint["GENE_P"]["LOG10P"], float(expected), places=12)
+
+    def test_packed_gene_reader_preserves_all_results_masks_missingness_and_sample_order(self):
+        from torchwgs.gene import test_gene_based
+        from torchwgs.io import BedReader, Variant, write_bed
+        with TemporaryDirectory() as directory:
+            identifiers = [(str(i), str(i)) for i in range(1004)]
+            variants = [Variant(i, "21", f"v{i}", i+1, "A", "G") for i in range(4)]
+            genotype = torch.zeros((1004, 4), dtype=torch.float64)
+            genotype[5:18, 0] = 1
+            genotype[20:36, 1] = 1
+            genotype[40, 2] = 1
+            genotype[45:58, 3] = 1
+            genotype[800:803, :] = torch.nan
+            prefix = Path(directory) / "source"
+            write_bed(prefix, genotype, variants, identifiers)
+            context = Context(torch.sin(torch.arange(1000, dtype=torch.float64)*.37))
+            context.sample_ids = tuple(identifiers[1000:0:-1])
+            annotations = [Annotation(f"v{i}", "G", "A", "UR" if i == 2 else "R")
+                           for i in range(4)]
+            sets = [GeneSet("G", "21", 1, ("v3", "v1", "v0", "v2"))]
+            definitions = [MaskDefinition("Mask1", frozenset(["A"]))]
+            cpu_artifacts, packed_artifacts = [], []
+            expected = list(test_gene_based(BedReader(prefix), context, annotations, sets, definitions,
+                GeneConfig(variant_block_size=2), artifact_callback=cpu_artifacts.append))
+            reader = BedReader(prefix)
+            with patch.object(reader, "read_variants", side_effect=AssertionError("expanded CPU decoding called")):
+                observed = list(test_gene_based(reader, context, annotations, sets, definitions,
+                    GeneConfig(variant_block_size=2, genotype_reader="cuda_packed"),
+                    artifact_callback=packed_artifacts.append))
+            self.assertEqual(observed, expected)
+            self.assertEqual(len(cpu_artifacts[0].masks), len(packed_artifacts[0].masks))
+            for actual, reference in zip(packed_artifacts[0].masks, cpu_artifacts[0].masks):
+                self.assertEqual((actual.name, actual.frequency, actual.variant_ids, actual.n_observed),
+                                 (reference.name, reference.frequency, reference.variant_ids, reference.n_observed))
+                torch.testing.assert_close(actual.raw_burden, reference.raw_burden, atol=0, rtol=0,
+                                           equal_nan=True)
+        with self.assertRaises(ValueError):
+            GeneConfig(genotype_reader="invalid")
+
+    def test_burden_sample_count_excludes_missing_while_vc_uses_active_samples(self):
+        from torchwgs.gene import test_prepared_gene
+        genotype = torch.zeros(1000, device=DEVICE, dtype=torch.float64)
+        genotype[:15] = 1
+        genotype[-3:] = torch.nan
+        mask = PreparedMask("M", "M", None, "0.01", .01, ("v",), genotype,
+                            15/(2*997), 15., 997, genotype[:, None],
+                            torch.tensor([15/(2*997)], device=DEVICE))
+        context = Context(torch.sin(torch.arange(1000, dtype=torch.float64)*.37))
+        rows = test_prepared_gene(GeneSet("G", "1", 1, ("v",)), [mask], context)
+        self.assertEqual([row["N"] for row in rows if row["TEST"] == "ADD"], [997])
+        self.assertTrue(all(row["N"] == 1000 for row in rows if row["TEST"] != "ADD"))
+
+    def test_crossproduct_dense_and_sparse_scores_match_projected_formula_with_missing(self):
+        from torchwgs.gene import _score_covariance, _vc_score_covariance
+        from torchwgs.single import create_test_context
+        rows = torch.arange(1000, dtype=torch.float64)
+        covariates = torch.stack([torch.sin(rows*.02), rows/1000], 1)
+        y = torch.sin(rows*.37) + rows*.001
+        context = create_test_context(y, covariates=covariates, apply_rint=False,
+                                      device="cpu", dtype="float32")
+        # LOCO subtraction can leave a covariate component in y. The source's
+        # U correction must be retained even though genotypes use raw products.
+        context.y_float64 += context.covariates_q_float64[:, 1]*.13
+        genotypes = torch.zeros((1000, 5), dtype=torch.float64)
+        for column in range(4):
+            genotypes[column*13:(column+1)*13, column] = 1
+            genotypes[800+column, column] = torch.nan
+        genotypes[:, 4] = torch.nan
+        score, covariance, _ = _score_covariance(genotypes, context)
+        for storage in (genotypes, genotypes.to_sparse_coo()):
+            actual = _vc_score_covariance(storage, context, method="crossproduct", block_size=2)
+            torch.testing.assert_close(actual[0], score, atol=2e-12, rtol=2e-12)
+            torch.testing.assert_close(actual[1], covariance, atol=2e-11, rtol=2e-12)
+        with self.assertRaises(ValueError):
+            GeneConfig(vc_storage="sparse")
+
+    def test_sparse_mask_storage_preserves_imputation_and_full_gene_results(self):
+        from torchwgs.gene import test_prepared_gene
+        genotype = torch.zeros((1000, 3), dtype=torch.float64)
+        genotype[:12, 0] = 1
+        genotype[12:28, 1] = 1
+        genotype[28, 2] = 1
+        genotype[900:903, :] = torch.nan
+        identifiers = ["v0", "v1", "v2"]
+        annotations = [Annotation("v0", "G", "A", "R"), Annotation("v1", "G", "A", "R"),
+                       Annotation("v2", "G", "A", "UR")]
+        definitions = [MaskDefinition("M", frozenset(["A"]))]
+        dense_config = GeneConfig(variant_block_size=1)
+        sparse_config = GeneConfig(variant_block_size=1, vc_storage="sparse",
+                                   vc_score_method="crossproduct", vc_score_block_size=1)
+        dense = build_gene_masks(genotype, identifiers, annotations, definitions, dense_config)
+        sparse = build_gene_masks(genotype, identifiers, annotations, definitions, sparse_config)
+        for actual, expected in zip(sparse, dense):
+            self.assertEqual(actual.variant_ids, expected.variant_ids)
+            torch.testing.assert_close(actual.burden, expected.burden, atol=0, rtol=0)
+            if expected.vc_genotypes is not None:
+                self.assertTrue(actual.vc_genotypes.is_sparse)
+                torch.testing.assert_close(actual.vc_genotypes.to_dense(), expected.vc_genotypes,
+                                           atol=0, rtol=0)
+                torch.testing.assert_close(actual.vc_mafs, expected.vc_mafs, atol=0, rtol=0)
+        y = torch.sin(torch.arange(1000, device=DEVICE, dtype=torch.float64)*.37)
+        y -= y.mean()
+        y *= (999/y.square().sum()).sqrt()
+        gene = GeneSet("G", "1", 100, tuple(identifiers))
+        original = test_prepared_gene(gene, dense, Context(y), dense_config)
+        actual = test_prepared_gene(gene, sparse, Context(y), sparse_config)
+        self.assertEqual([(row["ID"], row["TEST"], row["EXTRA"]) for row in actual],
+                         [(row["ID"], row["TEST"], row["EXTRA"]) for row in original])
+        for row, expected in zip(actual, original):
+            self.assertAlmostEqual(row["LOG10P"], expected["LOG10P"], places=9)
+
+    def test_streamed_gene_tests_release_earlier_mask_vc_matrices(self):
+        from torchwgs.gene import test_prepared_gene
+        y = torch.sin(torch.arange(1000, device=DEVICE, dtype=torch.float64)*.37)
+        y -= y.mean()
+        y *= (999/y.square().sum()).sqrt()
+        context = Context(y)
+        references = []
+        def prepared():
+            for index in range(3):
+                if index == 2:
+                    self.assertIsNone(references[0]())
+                vc = torch.zeros((1000, 1), device=DEVICE, dtype=torch.float64)
+                vc[index*12:(index+1)*12] = 1
+                references.append(weakref.ref(vc))
+                yield PreparedMask(f"M{index}", f"M{index}", None, "0.01", .01,
+                                   (f"v{index}",), vc[:, 0].clone(), .006, 12., 1000,
+                                   vc, vc.new_tensor([.006]))
+        rows = test_prepared_gene(GeneSet("G", "1", 1, ()), prepared(), context)
+        self.assertEqual(len([row for row in rows if row["TEST"] == "ADD-SKAT"]), 3)
+        self.assertIn("GENE_P", {row["TEST"] for row in rows})
+        self.assertTrue(all(reference() is None for reference in references))
+
     def test_global_whitelist_filters_io_and_preserves_bim_column_order(self):
         from torchwgs.gene import test_gene_based
         y = torch.sin(torch.arange(1000, dtype=torch.float64)*.37)
@@ -166,7 +399,11 @@ class GeneTests(unittest.TestCase):
         definitions = [MaskDefinition("M", frozenset(["A"]))]
         config = GeneConfig(extract_variants={"v0", "v2", "missing"}, variant_block_size=1)
         artifacts = []
-        with patch("torchwgs.gene.test_prepared_gene", return_value=[]):
+        materialized = []
+        def consume_masks(gene, prepared, *args, **kwargs):
+            materialized.append(list(prepared))
+            return []
+        with patch("torchwgs.gene.test_prepared_gene", side_effect=consume_masks):
             list(test_gene_based(reader, context, annotations, sets, definitions,
                                  config, artifact_callback=artifacts.append))
         self.assertEqual(reader.requests, [{"v0", "v2", "missing"}])
@@ -182,10 +419,12 @@ class GeneTests(unittest.TestCase):
             self.assertEqual(actual.variant_ids, ("v2", "v0"))
             self.assertEqual(actual.variant_ids, expected.variant_ids)
             torch.testing.assert_close(actual.burden, expected.burden, atol=0, rtol=0)
-            torch.testing.assert_close(actual.vc_genotypes, expected.vc_genotypes, atol=0, rtol=0)
+            self.assertIsNone(actual.vc_genotypes)
             self.assertEqual(actual.aaf, expected.aaf)
+        for actual, expected in zip(materialized[0], baseline):
+            torch.testing.assert_close(actual.vc_genotypes, expected.vc_genotypes, atol=0, rtol=0)
         matrix_artifacts = []
-        with patch("torchwgs.gene.test_prepared_gene", return_value=[]):
+        with patch("torchwgs.gene.test_prepared_gene", side_effect=consume_masks):
             list(test_gene_based(raw, context, annotations, sets, definitions, config,
                                  variants=variants, artifact_callback=matrix_artifacts.append))
         self.assertEqual([m.variant_ids for m in matrix_artifacts[0].masks],
@@ -204,7 +443,8 @@ class GeneTests(unittest.TestCase):
         masks = [PreparedMask(name, name, None, "0.01", .01, (name,), raw,
                               float(raw.mean()/2), float(raw.sum()), len(y), None, None)
                  for name, raw in (("M1", first), ("M2", second))]
-        configuration = GeneConfig(sbat_max_subsets=0, sbat_qmc_samples=64, sbat_seed=27)
+        configuration = GeneConfig(sbat_max_subsets=0, sbat_qmc_samples=64, sbat_seed=27,
+                                   sbat_subset_sampling="with_replacement")
         fake = {name: y.new_tensor(.2) for name in ("SBAT", "SBAT_POS", "SBAT_NEG")}
         with patch("torchwgs.gene.stats.sbat_logp", return_value=fake) as backend:
             result = test_prepared_gene(GeneSet("G", "1", 100, ("M1", "M2")),
@@ -214,6 +454,7 @@ class GeneTests(unittest.TestCase):
         self.assertEqual(backend.call_args.kwargs["max_subsets"], 0)
         self.assertEqual(backend.call_args.kwargs["qmc_samples"], 64)
         self.assertEqual(backend.call_args.kwargs["seed"], 27)
+        self.assertEqual(backend.call_args.kwargs["subset_sampling"], "with_replacement")
         with self.assertRaises(ValueError):
             GeneConfig(sbat_qmc_samples=0)
         with self.assertRaises(ValueError):

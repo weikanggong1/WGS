@@ -7,16 +7,15 @@ import json
 import time
 import torch
 from .config import WGSConfig
-from .io import BedReader, load_phenotype, resolve_variant_include, materialize_bed
+from .io import BedReader, load_phenotype, resolve_variant_include
 from .step1 import fit_null, NullModel
-from .single import create_test_context, iter_single_variant_results
-from .gene import test_gene_based
-from .masks import load_mask_definitions, load_variant_whitelist
-from .output import RegenieWriter, write_run_manifest
+from .output import (write_run_manifest, write_log_header, write_log_event,
+                     write_log_summary, write_regenie_log)
 from .summary import summarize_results
 from .statistics import numerical_diagnostics
 from .phenotype import prepare_phenotype
-from .mask_output import MaskWriter
+from .chromosome import run_chromosome, _add_counters
+from .execution import GpuExecutor
 
 
 @dataclass
@@ -70,15 +69,20 @@ def _implementation_identity(names):
 
 
 def _read_manifest(path):
-    try:return json.loads(Path(path).read_text())
+    try:
+        result=json.loads(Path(path).read_text())
+        return result if isinstance(result,dict) else {}
     except (ValueError,OSError):return {}
 
 
 def _identities_match(identities):
-    if not identities:return False
+    if not isinstance(identities,(list,tuple)) or not identities:return False
     for identity in identities:
-        artifact=Path(identity['path'])
-        if not artifact.is_file() or _file_identity(artifact)!=identity:return False
+        if not isinstance(identity,dict) or not isinstance(identity.get('path'),str):return False
+        try:
+            artifact=Path(identity['path'])
+            if not artifact.is_file() or _file_identity(artifact)!=identity:return False
+        except (OSError,ValueError):return False
     return True
 
 
@@ -95,23 +99,93 @@ def _prediction_identity(path,phenotype):
     return identities
 
 
+def _import_aligned_loco(path,phenotype,sample_ids):
+    """Resolve native FID_IID tokens using the known array FAM identities.
+
+    FID and IID can both contain underscores, so their separator cannot be
+    inferred from a LOCO token. The source may omit excluded samples; rows
+    with NA predictions are filtered by NullModel.from_regenie itself.
+    """
+    import gzip
+    identities=_prediction_identity(path,phenotype)
+    source=Path(identities[-1]['path'])
+    opener=gzip.open if source.suffix=='.gz' else open
+    with opener(source,'rt',encoding='utf-8') as handle:
+        header=handle.readline().split()
+    if not header or header[0]!='FID_IID':
+        raise ValueError('Expected REGENIE FID_IID header')
+    known={}
+    for fid,iid in sample_ids:
+        token=f'{fid}_{iid}'
+        if token in known:
+            raise ValueError(f'FID_IID token collision in array FAM: {token}')
+        known[token]=(fid,iid)
+    present=set(header[1:])
+    selected=[sid for token,sid in known.items() if token in present]
+    if not selected:
+        raise ValueError('No array FAM sample matches the imported LOCO header')
+    return NullModel.from_regenie(path,phenotype_name=phenotype,sample_ids=selected)
+
+
 def _stage_cache(prefix,key):
     path=Path(str(prefix)+'.manifest.json')
     if not path.exists():return None
     cached=_read_manifest(path)
-    if cached.get('key')!=key or not Path(cached.get('result','')).is_file():return None
+    result=cached.get('result')
+    if cached.get('key')!=key or not isinstance(result,str) or not result:return None
+    try:
+        if not Path(result).is_file():return None
+    except (OSError,ValueError):return None
+    if not isinstance(cached.get('report'),dict):return None
     if not _identities_match(cached.get('artifacts',[])):return None
     return cached
 
 
 def _write_stage_cache(prefix,key,writer,report,*,write_masks=False):
-    paths=[writer.path]
+    paths=[writer.path,Path(str(prefix)+'.log')]
     if writer.ids_path:paths.append(writer.ids_path)
     if not writer.split:paths.append(Path(str(prefix)+'.regenie.Ydict'))
     if write_masks:
         paths.extend(Path(str(prefix)+'_masks'+suffix) for suffix in ('.bed','.bim','.fam','.snplist'))
     write_run_manifest(str(prefix)+'.manifest.json',{'key':key,'result':str(writer.path),'report':report,
                                                    'artifacts':[_file_identity(p) for p in paths]})
+
+
+def _write_step1_log(path, *, inputs, config, null, mode, seconds, n_input):
+    """Describe this run's fit, cache load or external prediction import."""
+    imported = mode == 'imported'
+    fitting = null.metadata.get('config', asdict(config.step1))
+    options = {'step':1,'bed':inputs.array_prefix,'keep':inputs.discovery_samples,
+               'remove':inputs.sample_remove,'phenoFile':inputs.phenotype_file,
+               'phenoColList':inputs.phenotype_column,'out':str(Path(path).with_suffix(''))}
+    settings = {'mode':mode,'prediction_units':'standardized_step1_phenotype'}
+    if imported:
+        options['pred'] = inputs.imported_loco
+        settings['operation'] = 'Load and align predictions fitted by the source run; no fitting performed'
+    else:
+        options.update({'extract':inputs.array_variant_include,'qt':True,
+                        'apply-rint':fitting['apply_rint'],'bsize':fitting['block_size'],
+                        'cv':fitting['folds'],'lowmem':fitting['l0_storage']=='memmap',
+                        'l0':','.join(str(x) for x in fitting['ridge_l0']),
+                        'l1':','.join(str(x) for x in fitting['ridge_l1'])})
+        settings.update(device=fitting['device'],dtype=fitting['dtype'],
+                        TF32=bool(fitting['tf32'] and fitting['dtype']=='float32'
+                                  and torch.device(fitting['device']).type=='cuda'),
+                        operation='Fit ridge/LOCO' if mode=='fitted' else 'Load cached ridge/LOCO; no fitting performed')
+        # The fit duration stays labelled as a previous fit when loading a cache;
+        # Elapsed time below always describes the current operation.
+        if 'total_seconds' in null.metadata:
+            label = 'fit_seconds' if mode=='fitted' else 'original_fit_seconds'
+            settings[label] = null.metadata['total_seconds']
+        for name in ('n_blocks','n_level0_predictors','fold_sizes','fold_active_sizes',
+                     'selected_ridge_l1_index','selected_ridge_l1_h','cv_mse','timings'):
+            if name in null.metadata:settings[name] = null.metadata[name]
+    report = {'n_input':n_input,'n':len(null.sample_ids),'seconds':seconds,
+              'cached':mode=='cached'}
+    if not imported and 'n_variants' in null.metadata:
+        report['n_variants'] = null.metadata['n_variants']
+    write_regenie_log(path,phenotype=inputs.phenotype_column,analysis='ridge/LOCO Step1',
+                      options=options,settings=settings,report=report)
 
 
 def run_discovery(inputs: DiscoveryInputs, *, config=None, output_dir,
@@ -129,7 +203,19 @@ def run_discovery(inputs: DiscoveryInputs, *, config=None, output_dir,
     destination.mkdir(parents=True,exist_ok=True)
     start = time.perf_counter()
     numerical_start=numerical_diagnostics()
-    if torch.cuda.is_available():torch.cuda.reset_peak_memory_stats()
+    gpu_devices=[]
+    for requested in (config.step1.device, config.single_variant.device):
+        device=torch.device(requested)
+        if device.type!='cuda':continue
+        if device.index is None:device=torch.device('cuda',torch.cuda.current_device())
+        if device not in gpu_devices:gpu_devices.append(device)
+    # Set the current request's cap before any phenotype or ridge allocation.
+    # A preceding run's smaller cap must not leak into this run's Step1.
+    for device in gpu_devices:
+        total=torch.cuda.get_device_properties(device).total_memory
+        torch.cuda.set_per_process_memory_fraction(
+            min(1.,config.execution.max_gpu_gb*1024**3/total),device)
+        torch.cuda.reset_peak_memory_stats(device)
     metadata = {'engine':'torchwgs', 'cohort':'discovery', 'phenotype':inputs.phenotype_column,
                 'configuration':config.to_dict(), 'inputs':{}, 'stages':{}}
     for name,path in [('phenotype',inputs.phenotype_file),('discovery_samples',inputs.discovery_samples),
@@ -140,7 +226,7 @@ def run_discovery(inputs: DiscoveryInputs, *, config=None, output_dir,
     null_key = _fingerprint({'inputs':metadata['inputs'],'phenotype':inputs.phenotype_column,'phenotype_mode':config.phenotype_mode,
                              'phenotype_quantile_normalize':config.phenotype_quantile_normalize,
                              'phenotype_outlier_sd':config.phenotype_outlier_sd,
-                             'implementation':_implementation_identity(['step1','phenotype','io']),
+                             'implementation':_implementation_identity(['step1','phenotype','io','pipeline']),
                              'imported_loco':None if not inputs.imported_loco else _prediction_identity(inputs.imported_loco,inputs.phenotype_column),
                              'step1':asdict(config.step1),'covariates':None if inputs.covariates is None else
                              hashlib.sha256(inputs.covariates.cpu().numpy().tobytes()).hexdigest()})
@@ -160,125 +246,123 @@ def run_discovery(inputs: DiscoveryInputs, *, config=None, output_dir,
     null_dir.mkdir(exist_ok=True)
     cache_path = null_dir/'null_model.pt'
     manifest_path = null_dir/'cache.json'
+    step1_log_path = null_dir/'discovery.log'
+    local_null_files = [cache_path,cache_path.with_suffix('.json'),
+                        null_dir/'discovery_1.loco',null_dir/'discovery_pred.list']
     null_cached=_read_manifest(manifest_path) if resume else {}
     log_path = destination/'discovery.log'
-    with log_path.open('a' if resume else 'w') as log:
+    events_path = destination/'discovery.events.jsonl'
+    legacy_events=None
+    if resume and log_path.exists():
+        with log_path.open() as previous_log:
+            if previous_log.readline().lstrip().startswith('{'):
+                legacy_events=log_path.read_text()
+    with log_path.open('a' if resume and legacy_events is None else 'w') as log, events_path.open('a' if resume else 'w') as events:
+        if legacy_events is not None:events.write(legacy_events)
+        write_log_header(log,phenotype=inputs.phenotype_column,analysis='discovery pipeline',
+                         options={'phenoFile':inputs.phenotype_file,'phenoColList':inputs.phenotype_column,
+                                  'keep':inputs.discovery_samples,'remove':inputs.sample_remove},
+                         settings={'cohort':'discovery','chromosomes':','.join(inputs.wgs_prefixes),
+                                   'device':config.single_variant.device,'dtype':config.single_variant.dtype,
+                                   'TF32 single-precision operations':bool(config.single_variant.tf32
+                                      and config.single_variant.dtype=='float32'
+                                      and torch.device(config.single_variant.device).type=='cuda'),
+                                   'write_masks':config.write_masks})
         def progress(event):
-            log.write(json.dumps(event,default=str)+'\n'); log.flush()
+            events.write(json.dumps(event,default=str)+'\n');events.flush()
+            write_log_event(log,event)
         t = time.perf_counter()
+        before_step1_peaks={str(device):torch.cuda.max_memory_allocated(device) for device in gpu_devices}
         if inputs.imported_loco:
-            null = NullModel.from_regenie(inputs.imported_loco,phenotype_name=inputs.phenotype_column)
-            metadata['stages']['step1'] = {'imported':True,'source':_prediction_identity(inputs.imported_loco,inputs.phenotype_column)}
-        elif resume and cache_path.exists() and null_cached.get('key')==null_key and _identities_match(null_cached.get('artifacts',[])):
+            null = _import_aligned_loco(inputs.imported_loco,inputs.phenotype_column,array.sample_ids)
+            source = _prediction_identity(inputs.imported_loco,inputs.phenotype_column)
+            step1_files = [Path(identity['path']) for identity in source]
+            step1_mode = 'imported'
+            metadata['stages']['step1'] = {'imported':True,'source':source}
+        elif (resume and cache_path.exists() and null_cached.get('key')==null_key
+              and _identities_match(null_cached.get('artifacts',[]))
+              and {str(p.resolve()) for p in [*local_null_files,step1_log_path]}.issubset(
+                  identity['path'] for identity in null_cached['artifacts'])):
             null = NullModel.load(cache_path)
+            step1_files = local_null_files
+            step1_mode = 'cached'
             metadata['stages']['step1'] = {'cached':True,**null.metadata}
         else:
             selected = None if inputs.array_variant_include is None else resolve_variant_include(array,inputs.array_variant_include)
-            null = fit_null(array,y_array,config=config.step1,covariates=analysis_covariates,
+            fitting_config=replace(config.step1,max_gpu_gb=min(
+                                   config.step1.max_gpu_gb,config.execution.max_gpu_gb))
+            null = fit_null(array,y_array,config=fitting_config,covariates=analysis_covariates,
                             output_dir=null_dir,phenotype_name=inputs.phenotype_column,
                             variant_indices=selected,progress_callback=progress)
             native_files=null.export_regenie(null_dir/'discovery',phenotype_name=inputs.phenotype_column)
-            write_run_manifest(manifest_path,{'key':null_key,'artifacts':[_file_identity(p) for p in
-                                [cache_path,cache_path.with_suffix('.json'),*native_files]]})
-            metadata['stages']['step1'] = null.metadata
+            step1_files = [cache_path,cache_path.with_suffix('.json'),*native_files]
+            step1_mode = 'fitted'
+            metadata['stages']['step1'] = dict(null.metadata)
         metadata['stages']['step1_wall_seconds'] = time.perf_counter()-t
+        _write_step1_log(step1_log_path,inputs=inputs,config=config,null=null,mode=step1_mode,
+                         seconds=metadata['stages']['step1_wall_seconds'],n_input=array.n_samples)
+        step1_files.append(step1_log_path)
+        # Cache hits rewrite the log for the current load. Record its new identity
+        # only after the atomic log commit, leaving model and prediction bytes intact.
+        write_run_manifest(manifest_path,{'key':null_key,'mode':step1_mode,
+                            'artifacts':[_file_identity(p) for p in step1_files]})
+        metadata['stages']['step1'].update(mode=step1_mode,files=[str(p) for p in step1_files])
         single_files, gene_files = [],[]
-        null_ids = set(null.sample_ids)
-        for chromosome,prefix in inputs.wgs_prefixes.items():
-            original_prefix=str(prefix)
-            source_identity={suffix:_file_identity(original_prefix+suffix) for suffix in ('.bim','.fam')}
-            bed_suffix='.bed' if Path(original_prefix+'.bed').exists() else '.bed.gz'
-            source_identity[bed_suffix]=_file_identity(original_prefix+bed_suffix)
-            output_settings={'gzip':config.gzip_output,'split':config.split_by_pheno,'write_samples':config.write_samples}
-            single_prefix=destination/'Single'/f'discovery_c{chromosome}'
-            single_key=_fingerprint({'null':null_key,'source':source_identity,'parameters':asdict(config.single_variant),
-                                     'output':output_settings,'implementation':_implementation_identity(['single','statistics','output'])})
-            single_cached=_stage_cache(single_prefix,single_key) if resume and run_single else None
-            gene_caches={};gene_keys={}
-            for analysis in inputs.gene_analyses.get(str(chromosome),[]) if run_gene else []:
-                source={name:_file_identity(getattr(analysis,name)) for name in ['annotation_file','setlist_file','mask_definition_file']}
-                if analysis.variant_whitelist_file:source['variant_whitelist_file']=_file_identity(analysis.variant_whitelist_file)
-                key=_fingerprint({'null':null_key,'source':source_identity,'gene_files':source,'parameters':asdict(config.gene_based),
-                                  'runtime':{'device':config.single_variant.device,'dtype':config.single_variant.dtype,'tf32':config.single_variant.tf32},
-                                  'output':{**output_settings,'write_masks':config.write_masks},
-                                  'implementation':_implementation_identity(['gene','masks','single','statistics','_norm_gpu','output','mask_output'])})
-                gene_keys[analysis.name]=key
-                gene_caches[analysis.name]=_stage_cache(destination/'Gene'/f'discovery_c{chromosome}_{analysis.name}',key) if resume else None
-            if (not run_single or single_cached) and all(gene_caches.values()):
-                if single_cached:
-                    single_files.append(single_cached['result']);metadata['stages'][f'single_c{chromosome}']={'cached':True,**single_cached['report']}
-                for name,cached in gene_caches.items():
-                    gene_files.append(cached['result']);metadata['stages'][f'gene_c{chromosome}_{name}']={'cached':True,**cached['report']}
-                progress({'stage':'chromosome_cached','chromosome':chromosome})
-                continue
-            prefix=materialize_bed(prefix,destination/'InputCache')
-            reader = BedReader(prefix,keep=inputs.discovery_samples,remove=inputs.sample_remove)
-            phenotype=torch.tensor([y_lookup.get(sid,float('nan')) for sid in reader.sample_ids],dtype=torch.float64)
-            covariates=None if x_lookup is None else torch.stack([x_lookup.get(sid,torch.full_like(analysis_covariates[0],float('nan')))
-                                                                for sid in reader.sample_ids])
-            prediction=torch.full((reader.n_samples,),float('nan'),dtype=torch.float64)
-            predicted_rows=[i for i,sid in enumerate(reader.sample_ids) if sid in null_ids]
-            predicted_ids=[reader.sample_ids[i] for i in predicted_rows]
-            prediction[predicted_rows]=null.align(predicted_ids)[:,null.chromosomes.index(int(chromosome))].to(torch.float64)
-            context = create_test_context(phenotype,prediction,sample_ids=reader.sample_ids,covariates=covariates,
-                          apply_rint=config.single_variant.apply_rint,device=config.single_variant.device,
-                          dtype=config.single_variant.dtype,tf32=config.single_variant.tf32)
-            if run_single:
-                if single_cached:
-                    single_files.append(single_cached['result']);metadata['stages'][f'single_c{chromosome}']={'cached':True,**single_cached['report']}
-                else:
-                    t = time.perf_counter()
-                    out_prefix = single_prefix
-                    with RegenieWriter(out_prefix,inputs.phenotype_column,gzip_output=config.gzip_output,
-                                       sample_ids=context.sample_ids,write_samples=config.write_samples,
-                                       split_by_pheno=config.split_by_pheno) as writer:
-                        for row in iter_single_variant_results(reader,context,config=config.single_variant): writer.write(row)
-                        single_files.append(str(writer.path))
-                        metadata['stages'][f'single_c{chromosome}'] = {'rows':writer.rows,'seconds':time.perf_counter()-t,'n':len(context.y)}
-                    Path(str(out_prefix)+'.log').write_text(json.dumps(metadata['stages'][f'single_c{chromosome}'],indent=2)+'\n')
-                    _write_stage_cache(out_prefix,single_key,writer,metadata['stages'][f'single_c{chromosome}'])
-            if run_gene:
-                gene_context=context if config.gene_based.apply_rint==config.single_variant.apply_rint else create_test_context(
-                    phenotype,prediction,sample_ids=reader.sample_ids,covariates=covariates,
-                    apply_rint=config.gene_based.apply_rint,device=config.single_variant.device,
-                    dtype=config.single_variant.dtype,tf32=config.single_variant.tf32)
-                for analysis in inputs.gene_analyses.get(str(chromosome),[]):
-                    cached=gene_caches[analysis.name]
-                    if cached:
-                        gene_files.append(cached['result']);metadata['stages'][f'gene_c{chromosome}_{analysis.name}']={'cached':True,**cached['report']}
-                        continue
-                    t = time.perf_counter()
-                    gene_config = replace(config.gene_based)
-                    if analysis.variant_whitelist_file:
-                        gene_config.extract_variants = load_variant_whitelist(analysis.variant_whitelist_file)
-                    definitions = load_mask_definitions(analysis.mask_definition_file)
-                    out_prefix = destination/'Gene'/f'discovery_c{chromosome}_{analysis.name}'
-                    active_sex=[reader.sample_sex[i] for i in gene_context.sample_indices.tolist()]
-                    mask_writer=MaskWriter(out_prefix,gene_context.sample_ids,active_sex) if config.write_masks else None
-                    try:
-                        with RegenieWriter(out_prefix,inputs.phenotype_column,masks=definitions,
-                                           gzip_output=config.gzip_output,sample_ids=gene_context.sample_ids,
-                                           write_samples=config.write_samples,split_by_pheno=config.split_by_pheno) as writer:
-                            for row in test_gene_based(reader,gene_context,analysis.annotation_file,analysis.setlist_file,
-                                                       definitions,gene_config,artifact_callback=mask_writer): writer.write(row)
-                            gene_files.append(str(writer.path))
-                            stage_name=f'gene_c{chromosome}_{analysis.name}'
-                            metadata['stages'][stage_name]={'rows':writer.rows,'seconds':time.perf_counter()-t,'n':len(context.y)}
-                    except BaseException:
-                        if mask_writer:mask_writer.close(commit=False)
-                        raise
-                    else:
-                        if mask_writer:mask_writer.close()
-                    Path(str(out_prefix)+'.log').write_text(json.dumps(metadata['stages'][stage_name],indent=2)+'\n')
-                    _write_stage_cache(out_prefix,gene_keys[analysis.name],writer,metadata['stages'][stage_name],write_masks=config.write_masks)
-            progress({'stage':'chromosome_completed','chromosome':chromosome})
-            if Path(prefix).resolve()!=Path(original_prefix).resolve() and not config.keep_uncompressed_inputs:
-                del reader
-                Path(prefix+'.bed').unlink()
+        worker_numerics = {}
+        def chromosome_job(item, job_config=config, job_resume=resume):
+            return run_chromosome(item, inputs=inputs, config=job_config,
+                                  destination=destination, null=null, null_key=null_key,
+                                  y_lookup=y_lookup, x_lookup=x_lookup, resume=job_resume,
+                                  run_single=run_single, run_gene=run_gene)
+        chromosomes = list(inputs.wgs_prefixes.items())
+        if config.execution.parallel_level == 'chromosome':
+            def bounded_chromosome(item):
+                attempt_start=time.perf_counter()
+                try:
+                    return chromosome_job(item)
+                except (MemoryError, torch.cuda.OutOfMemoryError):
+                    return {'chromosome':item[0], 'memory_retry':True,
+                            'failed_attempt_seconds':time.perf_counter()-attempt_start}
+            with GpuExecutor(config.execution, config.single_variant.device) as executor:
+                chromosome_reports = executor.map(bounded_chromosome, chromosomes)
+            rejected=[i for i,report in enumerate(chromosome_reports) if report.get('memory_retry')]
+            if rejected:
+                device=torch.device(config.single_variant.device)
+                if device.type=='cuda':
+                    with torch.cuda.device(device):torch.cuda.empty_cache()
+                serial_execution=replace(config.execution,parallel_level='serial',workers=1)
+                serial_config=replace(config,execution=serial_execution)
+                with GpuExecutor(serial_execution,config.single_variant.device):
+                    for index in rejected:
+                        failure=chromosome_reports[index]
+                        # Valid completed files from the failed chromosome are
+                        # reused; partial association/mask files were removed.
+                        chromosome_reports[index]=chromosome_job(
+                            chromosomes[index],job_config=serial_config,job_resume=True)
+                        metadata.setdefault('execution_memory_retries',[]).append({
+                            'chromosome':failure['chromosome'],
+                            'failed_attempt_seconds':failure['failed_attempt_seconds']})
+        else:
+            serial_execution=replace(config.execution,parallel_level='serial',workers=1)
+            with GpuExecutor(serial_execution, config.single_variant.device):
+                chromosome_reports = [chromosome_job(item) for item in chromosomes]
+        for report in chromosome_reports:
+            metadata['stages'].update(report['stages'])
+            single_files.extend(report['single_files'])
+            gene_files.extend(report['gene_files'])
+            _add_counters(worker_numerics, report['numerics'])
+            progress({'stage': 'chromosome_cached' if report['cached'] else 'chromosome_completed',
+                      'chromosome': report['chromosome']})
         metadata['summary'] = summarize_results(single_files,gene_files,output_dir=destination/'Summary',config=config.significance)
-        metadata['output_files']={'single':single_files,'gene':gene_files}
+        metadata['output_files']={'step1':[str(p) for p in step1_files],
+                                  'single':single_files,'gene':gene_files}
         metadata['numerics']={key:value-numerical_start.get(key,0) for key,value in numerical_diagnostics().items()}
+        _add_counters(metadata['numerics'], worker_numerics)
         metadata['total_seconds']=time.perf_counter()-start
-        if torch.cuda.is_available(): metadata['peak_gpu_bytes']=torch.cuda.max_memory_allocated()
+        if gpu_devices:
+            metadata['peak_gpu_by_device_bytes']={str(device):max(before_step1_peaks[str(device)],
+                    torch.cuda.max_memory_allocated(device)) for device in gpu_devices}
+            metadata['peak_gpu_bytes']=max(metadata['peak_gpu_by_device_bytes'].values())
         write_run_manifest(destination/'run_manifest.json',metadata)
+        write_log_summary(log,metadata)
     return metadata

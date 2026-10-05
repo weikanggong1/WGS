@@ -1,0 +1,187 @@
+{
+  "scope": "Actual maximum Missense SKAT-O difference from full adaptive_v1; one mask, CPU diagnosis only",
+  "original_v1_max_log10p_error": 0.00010899999999999799,
+  "vc_columns": 9,
+  "source_gene_variants_decoded": 468,
+  "capture_seconds": 6.315898060798645,
+  "methods": {
+    "segmented_0.0001220703125": {
+      "complete": true,
+      "wall_seconds": 0.06209087371826172,
+      "absolute_native_log10p_error": 1.2052031712894706e-07,
+      "absolute_native_chisq_error": 3.0380545579244966e-07,
+      "printed_log10p_equal": true,
+      "printed_chisq_equal": false,
+      "integral_diagnostics": null,
+      "nonintegral_bit_equal_to_default": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      }
+    },
+    "adaptive_sqrt_0.0001220703125": {
+      "complete": true,
+      "wall_seconds": 0.02774709463119507,
+      "absolute_native_log10p_error": 0.00010931554008306033,
+      "absolute_native_chisq_error": 0.00013941092537982092,
+      "printed_log10p_equal": false,
+      "printed_chisq_equal": false,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 21,
+        "intervals": 1,
+        "relative_error_estimate": 2.827813537925503e-12,
+        "log_error_estimate": -28.54896835806052
+      },
+      "nonintegral_bit_equal_to_default": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      }
+    },
+    "adaptive_x_0.0001220703125": {
+      "complete": true,
+      "wall_seconds": 0.2864247113466263,
+      "absolute_native_log10p_error": 4.0621114301420125e-07,
+      "absolute_native_chisq_error": 6.159602897182204e-08,
+      "printed_log10p_equal": true,
+      "printed_chisq_equal": false,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 1323,
+        "intervals": 32,
+        "relative_error_estimate": 0.00011827383703007577,
+        "log_error_estimate": -10.998564777304905
+      },
+      "nonintegral_bit_equal_to_default": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      }
+    },
+    "adaptive_sqrt_2e-06": {
+      "complete": true,
+      "wall_seconds": 0.027684271335601807,
+      "absolute_native_log10p_error": 0.00010931554008306033,
+      "absolute_native_chisq_error": 0.00013941092537982092,
+      "printed_log10p_equal": false,
+      "printed_chisq_equal": false,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 21,
+        "intervals": 1,
+        "relative_error_estimate": 2.827813537925503e-12,
+        "log_error_estimate": -28.54896835806052
+      },
+      "nonintegral_bit_equal_to_default": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      }
+    },
+    "adaptive_x_2e-06": {
+      "complete": true,
+      "wall_seconds": 0.42937906086444855,
+      "absolute_native_log10p_error": 1.2380940991874034e-07,
+      "absolute_native_chisq_error": 2.9959867665907414e-07,
+      "printed_log10p_equal": true,
+      "printed_chisq_equal": false,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 2079,
+        "intervals": 50,
+        "relative_error_estimate": 1.5408659615189144e-06,
+        "log_error_estimate": -15.339219181744559
+      },
+      "nonintegral_bit_equal_to_default": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      }
+    },
+    "quadpack_x_0.0001220703125": {
+      "complete": true,
+      "wall_seconds": 0.8054664582014084,
+      "absolute_native_log10p_error": 3.299809817475241e-07,
+      "absolute_native_chisq_error": 3.59031973873325e-08,
+      "printed_log10p_equal": true,
+      "printed_chisq_equal": true,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 735,
+        "intervals": 18,
+        "relative_error_estimate": 0.00010455014718910842
+      },
+      "nonintegral_bit_equal_to_default": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      }
+    },
+    "quadpack_x_2e-06": {
+      "complete": true,
+      "wall_seconds": 1.211467370390892,
+      "absolute_native_log10p_error": 1.20972756478821e-07,
+      "absolute_native_chisq_error": 3.032267817532075e-07,
+      "printed_log10p_equal": true,
+      "printed_chisq_equal": false,
+      "integral_diagnostics": {
+        "converged": true,
+        "status": "converged",
+        "evaluations": 1113,
+        "intervals": 27,
+        "relative_error_estimate": 6.76561427444075e-07
+      },
+      "nonintegral_bit_equal_to_default": {
+        "SKAT": true,
+        "BURDEN": true,
+        "SKATO-ACAT": true,
+        "rho_log10ps": true,
+        "rhos": true
+      }
+    }
+  },
+  "private_identity_exported": false,
+  "wall_seconds": 9.173624575138092,
+  "created_date": "2026-10-04",
+  "device": "cpu",
+  "dtype": "float64",
+  "torch_threads": 2,
+  "source_integral_budget": {
+    "epsabs": 1e-25,
+    "epsrel": 0.0001220703125,
+    "max_intervals": 1000
+  },
+  "production_default": "adaptive_x",
+  "quadpack_usage": "independent validation only; no production fallback",
+  "privacy_audit": {
+    "gene_variant_sample_identifiers": false,
+    "private_absolute_paths": false,
+    "score_covariance_or_weights": false
+  },
+  "interpretation": "adaptive_sqrt missed a narrow feature and falsely converged in this real 9-dimensional case; source-coordinate adaptive_x improves this case without a universal quadrature guarantee",
+  "frozen_source_sha256": {
+    "torchwgs/statistics.py": "7afd15862cf811cfe69ed1c151624cdd62dff763f69f2edd019f4d21bf30497b",
+    "torchwgs/_quadrature.py": "01ef6962410db503090256081779b168f9545293e17215ff83cbf95bd6d717b5",
+    "torchwgs/gene.py": "a73296cbf5e753e221171fdc7af03ef462b8f93fea9c96e8c2a564b76da1d8eb",
+    "torchwgs/masks.py": "058e9aa5a0d91edd2814815235965c5a2df48dbe835c7f18206138ae6206b387"
+  },
+  "backend_overridden_explicitly": true
+}
