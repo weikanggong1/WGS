@@ -31,9 +31,9 @@ GDS 是 CoreArray 格式。它需要原生 GDS 解码器；不能用 HDF5 读取
 
 ```python
 import numpy as np
-from staar_phewas.gds import SeqArrayGDS
+from torchstaar.gds import SeqArrayGDS
 
-genotype_path = "cohort.gds"  # 用户已处理的原生 GDS
+genotype_path = "input.gds"  # 用户已处理的原生 GDS
 sample_ids = np.loadtxt("phenotype_sample_ids.txt", dtype=str, ndmin=1)
 variant_indices = np.arange(100, 356, dtype=np.int64)  # 零起始位点索引
 
@@ -89,7 +89,7 @@ QC 节点由数据配置指定。应先核对实际字段，不能仅因节点�
 
 ### Base 与 PheWAS 的频率求值顺序
 
-以上逐表型示例对应 PheWAS：在样本并集确定 minor 方向后，用当前表型的非缺失 dosage 列和计算 `MAF = MAC / (2 * (N - missing_count))`。Base STAARpipeline 0.9.9 保留另一条路径：先在模型样本求 REF_AF，再计算 `ALT_AF = 1 - REF_AF` 和 `MAF = min(REF_AF, ALT_AF)`，沿用 helper 返回的 MAF。低层接口的 `frequency_mode="count"/"reference"` 分别实现两条路径；pipeline 用 `AnalysisOptions(wrapper_semantics="phewas"/"base")` 选择原 wrapper 行为。本轮 chr21、单个连续表型的 base 串行完整流程已通过验收；多表型使用其对应的原 wrapper 验证。[原版公式和来源](base_reference_inventory.md#base-与-phewas-的频率和缺失填补)
+以上逐表型示例对应 PheWAS：在样本并集确定 minor 方向后，用当前表型的非缺失 dosage 列和计算 `MAF = MAC / (2 * (N - missing_count))`。Base STAARpipeline 0.9.9 保留另一条路径：先在模型样本求 REF_AF，再计算 `ALT_AF = 1 - REF_AF` 和 `MAF = min(REF_AF, ALT_AF)`，沿用 helper 返回的 MAF。低层接口的 `frequency_mode="count"/"reference"` 分别实现两条路径；pipeline 用 `AnalysisOptions(wrapper_semantics="phewas"/"base")` 选择原 wrapper 行为。本轮 chr21、单个连续表型的 base 串行完整流程已通过验收；多表型使用其对应的原 wrapper 验证。[原版公式和来源](torchstaar.md)
 
 `mean` 都用各自得到的 `2 * MAF` 填补缺失，而不是在填补后重新估计频率。`minor` 都填零并使用全部模型样本作为分母：base 用 `MAC_restore = round(((2*MAF)*(1-allele_missing_rate))*N)` 恢复计数，再求 `MAF = MAC_restore/(2*N)`；PheWAS 用完整 dosage 的列和除以 `2*N`。Base 的恢复公式用于 minor 填补后的频率，与下表的初始 MAC 筛选公式不同。没有半缺失、样本和 minor 方向相同的情况下，两个实数等价的频率公式可能有不同浮点舍入，随之改变 mean 填充值。Base/PheWAS 的选择关系到原 wrapper 的计算语义，不能仅由 Rdata 输出布局推断。
 
@@ -114,11 +114,11 @@ QC 节点由数据配置指定。应先核对实际字段，不能仅因节点�
 
 ```python
 import numpy as np
-from staar_phewas.gds import SeqArrayGDS
+from torchstaar.gds import SeqArrayGDS
 
 sample_ids = np.loadtxt("phenotype_sample_ids.txt", dtype=str, ndmin=1)
 variant_indices = np.arange(100, 1124, dtype=np.int64)
-with SeqArrayGDS("cohort.gds") as genotype_reader:
+with SeqArrayGDS("input.gds") as genotype_reader:
     union_sample_indices = genotype_reader.sample_indices(sample_ids)
     minor_block = genotype_reader.minor_block(
         variant_indices, union_sample_indices,
@@ -144,9 +144,9 @@ with SeqArrayGDS("cohort.gds") as genotype_reader:
 ```python
 import json
 import numpy as np
-from staar_phewas.gds import SeqArrayGDS
-from staar_phewas.io import load_null_model
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
+from torchstaar.gds import SeqArrayGDS
+from torchstaar.io import load_null_model
+from torchstaar.pipeline import AnalysisOptions, PheWASPipeline
 
 null_model = load_null_model("phenotype_null.npz", device="cuda")
 annotation_catalog = json.load(open("annotation_catalog.json", encoding="utf-8"))
@@ -178,7 +178,7 @@ with SeqArrayGDS("chromosome.gds") as genotype_reader:
 
 `annotation_block_size` 限制每批元数据行数，`genotype_block_size` 限制每批解码位点数，`memory_limit_gib` 是 GPU 工作空间估计上限。非连续元数据索引用有界连续节点读取恢复请求顺序，避免为每个小查询构造全染色体选择向量。单变异计算只求 score 和方差对角线，每块一次传回结果；5000 位点的原版分组以并集 MAC 筛选后的序号确定，与解码块大小独立。
 
-CLI 每次打开染色体均用 null model 的 canonical GDS sample IDs 重新映射样本行，并验证顺序。缓存的另一染色体行号不能直接代用。`statistics_execution="batched"` 对 coding、noncoding、ncRNA 和滑窗使用同一批量统计入口；二元 SPA 和联合多表型保持各自统计核。
+CLI 每次打开染色体均用 null model 的 canonical GDS sample IDs 重新映射样本行，并验证顺序。缓存的另一染色体行号不能直接代用。当前完整生产CLI使用 `statistics_execution="serial"`；二元SPA和联合多表型使用各自低级API与验证范围。
 
 单变异从稀疏 dosage 和独立 allele 摘要预筛 MAC，先筛掉达不到原阈值的列，再为保留列调用 `trait_dense`。Base 和 PheWAS 的并集初始 MAC 都由 REF_AC、allele missing rate 及上述 ALT_AC 公式得到；base 随后不再用完整 dosage MAC 二次筛选，PheWAS 当前表型仍按完整 dosage 的列和筛选。读取和解码仍须得到这些位点；过滤前不重复建立各表型的 dense 矩阵。并集 minor 方向、每个表型自己的 MAF 和 mean 填补、过滤后的 5000 位点分组、REF/ALT factor 与 row.names 按原 wrapper 规则处理。CUDA 整数解码和预筛先通过下述真实 100 kb 区段对照，随后在本轮完整 chr21 串行流程中通过四个 Single 正式文件及八份原 R 元数据读回。
 
@@ -187,7 +187,7 @@ CLI 每次打开染色体均用 null model 的 canonical GDS sample IDs 重新�
 只检查维度和字段结构：
 
 ```bash
-python -m staar_phewas.gds --gds cohort.gds --node annotation/info/QC_label
+python -m torchstaar.gds --gds input.gds --node annotation/info/QC_label
 ```
 
 原生依赖固定为 CoreArray/pygds commit `b7a2dbbebf3b06ac4e97c806e36ec4e1a6af5bdd`。Conda 环境可提供 Python、NumPy、C++ 编译器和 liblzma 后构建该依赖：
@@ -206,9 +206,9 @@ LZMA_PREFIX="$CONDA_PREFIX" python -m pip install --no-deps --no-build-isolation
 在已安装上述 PyGDS 的环境中显式构建本项目的 C++ 适配器。还需要 setuptools、Python 开发头文件和 C++ 编译器；前面的 Conda 环境提供这些构建依赖。
 
 ```bash
-python -m staar_phewas.gds_flat --output-dir ./build/gds-flat
+python -m torchstaar.gds_flat --output-dir ./build/gds-flat
 export PYTHONPATH="$PWD/build/gds-flat${PYTHONPATH:+:$PYTHONPATH}"
-python -m staar_phewas.cli analysis.json
+python -m torchstaar.cli analysis.json
 ```
 
 构建只在指定目录写入适配器和中间文件，不下载依赖、不写入 site-packages。构建输出 JSON 含 `native_binary_sha256`、`adapter_source_sha256`、`sdk_headers_sha256` 和 `pygds_version`。二进制依赖当前 Python/SDK/编译环境，跨环境应重新构建并保留新的 SHA。
@@ -216,9 +216,9 @@ python -m staar_phewas.cli analysis.json
 运行时可直接记录读取器实际使用的后端：
 
 ```python
-from staar_phewas.gds import SeqArrayGDS
+from torchstaar.gds import SeqArrayGDS
 
-with SeqArrayGDS("cohort.gds") as genotype_reader:
+with SeqArrayGDS("input.gds") as genotype_reader:
     metadata = genotype_reader.reader_metadata
     print(metadata["reader_backend"])          # native_auto 或 pygds_generic
     print(metadata["native_binary_sha256"])    # 通用路径时为 None
@@ -235,7 +235,7 @@ with SeqArrayGDS("cohort.gds") as genotype_reader:
 
 ```r
 library(SeqArray)
-genotype_file <- seqOpen("cohort.gds")
+genotype_file <- seqOpen("input.gds")
 seqSetFilter(genotype_file, variant.id = selected_variant_ids,
              sample.id = phenotype_sample_ids)
 reference_dosage <- seqGetData(genotype_file, "$dosage")
@@ -245,48 +245,13 @@ seqClose(genotype_file)
 
 `$dosage` 是 REF 拷贝数。表型子集处理采用 STAARpipelinePheWAS 的 `Genotype_sp_extraction`、`Missing_num.sp` 和逐表型 mean/minor 填补规则。当前验证使用 R `gdsfmt` 直接读取同一 GDS 节点作为独立解码参照。
 
-## 5. 真实数据对照
+## 5. 当前验证与测量
 
-2026-10-05，执行源码 `c6362c6d392dce8c29668a9563a88182714571ebc8aa68285e5988a7ad423300`（33 个执行及依赖定义文件）的 chr21 连续表型串行流程完成 795 项任务、全部 15 个 mask 和 18 个正式文件。18 项关联文件比较、R/GPU 各四份 Single 元数据读回及一项零模型比较严格通过。关联核对 161,839 个数值字段、3,343,119 个数值单元格，结构和数值超限差异为零，最大绝对/相对差为 `1.0913936421275139e-10` / `1.7739502638151633e-9`；零模型的 341,221 个数值单元格差异为 0。完整范围见 [原版对照记录](base_reference_inventory.md)，计时见 [性能分析](performance.md)。本轮完整 GPU 实验只报告串行，另一个批量运行按用户要求在完成前取消。
+当前全染色体验证的reader是已转存六状态缓存，原GDS继续提供元数据；完整795任务/19文件与P精度由 [主指南](torchstaar.md#5-最新真实精度与耗时)统一记录。SDK原始读取、packed读取与已转存reader的准备成本分开，不能由局部读出或合成decoder合同推导完整速度。frame/hash/样本轴与MAC边界的CPU合同属于格式验证，完整科学benchmark采用真实数据及独立原R输出。
 
-此次实际 SDK 为 `native_auto`，二进制 SHA-256 为 `6342919e6b9e8ce1597c96c547945ec9f54d8823eab935002231cec873b298d2`。解码成功调用为 CUDA 13,413 次、CPU 2,207 次；单变异解码覆盖 13,733,596 个位点，MAC 合格 318,132 个，REF_AF tie 为 1，半缺失和全部 allele 缺失计数均为 0，最大 Bit2 层数为 2。四个 Single 文件共 318,132 行、每份 13 列：238,947 个双等位 SNV、79,185 个双等位 Indel，N 均为 42,652；没有多等位输出、缺失 allele 或缺失 N。八份原 R 原生文件元数据读回均与正式报告及文件哈希缓存一致。下面的小区段和解码 pilot 保留其原范围，尤其不能用历史 AF tie 为 0 代替本轮的实际计数 1。
+## 6. 更新记录
 
-2026-10-04 对一份已处理的真实染色体 GDS 验证。文件有 345,967 个样本、14,866,221 个位点，固定倍性为 2；基因型为 `Bit2 + ZIP_RA`，三个位置使用两层 Bit2 编码。选取 2,079 个样本和 35 个位点，使用逆序请求检验行列顺序，包含全部三个多层位置。
-
-| 对照项 | 结果 |
-|---|---|
-| R `gdsfmt` 与 Python allele code | 逐元素完全一致 |
-| REF dosage，包括 6,490 个缺失调用 | 逐元素完全一致，NaN 对齐 |
-| 并集方向和 mean 填补后的 minor dosage | 最大绝对差 0 |
-| 当前样本的 MAF | 最大绝对差 0 |
-| variant ID、位置、allele、两种 QC 字段、CADD 和 GENCODE category | 均通过逐项对照；浮点注释按 R 文本导出精度比较 |
-| Python 三次基因型读取及字段读取、私有参照存储的整体耗时 | 两次检查为 3.77 和 4.22 秒；未与 R 同等计时流程比较，不据此给出加速倍数 |
-
-三个位点额外读取了全部 345,967 个样本；该真实数据的解码结果未出现大于 2 的非缺失 allele code，因此此结果证明多层索引和缺失编码读取，不能作为高 allele code 的专项精度验证。该输入没有变长 INFO 索引，FORMAT 为空；变长 INFO 实现遵循官方格式，尚未在该输入上获得真实字段对照。
-
-此次核对还发现：`annotation/filter` 的检查位置为缺失标签，而 `annotation/info/QC_label` 为 `PASS`。采用实际有效的 QC 字段是运行正确的前提。
-
-此解码检查与完整关联检验 benchmark 分开记录。它没有检验 null model、STAAR P 值、全基因组扫描或 GPU 加速。
-
-最终 `native_auto` 另完成五组真实解码回归，均与通用读取器逐元素一致：两组 42,652 人 × 128 位点（含样本和位点乱序）、一组 7 个远距和多层位点、旧独立 R oracle 的 2,079 人 × 35 位点，以及 345,967 人 × 3 个真实多层位点。35 位点同时与缓存的原 R allele code 完全一致。真实检查未出现 code > 2 或多等位调用；较高 code 和最多 16 层的检查来自单元测试，不能作为真实数据覆盖。
-
-两组 128 位点的自动路径首次/重复调用分别为 0.430/0.342 和 0.378/0.406 秒；相应通用路径为 1.075/0.984 和 1.095/1.194 秒。计时只覆盖读取和解码，方法顺序做了交替，操作系统文件缓存未清空，也未隔离共享存储。这些观测不构成完整 pipeline 或 R 端到端加速结论。原 fullbulk 原型没有获得稳定的大幅改善，未作为性能结论。
-
-CUDA 整数解码和 MAC 预筛另在 42,652 样本的真实 100 kb 单变异区段输出正式 Rdata/RDS。45 次 CUDA 解码覆盖 45,247 个 PASS 位点，保留 1,023 个 MAC 合格位点；原 R 递归回读的 13 列类型、factor、整数 row.names、全部属性及 10,230 个 double 单元格通过严格检查。最大绝对差 `2.956e-12`、相对差 `3.022e-13`。本次初始化 2.626 秒、关联调用 21.794 秒、峰值 GPU allocated 704.3 MiB；关联调用包括读取、MAC 预筛和统计，不含正式文件写出。177 次 selected 读取返回 3.860 GB，测得读取调用 16.718 秒；这一字节数为 SDK 返回缓冲区。缓存未清、共享主机负载未隔离，原 R 最终区段没有独立函数计时，故不计算 R/GPU 加速倍数。实际解码覆盖中半缺失、AF tie 和全部 allele 缺失均为零、最大一层；这些边界的 CPU/CUDA 原 R 对照来自合成单测，不作为真实数据覆盖。
-
-历史冻结源码 `56162751…` 的五个 Coding 文件严格通过，首个 Noncoding 文件有两个数值单元格超出容差；随后 `8520cf24…` 在 Noncoding 368 出现三个超容差数值。`5b0dfd83…` 又在 Noncoding 367 的三个字段超出容差后中断，串行完成 325 项，批量未开始。这些历史失败的源码与结果独立保留。更早的一处差异曾在真实基因局部回读中通过：7 个类别、6 个非空，528 个数值元素全部满足容差，最大绝对差 8.000e-9、相对差 2.510e-8。本轮 `c6362c6d…` 已通过上文完整串行 18/8/1 验收，未改变原严格容差；历史局部结果不代替本轮全量记录。
-
-2026-10-04 的候选索引回归另使用同一真实输入的 42,652 个已对齐样本，检查 11 项 coding、noncoding、ncRNA、单变异和滑窗任务的正式 RData。串行与批量路径各有 1,243 个数值元素通过原 R 的结构和值比较，容差为绝对 `1e-10` 加相对 `1e-7`；18 个单变异位点也覆盖新方差对角线及一次性结果传回实现。批量 ncRNA 和一组、五组滑窗另在最新入口重跑，统计诊断确认调用批量核。这里记录的是已执行的任务范围，完整染色体计时另行报告。
-
-## 6. 更新和验证记录
-
-- 2026-10-05：`c6362c6d…` 完整 chr21 串行 795 项、18 个正式文件及 18/8/1 验收通过；原 R 与 GPU Single 都为 318,132 行、N 42,652，实际 AF tie 为 1、最大两层 Bit2。批量完整实验按用户要求取消，仅保留此前局部回归范围。
-- 2026-10-04：增加原生只读 GDS 接口；完成真实 Bit2 层索引、任意样本/位点顺序、缺失、REF dosage、factor 和固定注释的 R 独立对照。
-- 2026-10-04：增加并集 minor 方向、逐表型 MAF、mean/minor 缺失处理，以及保留显式 NaN 的 COO 输出。
-- 2026-10-04：明确固定依赖来源与现有真实数据尚未覆盖的高 allele code、变长 INFO、FORMAT 验证边界。
-- 2026-10-04：增加按需类别索引、有界元数据读取、REF/ALT 共用读取、按基因复用和单变异流式结果；串行与批量真实 11 项回归通过原 R 对照。
-- 2026-10-04：增加官方 PyGDS capsule SDK flat/selected 适配器、显式构建与后端/SHA 元数据；自动路径五组真实解码逐元素一致。该轮为读取器局部检查，后续完整关联结果见上文。
-- 2026-10-04：增加可选 CUDA 整数解码、独立 allele 摘要和单变异 MAC 预筛；真实 1,023 行正式文件通过原 R 全结构及 10,230 个 double 单元格检查。该轮为单变异 pilot，完整串行验收另记于 2026-10-05。
+当前保留原minor方向、缺失/部分缺失、样本子集重排与原MAC初筛；读取不隐式编译/安装。六状态缓存默认decoded LRU64MiB、逐miss校验与open/close source证明，API见 [cache](sixstate_cache.md)。
 
 ## 7. 原实现和参考文献
 

@@ -15,8 +15,8 @@
 
 ```python
 import numpy as np
-from staar_phewas.binary_null import fit_logistic_null
-from staar_phewas.io import save_null_model, load_null_model
+from torchstaar.binary_null import fit_logistic_null
+from torchstaar.io import save_null_model, load_null_model
 
 # 私有准备文件：已去掉缺失，所有数组按同一完整案例顺序排列。
 inputs = np.load("binary_inputs.npz", allow_pickle=False)
@@ -30,7 +30,7 @@ save_null_model(model, "binary_null.npz")  # 含个体数据，保存到私有�
 reloaded_model = load_null_model("binary_null.npz", device="cuda")
 ```
 
-命令行是 `staar-phewas-torch analysis.json --device cuda`。`phenotypes` 中每项采用 `family="binomial"`、`binary_mode="ordinary"`、`transform="none"`，或者用 `model` 加载完整 NPZ 状态。普通模式明确表示不使用准备文件内的 GRM。关联 Rdata 采用原版 SPA 字段；二项 null 的原生 Rdata 写出尚未实现，应保存完整 NPZ 缓存。原 R 验算缓存标记为 reference，默认不能用于正式 CLI；它需要显式 `validation_reference=true`，执行报告也保留该标记。
+二分类属于显式FP64对照API，配置 `matmul_mode="fp64"`、`precision_control=true` 后使用 `torchstaar analysis.json --device cuda`；当前TF32完整染色体生产入口不接受二分类。`phenotypes` 中每项采用 `family="binomial"`、`binary_mode="ordinary"`、`transform="none"`，或者用 `model` 加载完整 NPZ 状态。普通模式明确表示不使用准备文件内的 GRM。关联 Rdata 采用原版 SPA 字段；二项 null 的原生 Rdata 写出尚未实现，应保存完整 NPZ 缓存。原 R 验算缓存标记为 reference，默认不能用于正式 CLI；它需要显式 `validation_reference=true`，执行报告也保留该标记。
 
 原软件的普通拟合对照命令是 `glm.fit(X, y, family=binomial())`；关联统计参考 [STAAR 二项 SPA 源码](https://github.com/yuxinyuanqt/STAAR/tree/4bbf77ba8a90894a434f5eb4473d540e172dad05) 和 [二项 SPA 文档](binary.md)。R 仅用于开发时对照，生产代码不调用 R。
 

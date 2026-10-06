@@ -79,3 +79,50 @@ def test_chromosome_plan_rejects_removed_reconstruction_controls(obsolete):
     cfg=configuration();cfg.update(obsolete)
     with pytest.raises((ValueError,TypeError)):
         chromosome_configuration(cfg,manifest())
+
+
+@pytest.mark.parametrize('requested',['auto','torch','cusolver_batched'])
+def test_solver_choice_survives_complete_plan_and_run_chromosome(requested,monkeypatch):
+    from staar_phewas import cli
+    from staar_phewas.chromosome import run_chromosome
+    cfg=configuration();cfg['manifest']=manifest();cfg['weighted_eigensolver']=requested
+    baseline=chromosome_configuration(configuration(),manifest())
+    expanded=chromosome_configuration(cfg,cfg['manifest'])
+    assert expanded['weighted_eigensolver']==requested
+    assert expanded['chromosomes']==baseline['chromosomes']
+    assert expanded['coverage']==baseline['coverage']
+    called=[]
+    def execute(configuration,**kwargs):
+        called.append((configuration,kwargs))
+        return {'weighted_eigensolver_execution':cli._weighted_eigensolver_settings(
+            configuration,configuration['matmul_mode'],kwargs['device'])}
+    monkeypatch.setattr(cli,'run_configuration',execute)
+    report=run_chromosome(cfg,device='cuda:0')
+    assert called[0][0]['weighted_eigensolver']==requested
+    assert report['weighted_eigensolver_execution']['requested']==requested
+    assert report['weighted_eigensolver_execution']['effective']==('torch' if requested=='torch' else 'cusolver_batched')
+    assert report['coverage']==baseline['coverage']
+
+
+@pytest.mark.parametrize('invalid',[None,True,[],'unsupported'])
+def test_run_chromosome_keeps_invalid_choice_so_cli_rejects_before_analysis(invalid,monkeypatch):
+    from staar_phewas import cli
+    from staar_phewas.chromosome import run_chromosome
+    cfg=configuration();cfg['manifest']=manifest();cfg['weighted_eigensolver']=invalid
+    monkeypatch.setattr(cli,'_run_configuration',lambda *args,**kwargs:pytest.fail('invalid solver entered analysis'))
+    with pytest.raises(ValueError,match='weighted_eigensolver'):
+        run_chromosome(cfg,device='cuda')
+
+
+def test_unset_chromosome_solver_uses_cli_auto_default(monkeypatch):
+    from staar_phewas import cli
+    from staar_phewas.chromosome import run_chromosome
+    cfg=configuration();cfg['manifest']=manifest()
+    assert 'weighted_eigensolver' not in chromosome_configuration(cfg,cfg['manifest'])
+    def execute(configuration,**kwargs):
+        return {'weighted_eigensolver_execution':cli._weighted_eigensolver_settings(
+            configuration,configuration['matmul_mode'],kwargs['device'])}
+    monkeypatch.setattr(cli,'run_configuration',execute)
+    report=run_chromosome(cfg,device='cuda:0')
+    assert report['weighted_eigensolver_execution']['requested']=='auto'
+    assert report['weighted_eigensolver_execution']['effective']=='cusolver_batched'

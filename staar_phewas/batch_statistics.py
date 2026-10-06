@@ -14,8 +14,7 @@ from .statistics import (
     annotation_weights, staar_test, _ordered_sum,
 )
 
-from ._precision_eigen import (near_mean_mask, refine_near_mean_spectrum,
-                               record_gpu_eigen_route)
+from ._precision_eigen import near_mean_mask, record_gpu_eigen_route
 
 
 def _saddle_batch(q_raw: torch.Tensor, raw: torch.Tensor):
@@ -107,10 +106,9 @@ def _prepare(item):
     u, v, f = u[keep], v[keep][:, keep], f[keep]
     if not bool(torch.allclose(v, v.T, atol=1e-10, rtol=1e-10)):
         raise ValueError("covariance must be symmetric")
-    reference_covariance = v
     v = (v + v.T) * .5
     _, ws, _ = annotation_weights(f, annotations)
-    return u, v, ws, reference_covariance
+    return u, v, ws
 
 
 def staar_test_batch(
@@ -130,13 +128,13 @@ def staar_test_batch(
         raise ValueError("max_workspace_bytes must be positive")
     prepared = [_prepare(item) for item in items]
     outputs = [None] * len(items)
-    skat_values = [torch.empty(ws.shape[1], dtype=u.dtype, device=u.device) for u, _, ws, _ in prepared]
+    skat_values = [torch.empty(ws.shape[1], dtype=u.dtype, device=u.device) for u, _, ws in prepared]
     groups = defaultdict(list)
     serial = set()
     diagnostics = {"masks": len(items), "weighted_matrices": 0, "eigen_batches": 0,
                    "compatibility_rows": 0, "precision_reference_rows": 0, "workspace_serial_masks": 0,
                    "max_weighted_matrix_bytes": 0, "dtype": "float64"}
-    for index, (u, v, ws, _) in enumerate(prepared):
+    for index, (u, v, ws) in enumerate(prepared):
         # Account for weighted input, solver copy/workspace and staging.
         if 4 * 8 * len(u)**2 > max_workspace_bytes:
             serial.add(index)
@@ -165,7 +163,7 @@ def staar_test_batch(
             chunk = rows[start:start + batch_size]
             matrices, statistics = [], []
             for index, column in chunk:
-                u, v, ws, _ = prepared[index]
+                u, v, ws = prepared[index]
                 weight = ws[:, column]
                 matrices.append(v * weight[:, None] * weight[None, :])
                 # Retain the original 1-D reduction for each quadratic form.
@@ -176,17 +174,12 @@ def staar_test_batch(
             probabilities, compatibility = _saddle_batch(torch.stack(statistics), eigenvalues)
             fallback_rows = torch.nonzero(compatibility, as_tuple=True)[0].cpu().tolist()
             for row in fallback_rows:
-                index, column = chunk[row]
-                _, _, ws, reference_covariance = prepared[index]
-                weight = ws[:, column]
-                original_eigenvalues, refined = refine_near_mean_spectrum(
-                    reference_covariance, eigenvalues[row], statistics[row], weights=weight)
-                if not refined and not (stacked.is_cuda and size <= 32 and len(chunk) > 1):
+                original_eigenvalues = eigenvalues[row]
+                if not (stacked.is_cuda and size <= 32 and len(chunk) > 1):
                     original_eigenvalues = torch.linalg.eigvalsh(matrices[row], UPLO="U")
                     record_gpu_eigen_route(matrices[row])
                 probabilities[row] = _quadratic_form_sf_tensor(
-                    statistics[row], original_eigenvalues, reference_reduction=refined)
-                diagnostics["precision_reference_rows"] += int(refined)
+                    statistics[row], original_eigenvalues, reference_reduction=False)
             for row, (index, column) in enumerate(chunk):
                 skat_values[index][column] = probabilities[row]
             diagnostics["weighted_matrices"] += len(chunk)

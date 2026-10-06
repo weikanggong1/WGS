@@ -4,6 +4,8 @@ import copy
 
 _METADATA = {
     "backend": "torch_complete_eigvalsh",
+    "route_scope": "successful original torch.linalg.eigvalsh API calls only; driver is not traced",
+    "driver_traced": False,
     "cpu_precision_refinement": "retired_not_used",
     "workspace_policy": "bounded_weighted_matrix_batches",
     "cpu_eigen_calls": 0, "cpu_solve_seconds": 0.,
@@ -19,7 +21,7 @@ def record_gpu_eigen_route(matrix):
     """Record successful complete Torch solves without changing their precision."""
     if not matrix.is_cuda:return
     count = 1 if matrix.ndim == 2 else matrix.shape[0]
-    route = "small_batched_jacobi" if matrix.ndim == 3 and count > 1 and matrix.shape[-1] <= 32 else "syevd"
+    route = "torch.linalg.eigvalsh"
     _METADATA["gpu_eigen_calls"] += 1
     _METADATA["gpu_eigen_matrices"] += count
     routes = _METADATA["gpu_eigen_routes"]
@@ -45,7 +47,7 @@ def precision_eigen_execution_metadata(*, reset=False):
 
 
 def near_mean_mask(statistic, eigenvalues):
-    """Legacy batch branch predicate only; never selects CPU refinement."""
+    """Current saddle branch predicate; never selects CPU refinement."""
     import torch
     spectrum = torch.where(eigenvalues < 1e-8, 0., eigenvalues)
     maximum = spectrum.max(dim=-1).values
@@ -55,12 +57,3 @@ def near_mean_mask(statistic, eigenvalues):
     upper = (scaled / (1 - 2 * (.01 + 1e-8) * scaled)).sum(dim=-1)
     return ((q >= lower) & (q <= upper) & (statistic > 0) & (maximum > 0)
             & torch.isfinite(statistic) & torch.isfinite(eigenvalues).all(dim=-1))
-
-
-def refine_near_mean_spectrum(matrix, eigenvalues, statistic, *, weights=None):
-    """Import compatibility for explicit legacy controls: retain Torch spectrum.
-
-    CPU refinement and pinned external LAPACK loading have been removed.
-    Native STAAR does not call this compatibility hook.
-    """
-    return eigenvalues, False

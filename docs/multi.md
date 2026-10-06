@@ -1,6 +1,6 @@
 # 联合多表型 Gaussian MultiSTAAR
 
-`staar_phewas.multi` 在同一批完整案例样本上联合建模多个连续表型，估计表型间协方差，再计算联合 SKAT、burden、ACAT-V 和 MultiSTAAR-O。矩阵运算、特征值、卡方尾概率、鞍点近似和 Cauchy 合并均使用 PyTorch float64；生产分析不调用 R。
+`torchstaar.multi` 在同一批完整案例样本上联合建模多个连续表型，估计表型间协方差，再计算联合 SKAT、burden、ACAT-V 和 MultiSTAAR-O。矩阵运算、特征值、卡方尾概率、鞍点近似和 Cauchy 合并均使用 PyTorch float64；生产分析不调用 R。
 
 ```mermaid
 flowchart LR
@@ -53,7 +53,7 @@ flowchart LR
 ```python
 import numpy as np
 import torch
-from staar_phewas.multi import fit_joint_gaussian_null, multi_staar_test
+from torchstaar.multi import fit_joint_gaussian_null, multi_staar_test
 
 # 私有文件：所有数组均按共同完整案例的样本顺序排列。
 aligned_data = np.load("joint_inputs.npz", allow_pickle=False)
@@ -80,11 +80,11 @@ null_model.save("joint_null.pt")  # 含个体数据，只保存到私有运行�
 
 ## 命令行
 
-关联任务使用通用入口 `staar-phewas-torch analysis.json --device cuda`。联合模型以共同完整案例的二维 `y_raw[n,t]` 准备文件作为一个 phenotype 配置项；它与多个独立单表型配置项有不同统计含义。配置必须明确写 `joint_mode`：`ordinary` 表示省略 GRM，`strict` 保留原版对角 GRM AI 与边界失败，`robust` 显式采用独立因子 REML。加载已拟合 NPZ 缓存时也必须指定与缓存一致的模式，不会自动切换。
+联合多表型属于显式FP64对照API；通用入口需配置 `matmul_mode="fp64"`、`precision_control=true`，然后运行 `torchstaar analysis.json --device cuda`。当前TF32完整染色体生产范围仍为单Gaussian表型。联合模型以共同完整案例的二维 `y_raw[n,t]` 准备文件作为一个 phenotype 配置项；它与多个独立单表型配置项有不同统计含义。配置必须明确写 `joint_mode`：`ordinary` 表示省略 GRM，`strict` 保留原版对角 GRM AI 与边界失败，`robust` 显式采用独立因子 REML。加载已拟合 NPZ 缓存时也必须指定与缓存一致的模式，不会自动切换。
 
 ```json
 {
-  "name": "joint_imaging",
+  "name": "joint_traits",
   "input": "joint_inputs.npz",
   "joint_mode": "strict",
   "transform": "rint",
@@ -99,7 +99,7 @@ null_model.save("joint_null.pt")  # 含个体数据，只保存到私有运行�
 
 联合 native null 写出真正 `glmmkin.multi`：保留 covariance、scaled residual、稀疏 trait-major `Sigma_i` 与 `Sigma_iX`；`null_layout="multistaar"` 保留原 MultiSTAAR wrapper 字段，默认 `phewas` 追加 pipeline 的 flags。写出只使用 Python XDR 序列化。每个模型的单变异输出包含联合 score 向量和自由度为表型数的卡方 P，没有单一效应估计。
 
-命令行配置与输出结构见 [pipeline 说明](pipeline.md)。直接检查联合模型代数可以运行 `python -m pytest tests/test_multi.py`。
+命令行配置与输出结构见 [pipeline 说明](torchstaar.md)。直接检查联合模型代数可以运行 `python -m pytest tests/test_multi.py`。
 
 ## 原 R 调用与版本问题
 

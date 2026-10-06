@@ -5,17 +5,84 @@ unchanged. Real chr21 significant-P validation is described in the benchmark;
 CPU contracts check interfaces separately.
 """
 from contextlib import contextmanager,nullcontext
+import copy
 import math
+import threading
 import time
 import torch
 
 WEIGHTED_BATCH_LIMIT_BYTES=512*2**20
-_PINNED=None
 _PROFILE_HOOK=None
+_SOLVER_LOCK=threading.RLock()
+_SOLVER_CONTEXT_ACTIVE=False
+_SOLVER=None
+_LAST_SOLVER_CONTEXT=None
 _METRICS=dict(calls=0,batch_sizes=[],eigen_api_calls=0,complete_representative_spectra=0,
               exact_relation_reused_spectra=0,live_workspace_queries=0,workspace_rejections=0,
               max_estimated_batch_workspace_bytes=0,max_weighted_tensor_bytes=0,
-              workspace_query_host_seconds=0.)
+              workspace_query_host_seconds=0.,actual_backend_calls={},actual_backend_matrices={})
+
+def _make_solver(memory_limit):
+    # Library discovery stays lazy until the first selected CUDA tensor call.
+    from .cuda_eigen import FP32SmallSpectrumSolver
+    return FP32SmallSpectrumSolver(torch_module=torch,memory_limit=memory_limit)
+
+@contextmanager
+def eigensolver_context(mode='torch',*,memory_limit=20*2**30):
+    """Own one serialized weighted-spectrum solver for one pipeline run.
+
+    This module's context never replaces Torch functions or preferences. The
+    caller resolves auto/control/CPU policy before choosing either API here.
+    """
+    global _SOLVER_CONTEXT_ACTIVE,_SOLVER,_LAST_SOLVER_CONTEXT
+    if mode not in ('torch','cusolver_batched'):
+        raise ValueError('weighted eigensolver context requires torch or cusolver_batched')
+    if not _SOLVER_LOCK.acquire(blocking=False):
+        raise RuntimeError('weighted eigensolver context is already running on another thread')
+    if _SOLVER_CONTEXT_ACTIVE:
+        _SOLVER_LOCK.release()
+        raise RuntimeError('nested weighted eigensolver contexts are unsupported')
+    _SOLVER_CONTEXT_ACTIVE=True
+    state=dict(effective=mode,selector=None,context_setup_seconds=0.,context_cleanup_seconds=0.)
+    solver=None
+    try:
+        execution_metadata(reset=True)
+        started=time.perf_counter()
+        if mode=='cusolver_batched':solver=_make_solver(memory_limit)
+        _SOLVER=solver
+        state['context_setup_seconds']=time.perf_counter()-started
+        yield state
+    finally:
+        started=time.perf_counter()
+        try:
+            if solver is not None:solver.close()
+        finally:
+            try:
+                state['context_cleanup_seconds']=time.perf_counter()-started
+                state['selector']=None if solver is None else solver.report()
+                _LAST_SOLVER_CONTEXT=copy.deepcopy(state)
+            finally:
+                _SOLVER=None;_SOLVER_CONTEXT_ACTIVE=False
+                _SOLVER_LOCK.release()
+
+def _complete_eigvalsh(matrices):
+    if not _SOLVER_LOCK.acquire(blocking=False):
+        raise RuntimeError('weighted eigensolver belongs to another active pipeline thread')
+    try:
+        if _SOLVER is None or not matrices.is_cuda:
+            spectra=torch.linalg.eigvalsh(matrices,UPLO='U')
+            backend='torch.linalg.eigvalsh'
+        else:
+            spectra=_SOLVER.eigvalsh(matrices,UPLO='U')
+            backend=_SOLVER.last_execution_backend
+            if backend not in ('torch.linalg.eigvalsh','cusolverDnSsyevjBatched'):
+                raise RuntimeError('successful weighted solve lacks its actual API route')
+        _METRICS['actual_backend_calls'][backend]=_METRICS['actual_backend_calls'].get(backend,0)+1
+        count=1 if matrices.ndim==2 else matrices.shape[0]
+        _METRICS['actual_backend_matrices'][backend]=_METRICS['actual_backend_matrices'].get(backend,0)+count
+        return spectra,backend
+    finally:
+        _SOLVER_LOCK.release()
 
 def _pinned_statistics():
     from . import statistics
@@ -76,6 +143,9 @@ def native_weighted_spectra(covariance, weights):
     without a tolerance or annotation grouping approximation. Dense weighted
     matrices and eigvalsh remain FP32. Only spectrum scalar scaling uses FP64.
     """
+    if not _SOLVER_LOCK.acquire(blocking=False):
+        raise RuntimeError('weighted spectra belong to another active pipeline thread')
+    _SOLVER_LOCK.release()
     original=_pinned_statistics()
     _native_weight_relations=original._native_weight_relations
     _STATISTICS_METADATA=original._STATISTICS_METADATA
@@ -104,8 +174,8 @@ def native_weighted_spectra(covariance, weights):
         with _profile('weighted_matrix_build'):
             matrices = covariance[None, :, :] * w[:, :, None] * w[:, None, :]
         with _profile('eigvalsh'):
-            spectra = torch.linalg.eigvalsh(matrices, UPLO="U")
-        record_gpu_eigen_route(matrices)
+            spectra,backend = _complete_eigvalsh(matrices)
+        if backend=='torch.linalg.eigvalsh':record_gpu_eigen_route(matrices)
         _METRICS['batch_sizes'].append(len(indices))
         _METRICS['eigen_api_calls']+=1
         for index, spectrum in zip(indices, spectra):
@@ -120,15 +190,18 @@ def native_weighted_spectra(covariance, weights):
 
 
 def execution_metadata(*,reset=False):
-    report=dict(_METRICS,batch_sizes=list(_METRICS['batch_sizes']),
+    global _LAST_SOLVER_CONTEXT
+    report=dict(copy.deepcopy(_METRICS),
         batch_limit_bytes=WEIGHTED_BATCH_LIMIT_BYTES,
-        weighted_matrix_dtype='float32',eigensolver='torch.linalg.eigvalsh UPLO=U full spectrum',
+        weighted_matrix_dtype='float32',eigensolver='explicit complete FP32 eigvalsh APIs, UPLO=U',
+        eigensolver_context=copy.deepcopy(_LAST_SOLVER_CONTEXT),
         spectrum_scalar_scale_dtype='float64',exact_proportional_relations=True,
         eigenvalues_truncated=False,fp64_dense_matrix_products=False,
         scalar_scale_reductions_changed=False,
         workspace_policy='three matrix buffers + full spectrum; fresh live/process cap before each batch',
         workspace_limitation='estimate is not CUDA reservation or measured solver scratch bound; OOM propagates',
-        GPU_batch_equivalence='chr21 significant-union gate passed; see published benchmark scope')
+        GPU_batch_equivalence='external original-software real-data run report; not implied by API success')
     if reset:
-        for key,value in _METRICS.items():_METRICS[key]=[] if isinstance(value,list) else 0. if isinstance(value,float) else 0
+        for key,value in _METRICS.items():_METRICS[key]=[] if isinstance(value,list) else {} if isinstance(value,dict) else 0. if isinstance(value,float) else 0
+        _LAST_SOLVER_CONTEXT=None
     return report

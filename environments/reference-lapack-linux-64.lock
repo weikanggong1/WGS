@@ -1,6 +1,0 @@
-# Official Conda packages for the STAAR 0.9.9 reference spectrum.
-# Install into a separate prefix with conda create --prefix PREFIX --file FILE.
-@EXPLICIT
-https://api.anaconda.org/download/intel/intel-openmp/2019.2/linux-64/intel-openmp-2019.2-intel_187.tar.bz2#5512a02df82c24d80ef327f081eec9c5
-https://api.anaconda.org/download/intel/tbb/2019.4/linux-64/tbb-2019.4-intel_199.tar.bz2#aa6bf5dd3d59a6fb9cabf2338a60193a
-https://api.anaconda.org/download/intel/mkl/2019.2/linux-64/mkl-2019.2-intel_187.tar.bz2#d82f7563225f25956ec3df106dd54c5b

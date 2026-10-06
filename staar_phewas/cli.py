@@ -152,9 +152,25 @@ def _bind_gds_samples(gds,model,prepared_indices=None,rule="auto"):
     return indices
 
 
+def _weighted_eigensolver_settings(config,mode,device):
+    requested=config.get('weighted_eigensolver','auto')
+    if not isinstance(requested,str) or requested not in ('auto','torch','cusolver_batched'):
+        raise ValueError('weighted_eigensolver must be auto, torch, or cusolver_batched')
+    weight_batch=config.get('weight_batch_optimization',True)
+    if not isinstance(weight_batch,bool):
+        raise ValueError('weight_batch_optimization must be a JSON boolean')
+    eligible=mode=='tf32' and weight_batch and str(device).startswith('cuda')
+    effective='cusolver_batched' if eligible and requested!='torch' else 'torch'
+    reason=(None if effective=='cusolver_batched' else 'explicit_torch' if requested=='torch'
+            else 'matmul_mode_not_tf32' if mode!='tf32' else 'weight_batch_optimization_disabled'
+            if not weight_batch else 'device_not_cuda')
+    return dict(requested=requested,effective=effective,eligible=eligible,inactive_reason=reason)
+
+
 def run_configuration(config, *, device="cuda"):
     """Run a forced TF32 analysis, or an explicit FP64 reference control."""
     mode = validate_mode(config.get("matmul_mode", "tf32"))
+    solver_settings=_weighted_eigensolver_settings(config,mode,device)
     # Every run resets the native backend. Reconstruction controls were
     # removed rather than silently mapped to a different arithmetic mode.
     obsolete = {"tf32_binned_tile_shape", "tf32_binned_fused_small"} & config.keys()
@@ -166,14 +182,21 @@ def run_configuration(config, *, device="cuda"):
     tf32_configuration.update(requested_split_k=requested_split_k,
         effective_split_k=0 if mode == "tf32" else None,
         split_k_applies=False)
-    if mode == "fp64":
-        report = _run_configuration(config, device=device)
-        report["dense_product_audit"] = {"enabled": False, "scope": "reference control"}
-        report["tf32_configuration"] = tf32_configuration
-        return report
-    with DenseProductAudit(forced=True) as audit:
-        report = _run_configuration(config, device=device)
-    report["dense_product_audit"] = audit.report()
+    from . import _weighted_spectra
+    with _weighted_spectra.eigensolver_context(solver_settings['effective'],
+            memory_limit=tf32_configuration['tf32_memory_limit_bytes']) as solver_state:
+        if mode == "fp64":
+            report = _run_configuration(config, device=device)
+            report["dense_product_audit"] = {"enabled": False, "scope": "reference control"}
+        else:
+            with DenseProductAudit(forced=True) as audit:
+                report = _run_configuration(config, device=device)
+            report["dense_product_audit"] = audit.report()
+    report['weighted_eigensolver_execution']=dict(solver_settings,**solver_state,
+        scientific_gate_scope='external original-software real-data comparison; not implied by API success')
+    if mode=='tf32':report['weighted_spectrum_execution']=_weighted_spectra.execution_metadata()
+    if 'total_seconds' in report:
+        report['total_seconds']+=solver_state['context_setup_seconds']+solver_state['context_cleanup_seconds']
     report["tf32_configuration"] = tf32_configuration
     return report
 
@@ -488,9 +511,14 @@ def main():
     parser = argparse.ArgumentParser(description="GPU STAAR PheWAS on native GDS")
     parser.add_argument("config", type=Path, help="private JSON analysis configuration")
     parser.add_argument("--device", default="cuda", help="cuda, cuda:0, or cpu")
+    parser.add_argument("--weighted-eigensolver", choices=("auto","torch","cusolver_batched"),
+        help="override weighted_eigensolver in JSON; CUDA native TF32 only, default auto")
     parser.add_argument("--report", type=Path, help="aggregate execution summary")
     args = parser.parse_args()
-    report = run_configuration(json.loads(args.config.read_text()), device=args.device)
+    configuration=json.loads(args.config.read_text())
+    if args.weighted_eigensolver is not None:
+        configuration['weighted_eigensolver']=args.weighted_eigensolver
+    report = run_configuration(configuration, device=args.device)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False))

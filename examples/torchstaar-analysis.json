@@ -1,0 +1,60 @@
+{
+  "phenotypes": [
+    {
+      "name": "trait_A",
+      "input": "private/aligned_trait.npz",
+      "transform": "rint",
+      "save_model": "private/trait_model.npz",
+      "output_null": "runs/obj_nullmodel.Rdata"
+    }
+  ],
+  "qc_path": "annotation/info/QC_label",
+  "annotation_catalog": "private/annotation_catalog.json",
+  "annotation_names": [
+    "CADD",
+    "aPC.LocalDiversity"
+  ],
+  "analysis_options": {
+    "rare_maf_cutoff": 0.01,
+    "rv_num_cutoff": 2,
+    "variant_type": "SNV",
+    "imputation": "mean",
+    "genotype_block_size": 1024,
+    "memory_limit_gib": 20
+  },
+  "chromosomes": [
+    {
+      "name": "22",
+      "gds": "private/chr22.gds",
+      "jobs": [
+        {
+          "name": "coding_example",
+          "kind": "coding",
+          "arguments": {
+            "gene_name": "GENE_A",
+            "start": 100000,
+            "end": 101000
+          },
+          "output": "runs/trait_A_Coding_1.Rdata"
+        },
+        {
+          "name": "individual_example",
+          "kind": "individual",
+          "arguments": {
+            "start": 100000,
+            "end": 104000,
+            "mac_cutoff": 20
+          },
+          "output": "runs/trait_A_Individual_Analysis_1.Rdata"
+        }
+      ]
+    }
+  ],
+  "matmul_mode": "tf32",
+  "weighted_eigensolver": "auto",
+  "statistics_execution": "serial",
+  "local_mask_reuse": true,
+  "weight_batch_optimization": true,
+  "statistics_tail_optimization": true,
+  "individual_genotype_block_size": 8192
+}

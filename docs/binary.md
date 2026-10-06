@@ -1,12 +1,12 @@
 # 二分类 STAAR SPA
 
-`staar_phewas.binary` 用 float64 PyTorch 复现原版二分类 saddlepoint approximation（SPA）。输入已经拟合并按同一样本排序的二分类零模型状态，以及 minor allele 定向、均值填补后的基因型。GPU 输入保留 GPU 计算；生产调用不调用 R。当前 API 提供个体变异 SPA 和原 `STAAR_Binary_SPA_sp` 的 burden 检验。
+`torchstaar.binary` 用 float64 PyTorch 复现原版二分类 saddlepoint approximation（SPA）。输入已经拟合并按同一样本排序的二分类零模型状态，以及 minor allele 定向、均值填补后的基因型。GPU 输入保留 GPU 计算；生产调用不调用 R。当前 API 提供个体变异 SPA 和原 `STAAR_Binary_SPA_sp` 的 burden 检验。
 
 SPA 从残差化基因型 `G_tilde = G - projection_left @ (xw @ G)` 和 score 出发，先作 Newton 迭代；失败时按原版使用 golden-section 搜索及二分搜索，然后把正负两个单侧概率相加。该原函数返回两组 Beta burden、各组 STAAR-B 以及总 STAAR-B。
 
 ```python
 import torch
-from staar_phewas.binary import individual_score_test_spa, staar_binary_spa
+from torchstaar.binary import individual_score_test_spa, staar_binary_spa
 
 # 所有矩阵按同一完整样本顺序排列，计算使用 float64。
 genotype_matrix = genotype_matrix.to(device="cuda", dtype=torch.float64)

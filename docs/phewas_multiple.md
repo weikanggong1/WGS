@@ -17,9 +17,9 @@ flowchart LR
 ```python
 import json
 from pathlib import Path
-from staar_phewas.gds import SeqArrayGDS
-from staar_phewas.io import fit_prepared_input
-from staar_phewas.pipeline import PheWASPipeline
+from torchstaar.gds import SeqArrayGDS
+from torchstaar.io import fit_prepared_input
+from torchstaar.pipeline import PheWASPipeline
 
 # 所有个体数据和产物存放在私有目录。
 annotation_catalog = json.loads(Path("annotation_catalog.json").read_text())
@@ -40,9 +40,9 @@ with SeqArrayGDS("chromosome.gds") as gds:
     )
 ```
 
-`results` 的各类别包含按 `[model_one, model_two]` 排列的结果；某个模型未达到稀有变异数下限时保留原版空项。所有模型共用 union 的 minor allele 方向，随后按各自完整案例计算 MAF；不会为每个模型再次翻转等位基因。参数、各分析输入和正式输出详见 [pipeline](pipeline.md)。
+`results` 的各类别包含按 `[model_one, model_two]` 排列的结果；某个模型未达到稀有变异数下限时保留原版空项。所有模型共用 union 的 minor allele 方向，随后按各自完整案例计算 MAF；不会为每个模型再次翻转等位基因。参数、各分析输入和正式输出详见 [pipeline](torchstaar.md)。
 
-命令行是 `staar-phewas-torch analysis.json --device cuda`。`phenotypes` 数组中每一项对应一个独立模型：
+多个独立模型使用低级API或显式FP64对照配置 `matmul_mode="fp64"`、`precision_control=true`，命令为 `torchstaar analysis.json --device cuda`；当前TF32完整染色体入口为单Gaussian模型。`phenotypes` 数组中每一项对应一个独立模型：
 
 ```json
 {
@@ -64,16 +64,8 @@ with SeqArrayGDS("chromosome.gds") as gds:
 
 原版 R 对应调用为 `Gene_Centric_Coding_PheWAS(..., obj_nullmodel_list=list(null_one, null_two))` 和 `Individual_Analysis_PheWAS`。原模型分别由 `STAARpipeline::fit_nullmodel(y~1, data=..., kins=..., id="id")` 拟合。
 
-2026-10-04 用两个真实连续连续表型分别保留 42,652、42,418 名完整案例，均保留真实 GRM。第一个表型从 raw 输入采用与 R 逐元素相同的 RINT；第二个使用明确冻结的变换值，R 和 GPU 读取相同值，不将这一项称为新的 raw-transform 验收。原作者推荐环境中真正 STAARpipelinePheWAS wrapper 运行两模型列表，比较 GENE_B 全部 coding 类别、GENE_A 单窗口及单变异。
+## 当前验证范围
 
-| 分析 | 核对数值字段 | 最大绝对差 | 原 R / GPU job 秒 |
-|---|---:|---:|---:|
-| GENE_B 全部 coding | 362 | 1.12e-8 | 32.811 / 39.016 |
-| GENE_A 单窗口 | 74 | 4.10e-12 | 15.903 / 17.792 |
-| GENE_A 单变异 | 396 | 5.41e-12 | 8.167 / 21.165 |
-
-所有字段通过 `abs_error <= 1e-10 + 1e-7*abs(R_value)`；正式 Rdata 的对象名、class、typeof、属性顺序、dimnames、factor levels 和 row.names 与原版比较均无差异。第二个模型的 theta、精度、Sigma_iX 和固定效应 covariance 逐位一致，scaled residual 最大差 `1.39e-17`。
-
-GPU 整体 110.081 秒，包含第一个 raw 表型 null 拟合 4.337 秒、模型加载、GDS 读取、三个 job 和 native 文件写入；观测峰值分配 0.250 GiB。原 R 表中是各 wrapper job 墙钟，不包含 null 拟合和外层文件保存，不能由这两类时间计算整体加速比。此前旧输入缓存引起的差分已换成当前冻结输入重新核验，旧缓存结果不属于该版本记录。
+多模型样本并集与各模型独立频率/插补通过CPU接口合同；既有真实两模型的coding与Single原R对照保留其低级FP64范围，不能推导当前单表型TF32或完整多模型染色体的精度/速度。完整当前benchmark、测量范围与近期版本统一见 [Torchstaar指南](torchstaar.md#5-最新真实精度与耗时)。
 
 参考：[STAARpipelinePheWAS 原代码](https://github.com/li-lab-genetics/STAARpipelinePheWAS)、[STAARpipeline 论文](https://doi.org/10.1038/s41592-022-01640-x)、[STAAR](https://doi.org/10.1038/s41588-020-0676-4)。

@@ -1,9 +1,9 @@
 # 表型、GDS 与亲缘矩阵对齐
 
-`staar_phewas.prepare` 从表型表、原生 SeqArray GDS 和 R 格式的稀疏 GRM 生成私有 NPZ。工具保留表型表顺序，剔除缺失、排除名单及无法同时匹配的样本。GDS 和 Matrix 文件由 Python 读取，不启动 R。
+`torchstaar.prepare` 从表型表、原生 SeqArray GDS 和 R 格式的稀疏 GRM 生成私有 NPZ。工具保留表型表顺序，剔除缺失、排除名单及无法同时匹配的样本。GDS 和 Matrix 文件由 Python 读取，不启动 R。
 
 ```bash
-staar-phewas-prepare \
+torchstaar-prepare \
     --gds private/chr22.gds \
     --phenotypes private/phenotypes.tsv \
     --phenotype-columns trait_A \
@@ -19,7 +19,7 @@ staar-phewas-prepare \
 ## Python 调用和参数
 
 ```python
-from staar_phewas.prepare import prepare_input
+from torchstaar.prepare import prepare_input
 
 alignment_summary = prepare_input(
     gds="private/chr22.gds",
@@ -50,8 +50,8 @@ alignment_summary = prepare_input(
 
 返回汇总包含表型行数、完整行数、排除 ID 数、最终样本数、性状数和保留 GRM 边数。输出 NPZ 包含 `ids`、原始 `gds_sample_ids`、零起始 `sample_indices`、`y_raw`、`phenotype_names`；GRM 输入时还包含 `grm_indices`、`grm_diagonal` 和非对角边的三个数组。单性状 `y_raw` 为 N 向量，联合为 N×T。协变量存在时另存 N×P `covariates` 与 `covariate_names`。
 
-本工具不变换表型，不再次阈值化 GRM，不把其对角替换成 1。秩变换在拟合配置的 `transform="rint"` 阶段执行。正式零模型及关联输出见 [pipeline](pipeline.md)。
+本工具不变换表型，不再次阈值化 GRM，不把其对角替换成 1。秩变换在拟合配置的 `transform="rint"` 阶段执行。正式零模型及关联输出见 [pipeline](torchstaar.md)。
 
-2026-10-04：真实原始连续表型 64,840 行、60,709 个有限值、353 个排除 ID，最终 42,652 个 GDS/GRM 对齐样本。Python 原生读取 GRM 后的 8 个关键数组与独立 R 导出的准备结果逐项一致，保留真实非单位对角项。此记录属于输入一致性检查；关联精度和耗时见 [benchmark](benchmark.md)。
+2026-10-04：真实原始连续表型 64,840 行、60,709 个有限值、353 个排除 ID，最终 42,652 个 GDS/GRM 对齐样本。Python 原生读取 GRM 后的 8 个关键数组与独立 R 导出的准备结果逐项一致，保留真实非单位对角项。此记录属于输入一致性检查；关联精度和耗时见 [benchmark](torchstaar.md)。
 
 原 R 对应通过 `load()` 读取 Matrix GRM、`seqGetData(genofile,"sample.id")` 读取样本，并按照匹配索引子集化；正式拟合调用见 [零模型](null_model.md)。参考：[SeqArray](https://github.com/zhengxwen/SeqArray)、[CoreArray pygds](https://github.com/CoreArray/pygds)、[rdata](https://github.com/vnmabus/rdata)、[R Matrix](https://cran.r-project.org/package=Matrix)。

@@ -5,7 +5,7 @@
 | Python模块 | 分析与输出 | 文档 |
 |---|---|---|
 | `torchwgs` | REGENIE连续单表型discovery：ridge/LOCO、single-variant、gene-based；原格式`.regenie` | [完整流程](docs/REGENIE.md)、[Python参数](docs/API.md)、[真实验证](docs/VALIDATION.md) |
-| `staar_phewas` | STAAR / MultiSTAAR PheWAS；原格式`.Rdata` | [完整流程](docs/pipeline.md)、[真实验证](docs/benchmark.md) |
+| `torchstaar` | Torchstaar：完整染色体Single/15类基因mask；原格式`.Rdata/.rds` | [完整指南与真实验证](docs/torchstaar.md) |
 
 ## REGENIE discovery
 
@@ -51,24 +51,23 @@ torchwgs --inputs /results/config/discovery_inputs.json \
 
 完整 509,468 位点 Step1 的历史独立对照、当前优化范围、原数值门槛与各项限制见[真实验证](docs/VALIDATION.md)。原算法链接与参考文献见[指南](docs/REGENIE.md#数值后端与参考)。
 
-## STAAR / MultiSTAAR PheWAS
+## Torchstaar
 
-`staar_phewas` 从原生 GDS 读取基因型，以 PyTorch GPU 实现 STAAR 原零模型和关联公式，生产分析不调用 R。已发布 0.2.0 的 FP64 版本在真实单连续表型 chr21 上完成全部 795 项串行分析和原 R 输出对照，见 [benchmark](docs/benchmark.md)。
+Torchstaar 使用PyTorch CUDA完成原GDS读取、连续Gaussian零模型、Single、全部coding/noncoding/ncRNA共15类mask与原生R文件输出。默认TF32/FP32，一个GPU串行执行任务，保留完整谱和原STAAR检验规则，显存预算20 GiB，生产运行不调用R；没有固定窗口或滑动窗口分析。用户Python入口为 `torchstaar`，与REGENIE的 `torchwgs` 独立。
 
-本版使用原生 TF32 / FP32，移除多分量精度重建。覆盖 Single、全部 coding/noncoding mask 与 ncRNA，保留原 `.Rdata/.rds` 文件名、类型、属性及顺序；固定窗口和滑动窗口已移除。各任务串行，任务内部使用 GPU 矩阵批处理、完整谱和局部中间结果复用；生产关联不调用 R。
-
-真实 chr21 的 795 项任务已完成：19 份原生文件结构与严格零模型比较通过，478,082 个 P 全部有效、可比较。以原 R 或本版任一 `P<0.05` 的联合范围验收，24,713 个 P 的 `-log10(P)` 误差全部 <=0.001，最大为 `0.0003579714`；其余 P 的误差继续保存作诊断。固定零模型和已有转存缓存上的公开代码复验墙钟为 **419.926 秒（约 7 分钟）**；带细分 profiler 的 F 初轮为 429.097 秒，每染色体 300 秒的速度目标尚未达到。首次转存另需 10,854.84 秒、新增存储约为原 GDS 的 8.53%；该次测量使用共享 A100、暖文件系统及 Triton 缓存。详见 [TF32 benchmark](docs/tf32_benchmark.md)和[匿名完整记录](benchmarks/staar_chr21_native_tf32_2026-10-06.json)。
+当前公开科学代码已完成真实chr21全部795项、进程墙钟 **296.196098秒**；19文件结构、strict null、全部478,082 P有效/可比较及24,713显著联合P的独立原R验收全部通过，0超限，最大logP差0.0003579714。此前H2候选299.009秒与公开F419.926秒保留为近期对照，不能替代当前公开版本验收。已有转换缓存/固定null、暖文件系统和Triton缓存的测量边界、共享节点与转换3.02小时成本均单独记录。默认decoded LRU64 MiB，512MiB候选未显示完整收益；不启用私有RAM预载、counts seed或XDR候选。
 
 ```bash
-conda env create -f environments/staar-gpu.yml
-conda activate staar-phewas-torch
+conda env create -f environment.yml
+conda activate torchwgs
 LZMA_PREFIX="$CONDA_PREFIX" python -m pip install --no-deps --no-build-isolation \
   'git+https://github.com/CoreArray/pygds.git@b7a2dbbebf3b06ac4e97c806e36ec4e1a6af5bdd'
 python -m pip install -e .
-# 配置保存在私有目录，matmul_mode 为 tf32。
-staar-phewas-chromosome private/full_chromosome.json --device cuda --report private/summary.json
+# JSON使用本人的私有输入和完整manifest；后端默认auto。
+torchstaar-chromosome private/full_chromosome.json \
+  --device cuda:0 --report private/analysis_report.json
 ```
 
-[完整流程](docs/pipeline.md)、[全部输入格式和参数](docs/tf32_pipeline.md)、[染色体任务](docs/chromosome.md)、[零模型](docs/null_model.md)、[样本对齐](docs/prepare.md)、[无损剂量缓存](docs/sixstate_cache.md)、[矩阵复用](docs/matrix_reuse.md)、[统计公式](docs/tf32_statistics.md)、[原生输出](docs/r_native_output.md)与[logP 验收](validation/README_logp.md)给出 Python/CLI、原 R 调用和参考文献。[多表型](docs/multi.md)及[二分类](docs/binary.md)保留各自实际验证范围。
+主页Conda recipe采用PyTorch2.5.1/CUDA11.8/torchtriton3.1/NumPy1.26和显式zstandard；Python3.10/rdata1.1.0/editable安装保持原配置。[官方历史安装页](https://docs.pytorch.org/get-started/previous-versions/#v251)提供该PyTorch/CUDA组合。小谱后端只用标准库调用已有官方CUDA库，无额外后端依赖；该recipe尚未独立创建并完成数值验收，真实benchmark使用既有服务器环境。
 
-公开配置使用占位路径；真实基因型、表型、亲缘信息和分析结果保存在私有目录。原生 TF32 无需旧参考 CPU LAPACK 精度库。
+[完整Torchstaar指南](docs/torchstaar.md)按功能、流程图、完整Python示例、每项输入/输出/参数、CLI、原R、真实端到端/阶段对照、近期版本和文献组织。[匿名完整记录](benchmarks/torchstaar_chr21_2026-10-06.json)与[独立验证规则](validation/README_logp.md)分别保存实际结果和验收定义。必要专门API：[输入对齐](docs/prepare.md)、[零模型](docs/null_model.md)、[统计/完整谱](docs/statistics.md)、[GDS](docs/gds.md)、[六状态缓存](docs/sixstate_cache.md)、[原生输出](docs/r_native_output.md)。所有个体输入、实际gene/位点表与表型标签保存在私有目录，公开只发布匿名汇总。

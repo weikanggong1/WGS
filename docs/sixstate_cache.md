@@ -28,18 +28,18 @@ flowchart LR
 | 4 | 一条 REF、一条缺失，(1,1) |
 | 5 | 一条任意非REF、一条缺失，(0,1) |
 
-转换时不做 MAC 过滤、minor 翻转或缺失填补，保留全物理轴上的空列与零 layer 变异。半缺失状态保留 called allele 与 REF 计数；后续 dosage 缺失处理沿用原 reader。minor 方向由当前请求样本的原 REF AF 决定，不能直接把 REF 当成 minor。缓存样本可以是源样本子集，但必须覆盖后续分析请求；运行时允许子集与重排，禁止重复/越界/缓存轴外样本。当前 F resident 解码路径要求绑定样本数为1至65535；不是某个数据集的固定样本数。
+转换时不做 MAC 过滤、minor 翻转或缺失填补，保留全物理轴上的空列与零 layer 变异。半缺失状态保留 called allele 与 REF 计数；后续 dosage 缺失处理沿用原 reader。minor 方向由当前请求样本的原 REF AF 决定，不能直接把 REF 当成 minor。缓存样本可以是源样本子集，但必须覆盖后续分析请求；运行时允许子集与重排，禁止重复/越界/缓存轴外样本。当前resident解码路径要求绑定样本数为1至65535；不是某个数据集的固定样本数。
 
 ## 转存命令
 
 ```bash
 # 先打印计划；此命令不读 genotype、不创建输出、不运行 CUDA。
-python -m staar_phewas.cache_runtime.export \
+python -m torchstaar.cache_runtime.export \
   --gds input.gds --packed-build packed_reader_build \
   --samples-npy selected_physical_samples.npy --output sixstate_cache
 
 # 明确执行；保留 input.gds，已有未完成目录自动检查并恢复。
-python -m staar_phewas.cache_runtime.export \
+python -m torchstaar.cache_runtime.export \
   --gds input.gds --packed-build packed_reader_build \
   --samples-npy selected_physical_samples.npy --output sixstate_cache \
   --read-batch 4096 --device cuda:0 --execute
@@ -73,15 +73,15 @@ python -m staar_phewas.cache_runtime.export \
 | `manifest.json`、`COMPLETE` | 完成 manifest 及其 SHA；必须一致才允许读取 |
 | `manifest.pending.json`、`journal.json` | 初始化绑定与已提交帧目录，用于恢复 |
 
-格式标签保留 F 的原字符串以兼容已经生成的容器。恢复检查输入绑定、样本顺序与所有已提交帧，裁掉未提交尾部，再从下一个物理列继续。每次提交先校验 CSR roundtrip 和原解码整数计数，再写流与 journal。追加缓存的逻辑及实际分配字节均限制在原 GDS 大小的10%以内，包含目录中已有辅助文件；超过上限拒绝继续，完成标记也不允许发布超限容器。实际压缩率由数据决定，不能保证任意 GDS 都满足10%。
+格式标签保持与已生成完成容器兼容。恢复检查输入绑定、样本顺序与所有已提交帧，裁掉未提交尾部，再从下一个物理列继续。每次提交先校验 CSR roundtrip 和原解码整数计数，再写流与 journal。追加缓存的逻辑及实际分配字节均限制在原 GDS 大小的10%以内，包含目录中已有辅助文件；超过上限拒绝继续，完成标记也不允许发布超限容器。实际压缩率由数据决定，不能保证任意 GDS 都满足10%。
 
 ## Python分析入口
 
 ```python
 import json
 from pathlib import Path
-from staar_phewas.cache_runtime import CacheSpec, run_cached_configuration
-from staar_phewas.cache_runtime.binding import make_source_binding
+from torchstaar.cache_runtime import CacheSpec, run_cached_configuration
+from torchstaar.cache_runtime.binding import make_source_binding
 
 source_gds = Path("input.gds")
 cache_directory = Path("sixstate_cache")
@@ -90,7 +90,7 @@ expected_binding = json.loads((cache_directory / "manifest.json").read_text())["
 
 def current_source_proof():
     # 参数/额外键必须与转存时完全一致，包括 decoder AST和sample-ID规则。
-    from staar_phewas.cache_runtime.state_reader import build_reader
+    from torchstaar.cache_runtime.state_reader import build_reader
     binding = make_source_binding(
         source_gds, packed_directory="packed_reader_build",
         input_files={"samples": "selected_physical_samples.npy"},
@@ -113,7 +113,7 @@ report = run_cached_configuration(
 
 | API/参数 | 输入和输出 |
 |---|---|
-| `CacheSpec(directory, expected_binding, source_proof, expected_samples=None, compact_cache_bytes=64MiB)` | 显式缓存目录、完成绑定、无参实时证明函数；可选精确样本轴；LRU预算仅约束compact帧，不是进程总RAM |
+| `CacheSpec(directory, expected_binding, source_proof, expected_samples=None, compact_cache_bytes=64MiB)` | 显式缓存目录、完成绑定、无参实时证明函数；可选精确样本轴；LRU默认64MiB，约束decoded compact帧的offset/sample/state/count数组，不是压缩stream大小、进程总RAM或显存 |
 | `make_reader_factory(original_factory, cache_specs, device='cuda:0')` | 返回独立 SeqArrayGDS兼容factory；cache_specs键是源GDS路径；未配置路径直接拒绝 |
 | `run_cached_configuration(configuration, cache_specs=..., device=..., index_caches=None)` | configuration为原CLI字典；返回原CLI报告，原统计和原生R对象输出由原CLI执行 |
 | `Container(path, expected_source_binding=None, expected_samples=None)` | 完成容器reader；运行factory总是传绑定；`read_frame(int)`返回CSR arrays、counts、start/m/n字典 |
@@ -143,8 +143,8 @@ report = run_cached_configuration(
 | `runtime.restore_indexes(pipeline,specs)` | 按spec序列恢复并返回index列表 |
 
 ```python
-from staar_phewas.cache_runtime import IndexCacheSpec
-from staar_phewas.cache_runtime import index_cache
+from torchstaar.cache_runtime import IndexCacheSpec
+from torchstaar.cache_runtime import index_cache
 
 # binding由真实输入stat、源码SHA、注释节点与规范化区间构造。
 source_proof = current_source_proof()
@@ -192,8 +192,18 @@ index_specs = {source_gds: [IndexCacheSpec(Path("candidate_index.npz"), index_bi
 
 ## 验证、版本与原软件
 
-本次是 F 缓存模块的包内集成，新增CPU生成数据契约用于验证编码、样本轴、恢复、损坏拒绝和context清理，不替代真实数据 benchmark。重排/子集/空轴、半缺失、minimum MAC、跨帧请求及mean/minor imputation都有精确CPU对照。新的公开入口仍需在真实服务器核对后才能声明新的端到端时间与精度。真实benchmark记录由主任务单独归档；这次不纳入owned-bytes预载、新buffer、counts或solver候选。
+当前是Torchstaar缓存模块的包内入口，新增CPU生成数据契约用于验证编码、样本轴、恢复、损坏拒绝和context清理，不替代真实数据 benchmark。重排/子集/空轴、半缺失、minimum MAC、跨帧请求及mean/minor imputation都有精确CPU对照。公开F缓存入口已完成真实全染色体复验：795任务、19原生文件、严格null与显著联合范围通过，进程墙钟419.926秒。后续H2仅增加小矩阵完整谱候选为299.009秒，原reader/counts/writer仍保留；本次公共小谱接口完整复验296.196098秒，19文件/strict null及显著联合P通过。首次转存、缓存/源码绑定预检和独立R对照另计，已有缓存与暖文件系统的范围见 [TF32 benchmark](torchstaar.md)。当前公开代码通过结果由完整原R验收证明。
 
-2026-10-06：包内相对导入；通用转存参数；显式reader factory与候选索引恢复；保留F格式/校验；无sys.path修改。当前缓存不是可从R原软件直接读取的GDS替代物。
+2026-10-06：包内相对导入；通用转存参数；显式reader factory与候选索引恢复；保留既有格式/校验；无sys.path修改。当前缓存不是可从R原软件直接读取的GDS替代物。
 
-原软件读取示意：`SeqArray::seqOpen("input.gds")` 后使用 `SeqArray::seqGetData(file,"genotype")`；原 STAAR 分析入口、原实现和参考文献见[原软件接口](statistics.md)、[packed GDS reader](gds_packed.md)、[独立R验证](base_reference_inventory.md)。实现文件见 [store](../staar_phewas/cache_runtime/store.py)、[state reader](../staar_phewas/cache_runtime/state_reader.py)、[adapter](../staar_phewas/cache_runtime/adapter_fast.py)。
+原软件读取示意：`SeqArray::seqOpen("input.gds")` 后使用 `SeqArray::seqGetData(file,"genotype")`；原 STAAR 分析入口、原实现和参考文献见[原软件接口](statistics.md)、[packed GDS reader](gds_packed.md)、[独立R验证](torchstaar.md)。实现文件见 [store](../staar_phewas/cache_runtime/store.py)、[state reader](../staar_phewas/cache_runtime/state_reader.py)、[adapter](../staar_phewas/cache_runtime/adapter_fast.py)。
+
+## 默认缓存容量与近期完整对照
+
+生产默认 `compact_cache_bytes=64*2**20`。帧miss才执行读取、hash、解压、几何和状态验证；hit复用immutable ValidatedSource。完整source proof在open/close执行。分析重新计算Score、协方差、完整谱和P，缓存不保存这些统计结果。
+
+H2真实795任务中frame loads17,049、hits2,136、evictions16,928，read/validate28.028秒；H3把同一原adapter容量改为512MiB后loads16,897、hits2,288，read/validate28.093秒，总墙钟300.796秒对299.009秒。仅减少152次加载，没有显示扩容收益，因此保留64MiB默认。这些是共享环境观测，不宣称独立LRU性能增益。
+
+公共运行不启用私有RAM snapshot、XDR buffer或counts seed，分别保留原public container、native writer和Device counts。禁用候选计时为0只表示候选未执行，不能推断原计数/写出成本为0。输出 `genotype_reader.analysis_cache`（或完成reader report）含frame loads/hits/evictions、cache/read-validation、compact prepare、materialize、minor block和sample-bind的匿名标量；部分host边界嵌套或含CUDA enqueue，不能相加或称GPU kernel时间。
+
+源码版本变化必须重新证明兼容性。本轮已有cache复用逐项证明producer genotype/index seams与consumer一致、其余改动属于已审查统计后端；原cache、原manifest和oracle均未修改。一般使用者应在相同安装/source输入绑定下转存和读取；不满足绑定时明确拒绝，不能复制旧expected字典来跳过校验。缓存Python入口完整参数见上表，统计 `weighted_eigensolver` 与完整任务配置见 [benchmark](torchstaar.md)。

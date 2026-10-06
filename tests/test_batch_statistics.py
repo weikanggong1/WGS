@@ -84,6 +84,30 @@ def test_individual_variance_matches_explicit_related_projector(device):
         model.individual_score_variance(genotype[:3])
 
 
+def test_cpu_near_mean_fallback_preserves_original_route_and_zero_reference_rows(monkeypatch):
+    diagonal = torch.tensor([.2, 1., 2.], dtype=torch.float64)
+    item = dict(score=torch.sqrt(diagonal * .995), covariance=torch.diag(diagonal),
+                maf=[.001, .005, .009], mac=[20., 20., 20.])
+    expected = staar_test(**item)
+    original = torch.linalg.eigvalsh
+    calls = []
+
+    def record(matrix, **kwargs):
+        calls.append((tuple(matrix.shape), matrix.dtype, kwargs.get("UPLO")))
+        return original(matrix, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "eigvalsh", record)
+    actual, info = staar_test_batch([item], return_diagnostics=True)
+    assert info["compatibility_rows"] == 2
+    assert info["precision_reference_rows"] == 0
+    assert calls == [((2, 3, 3), torch.float64, "U"),
+                     ((3, 3), torch.float64, "U"),
+                     ((3, 3), torch.float64, "U")]
+    assert list(actual[0]) == list(expected)
+    for field in expected:
+        assert actual[0][field] == pytest.approx(expected[field], rel=1e-7, abs=1e-10)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_small_cuda_compatibility_tail_reuses_batched_spectrum(monkeypatch):
     # These genuine beta-weight matrices have statistics near their own means.

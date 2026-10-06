@@ -1,14 +1,14 @@
 # Gaussian 零模型
 
-`fit_gaussian_null` 用 float64 PyTorch 拟合固定效应与稀疏亲缘矩阵的 Gaussian 零模型。输入样本已经对齐，输出可直接交给关联 pipeline，并保存为原生 `obj_nullmodel.Rdata`。计算采用亲缘连通块分解；无亲缘边的样本保留各自的对角项，不将矩阵替换为单位阵。
+`fit_gaussian_null` 用PyTorch拟合固定效应与稀疏亲缘矩阵的 Gaussian 零模型。输入样本已经对齐，输出可直接交给关联 pipeline，并保存为原生 `obj_nullmodel.Rdata`。计算采用亲缘连通块分解；无亲缘边的样本保留各自的对角项，不将矩阵替换为单位阵。
 
 ## Python 调用、输入和输出
 
 ```python
 import numpy as np
-from staar_phewas.null_model import fit_gaussian_null
-from staar_phewas.rint import rank_inverse_normal_tensor
-from staar_phewas.compat import write_gaussian_null
+from torchstaar.null_model import fit_gaussian_null
+from torchstaar.rint import rank_inverse_normal_tensor
+from torchstaar.compat import write_gaussian_null
 
 aligned_data = np.load("private/aligned_trait.npz", allow_pickle=False)
 # 在最终有效样本上取平均并列秩，采用 Blom offset，再计算正态分位数。
@@ -20,7 +20,7 @@ null_model = fit_gaussian_null(
     edge_rows=aligned_data["grm_edge_row"],
     edge_cols=aligned_data["grm_edge_col"],
     edge_values=aligned_data["grm_edge_value"],
-    device="cuda", tol=1e-5, maxiter=500,
+    device="cuda", tol=1e-5, maxiter=500, matmul_mode="tf32",
 )
 # 原始 GDS 字符串 ID 与 transformed_trait 严格同序。
 write_gaussian_null("runs/obj_nullmodel.Rdata", null_model,
@@ -46,7 +46,7 @@ write_gaussian_null("runs/obj_nullmodel.Rdata", null_model,
 CLI 在 `phenotypes[].input` 指定对齐 NPZ，在 `transform` 指定 `none` 或 `rint`，在 `output_null` 指定正式文件：
 
 ```bash
-staar-phewas-torch examples/staar-analysis.json --device cuda --report runs/summary.json
+torchstaar examples/staar-analysis.json --device cuda --report runs/summary.json
 ```
 
 原 R 对应：
@@ -71,6 +71,6 @@ save(obj_nullmodel, file="runs/obj_nullmodel.Rdata")
 
 混合模型保留 GMMAT 的 EM 初始化、AI REML 更新、非负边界步长、边界重拟合及停止条件。原返回值保留停止前一轮用于关联的 precision，并按最终 dispersion 缩放残差；不能用最终方差重新计算 precision 后当作相同对象。原 Matrix 的对角 Cholesky 求逆采用 `(1/sqrt(variance))²`，本实现保留此顺序。涉及 R 基础 `sum` 的项使用补偿 float64 求和。
 
-2026-10-04，0.1.0：对真实 42,652 个影像表型样本的非单位对角 GRM 检查零模型、原生 20 字段对象和原 `STAAR_sp` 消费；RINT 已与原 R 对所有样本逐项一致。完整统计精度和耗时以 [benchmark](benchmark.md) 的验收记录为准。
+当前模式与完整strict null验收见 [主指南](torchstaar.md#5-最新真实精度与耗时)。低级fit_gaussian_null默认FP64控制；生产应显式指定TF32，输入/停止时模型状态和原序列化规则保持。
 
 参照 [GMMAT 1.3.2](https://github.com/cran/GMMAT/tree/ef49eec8d0d95951a48f7055a77321077dbc8c13)、[STAARpipeline 0.9.9](https://github.com/yuxinyuanqt/STAARpipeline/tree/fbce778bf14cc4f9e892989a194c64bae2670311) 和 [R 3.6 AS241](https://github.com/wch/r-source/blob/R-3-6-branch/src/nmath/qnorm.c)。Chen H et al., *American Journal of Human Genetics* (2019), [DOI](https://doi.org/10.1016/j.ajhg.2018.12.012)；Wichura MJ, *Applied Statistics* (1988), [DOI](https://doi.org/10.2307/2347330)。
