@@ -138,13 +138,19 @@ class SparseMinorBlock:
                                 self.sample_indices, self.variant_indices[columns],
                                 self.union_ref_af[columns], **summaries)
 
-    def trait_dense(self, trait_rows, imputation: str = "mean", *, frequency_mode: str = "count"):
+    def trait_dense(self, trait_rows, imputation: str = "mean", *, frequency_mode: str = "count", dtype=np.float64):
         """Return genotypes, MAF, observed MAC, missing counts, and ALT orientation.
 
         ``trait_rows`` contains zero-based positions in this block's union
         sample list, in the null model's order.  Mean imputation retains the
         observed-call MAF; minor imputation uses zero and divides MAC by 2N.
+        ``dtype`` selects float64 control or direct float32 storage. Frequency
+        reductions remain float64; mean fills cast the original double value
+        once, matching float64 preparation followed by float32 conversion.
         """
+        dtype = np.dtype(dtype)
+        if dtype not in (np.dtype(np.float64), np.dtype(np.float32)):
+            raise ValueError("dosage dtype must be float64 or float32")
         trait_rows = _indices(trait_rows, self.shape[0], "trait_rows")
         if imputation not in ("mean", "minor"):
             raise ValueError("imputation must be 'mean' or 'minor'")
@@ -155,10 +161,10 @@ class SparseMinorBlock:
         mapping = np.full(self.shape[0], -1, dtype=np.int64)
         mapping[trait_rows] = np.arange(len(trait_rows))
         keep = mapping[self.row] >= 0
-        genotype = np.zeros((len(trait_rows), self.shape[1]), dtype=np.float64)
+        genotype = np.zeros((len(trait_rows), self.shape[1]), dtype=dtype)
         genotype[mapping[self.row[keep]], self.col[keep]] = self.value[keep]
         missing = np.isnan(genotype)
-        mac = np.nansum(genotype, axis=0)
+        mac = np.nansum(genotype, axis=0, dtype=np.float64)
         count = len(trait_rows) - missing.sum(axis=0)
         maf = np.divide(mac, 2 * count, out=np.full_like(mac, np.nan), where=count > 0)
         if frequency_mode == "reference":
@@ -194,12 +200,15 @@ class SeqArrayGDS:
     """Read a native GDS file; all sample/variant indices are zero-based.
 
     Genotype reads preserve the requested order.  Only selected genotype
-    blocks are materialized.  The format's one-dimensional indices may be
+    blocks are materialized. packed_reader_directory optionally names a local
+    SDK-bound extension build; None keeps the existing reader. Its binding is
+    checked before opening data, and configured read errors propagate.
+    The format's one-dimensional indices may be
     loaded for decoding; a whole sample-by-variant matrix is never loaded.
     """
 
     def __init__(self, path: str | Path, *, genotype_raw_memory_bytes: int = 256 * 2**20,
-                 genotype_max_gap_layers: int = 8):
+                 genotype_max_gap_layers: int = 8, packed_reader_directory=None):
         if not isinstance(genotype_raw_memory_bytes, int) or genotype_raw_memory_bytes < 1:
             raise ValueError("genotype_raw_memory_bytes must be a positive integer")
         if not isinstance(genotype_max_gap_layers, int) or genotype_max_gap_layers < 0:
@@ -207,6 +216,9 @@ class SeqArrayGDS:
         self.genotype_raw_memory_bytes = genotype_raw_memory_bytes
         self.genotype_max_gap_layers = genotype_max_gap_layers
         self._flat_reader = load_flat_reader()
+        from .gds_packed import load_packed_reader
+        self._packed_reader = load_packed_reader(packed_reader_directory)
+        self._packed_read_failed = False
         try:
             import pygds
         except ImportError as error:
@@ -222,12 +234,21 @@ class SeqArrayGDS:
             self.close()
             raise ValueError("Invalid SeqArray genotype dimensions")
         self.ploidy = dims[2]
+        if self._packed_reader is not None:
+            try:
+                # Validate storage, logical stream and axes without reading genotypes.
+                self._packed_reader.read_packed_path(self._file.fileid, "genotype/data", 0, 0, self.n_samples)
+            except Exception:
+                self.close()
+                raise
         self._genotype_steps = None
         self._genotype_offsets = None
         self._sample_lookup = None
         self._annotation_indices = {}
 
     def close(self):
+        self._cuda_sample_index_cache = None
+        self._packed_cuda_sample_index_cache = None
         if getattr(self, "_file", None) is not None:
             self._file.close()
             self._file = None
@@ -376,6 +397,13 @@ class SeqArrayGDS:
     def reader_metadata(self) -> dict:
         """Report the actual I/O backend, binary checksum, and read counters."""
         metadata = flat_reader_metadata(self._flat_reader)
+        if getattr(self, "_packed_reader", None) is not None:
+            packed_metadata = dict(self._packed_reader._packed_metadata)
+            packed_backend = packed_metadata.pop("reader_backend")
+            metadata.update(packed_metadata)
+            metadata["packed_reader_configured"] = True
+            if getattr(self, "_reader_io_counts", {}).get("packed", {}).get("calls", 0):
+                metadata["reader_backend"] = packed_backend
         metadata["genotype_raw_memory_bytes"] = self.genotype_raw_memory_bytes
         metadata["genotype_max_gap_layers"] = self.genotype_max_gap_layers
         counts = getattr(self, "_minor_decode_counts", {})
@@ -384,8 +412,9 @@ class SeqArrayGDS:
         metadata["minor_genotype_decode_calls"] = dict(counts)
         metadata["minor_genotype_decode_fallback_reason"] = getattr(self, "_minor_decode_fallback_reason", None)
         metadata["allele_code_dtype_policy"] = "int16: 0-7 layers; int32: 8-15; int64: 16"
-        if self._flat_reader is not None:
-            metadata["reader_backend"] = "native_auto"
+        if self._flat_reader is not None or getattr(self, "_packed_reader", None) is not None:
+            if getattr(self, "_packed_reader", None) is None:
+                metadata["reader_backend"] = "native_auto"
             metadata["native_reads"] = {name: dict(record) for name, record in
                                         getattr(self, "_reader_io_counts", {}).items()}
         metadata["individual_decode_coverage"] = dict(getattr(self, "_minor_decode_coverage", {}))
@@ -405,6 +434,20 @@ class SeqArrayGDS:
         counts["ref_af_tie_variants"] += int(np.count_nonzero(summaries[0] == 0.5))
         counts["all_missing_variants"] += int(np.count_nonzero(summaries[4] == 0))
         counts["max_bit2_layers"] = max(counts["max_bit2_layers"], int(steps.max()) if len(steps) else 0)
+
+    def _sample_selection(self, samples):
+        """Reuse one host SDK mask/permutation across consecutive bounded blocks.
+
+        Cache owns its indices and never relies on mutable caller arrays. One
+        entry bounds storage and changing the union evicts the old selection.
+        """
+        cached = getattr(self, "_sample_selection_cache", None)
+        if cached is None or not np.array_equal(cached[0], samples):
+            mask = np.zeros(self.n_samples, dtype=bool)
+            mask[samples] = True
+            cached = (samples.copy(), np.repeat(mask, self.ploidy), np.argsort(np.argsort(samples)))
+            self._sample_selection_cache = cached
+        return cached[1], cached[2]
 
     def read_genotype(self, variant_indices, sample_indices) -> np.ndarray:
         """Return [variant, sample, ploidy] signed allele codes; missing is -1.
@@ -450,10 +493,7 @@ class SeqArrayGDS:
                 groups.append([entry])
         selection = sample_order = None
         if len(samples) * 2 < self.n_samples and any(len(group) >= 2 for group in groups):
-            sample_mask = np.zeros(self.n_samples, dtype=bool)
-            sample_mask[samples] = True
-            selection = np.repeat(sample_mask, self.ploidy)
-            sample_order = np.argsort(np.argsort(samples))
+            selection, sample_order = self._sample_selection(samples)
         counters = getattr(self, "_reader_io_counts", None)
         if counters is None:
             counters = self._reader_io_counts = {name: {"calls": 0, "returned_bytes": 0}
@@ -535,12 +575,14 @@ class SeqArrayGDS:
         dosage[missing] = np.nan
         return dosage.T
 
-    def minor_block(self, variant_indices, union_sample_indices, *, device=None, minimum_mac=None) -> SparseMinorBlock:
+    def minor_block(self, variant_indices, union_sample_indices, *, device=None, minimum_mac=None, resident=False) -> SparseMinorBlock:
         """Read minor dosages with source allele-wise AF/MAC/missing summaries.
 
         The optional CUDA I/O path performs only integer decoding/counting;
         source floating-point frequency calculations remain NumPy float64.
         Mean/minor imputation occurs later in each null model's sample rows.
+        ``resident=True`` returns a compact DeviceMinorBlock on CUDA, retaining
+        dosage there through trait selection; metadata remains on the host.
         """
         if self.ploidy != 2:
             raise ValueError("STAARpipelinePheWAS requires diploid genotype dosage")
@@ -548,10 +590,12 @@ class SeqArrayGDS:
         samples = _indices(union_sample_indices, self.n_samples, "union_sample_indices")
         if minimum_mac is not None and not np.isfinite(minimum_mac):
             raise ValueError("minimum_mac must be finite")
-        use_cuda = device is not None and str(device).startswith("cuda") and self._flat_reader is not None
+        use_cuda = device is not None and str(device).startswith("cuda") and (self._flat_reader is not None or getattr(self, "_packed_reader", None) is not None)
+        if resident and not use_cuda:
+            raise ValueError("resident dosage requires CUDA and the native SDK adapter")
         if use_cuda:
             from .gds_cuda import native_minor_block
-            block = native_minor_block(self, variants, samples, device=device, minimum_mac=minimum_mac)
+            block = native_minor_block(self, variants, samples, device=device, minimum_mac=minimum_mac, resident=resident)
             backend = "cuda"
         else:
             if device is not None and str(device).startswith("cuda") and self._flat_reader is None:
@@ -586,14 +630,14 @@ class SeqArrayGDS:
         counters[backend] += 1
         return block
 
-    def iter_minor_blocks(self, variant_indices, union_sample_indices, block_size=256, *, device=None, minimum_mac=None) -> Iterator[SparseMinorBlock]:
+    def iter_minor_blocks(self, variant_indices, union_sample_indices, block_size=256, *, device=None, minimum_mac=None, resident=False) -> Iterator[SparseMinorBlock]:
         """Read bounded blocks; optional early MAC filtering preserves site order."""
         if not isinstance(block_size, int) or block_size < 1:
             raise ValueError("block_size must be a positive integer")
         variants = _indices(variant_indices, self.n_variants, "variant_indices")
         for start in range(0, len(variants), block_size):
             yield self.minor_block(variants[start:start + block_size], union_sample_indices,
-                                  device=device, minimum_mac=minimum_mac)
+                                  device=device, minimum_mac=minimum_mac, resident=resident)
 
 
 def main():

@@ -60,9 +60,9 @@ with SeqArrayGDS("chromosome.gds") as gds:
 }
 ```
 
-无需 `joint_mode`；多个独立模型的 `n_pheno` 各为 1。每个 model cache 保存自己的样本顺序。正式关联输出使用 Rdata/RDS；多个 genomic job 指向同一输出文件时，coding/noncoding 按原版 append 保留重复类别名，sliding 按每个表型 rbind。`debug_output` 仅在 `debug_json=true` 时额外保存同一次计算的私有 JSON。
+无需 `joint_mode`；多个独立模型的 `n_pheno` 各为 1。每个 model cache 保存自己的样本顺序。正式关联输出使用 Rdata/RDS；多个 genomic job 指向同一输出文件时，coding/noncoding 按原版 append 保留重复类别名。`debug_output` 仅在 `debug_json=true` 时额外保存同一次计算的私有 JSON。
 
-原版 R 对应调用为 `Gene_Centric_Coding_PheWAS(..., obj_nullmodel_list=list(null_one, null_two))`、`Sliding_Window_Single_PheWAS` 和 `Individual_Analysis_PheWAS`。原模型分别由 `STAARpipeline::fit_nullmodel(y~1, data=..., kins=..., id="id")` 拟合。
+原版 R 对应调用为 `Gene_Centric_Coding_PheWAS(..., obj_nullmodel_list=list(null_one, null_two))` 和 `Individual_Analysis_PheWAS`。原模型分别由 `STAARpipeline::fit_nullmodel(y~1, data=..., kins=..., id="id")` 拟合。
 
 2026-10-04 用两个真实连续连续表型分别保留 42,652、42,418 名完整案例，均保留真实 GRM。第一个表型从 raw 输入采用与 R 逐元素相同的 RINT；第二个使用明确冻结的变换值，R 和 GPU 读取相同值，不将这一项称为新的 raw-transform 验收。原作者推荐环境中真正 STAARpipelinePheWAS wrapper 运行两模型列表，比较 GENE_B 全部 coding 类别、GENE_A 单窗口及单变异。
 

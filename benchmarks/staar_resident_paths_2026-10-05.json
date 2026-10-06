@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "status": "bounded_native_TF32_correctness_passed_full_acceptance_pending",
+  "date": "2026-10-05",
+  "scope": "Three original gene families and one exact independently evaluated original R Single interval. Same cached null, original formulas and mask slots; excludes fresh null fitting and full chromosome.",
+  "serial_GPU_experiments": true,
+  "native_matrix_components": 0,
+  "entries": [
+    {
+      "analysis": "coding",
+      "native_files": 1,
+      "P_cells": 178,
+      "host_resident_max_absolute_logp_difference": 0,
+      "host_resident_native_structure_passed": true,
+      "original_R_native_structure_passed": true,
+      "original_R_logp_passed": true,
+      "original_R_failed_P_cells": 0,
+      "original_R_max_absolute_logp_difference": 0.000158745128186144
+    },
+    {
+      "analysis": "noncoding",
+      "native_files": 1,
+      "P_cells": 86,
+      "host_resident_max_absolute_logp_difference": 0,
+      "host_resident_native_structure_passed": true,
+      "original_R_native_structure_passed": true,
+      "original_R_logp_passed": true,
+      "original_R_failed_P_cells": 0,
+      "original_R_max_absolute_logp_difference": 0.00011075396565885
+    },
+    {
+      "analysis": "ncrna",
+      "native_files": 1,
+      "P_cells": 86,
+      "host_resident_max_absolute_logp_difference": 0,
+      "host_resident_native_structure_passed": true,
+      "original_R_native_structure_passed": true,
+      "original_R_logp_passed": true,
+      "original_R_failed_P_cells": 0,
+      "original_R_max_absolute_logp_difference": 4.27981350282769e-05
+    },
+    {
+      "analysis": "individual",
+      "native_files": 1,
+      "P_cells": 27,
+      "original_R_native_structure_passed": true,
+      "original_R_logp_passed": true,
+      "original_R_failed_P_cells": 0,
+      "original_R_max_absolute_logp_difference": 4.81591843293216e-07
+    }
+  ],
+  "P_cells_total": 377,
+  "original_R_max_absolute_logp_difference": 0.000158745128186144,
+  "logp_target": 0.001,
+  "CPU_regression": {
+    "passed": 669,
+    "skipped_CUDA_contracts_and_optional_tests": 45,
+    "subtests_passed": 33,
+    "source_stage": "stage26_native_packed_unknown_size"
+  },
+  "performance": {
+    "speed_comparison_eligible": false,
+    "reason": "Other tasks occupied both GPUs. Timings are observations, not speed comparisons.",
+    "whole_chromosome_seconds": null,
+    "goal_seconds": 300
+  },
+  "precision_limitation": {
+    "separate_fixed_matrix_probe_P_cells": 248,
+    "failed_P_cells": 5,
+    "max_absolute_logp_difference": 0.0844504316788312,
+    "full_numeric_gate_passed": false
+  },
+  "main_pushed": false,
+  "CPU_focused_runtime_lengths": {
+    "passed": 116,
+    "skipped": 1,
+    "source_stage": "stage27_native_packed_runtime_lengths"
+  }
+}

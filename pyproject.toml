@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staar-phewas-torch"
-version = "0.2.0"
+version = "0.3.0"
 description = "PyTorch WGS association: STAAR/MultiSTAAR PheWAS and REGENIE-compatible discovery"
 requires-python = ">=3.10"
 license = {text = "GPL-3.0-only"}
-dependencies = ["numpy>=1.26,<2", "scipy>=1.13", "torch>=2.4", "rdata==1.1.0", "xarray>=2024.1", "pandas>=1.4", "triton>=3.0; platform_system == 'Linux'"]
+dependencies = ["numpy>=1.26,<2", "scipy>=1.13", "torch>=2.4", "rdata==1.1.0", "xarray>=2024.1", "pandas>=1.4", "zstandard>=0.22", "triton>=3.0; platform_system == 'Linux'"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
@@ -23,4 +23,4 @@ staar-phewas-chromosome = "staar_phewas.chromosome:main"
 include = ["staar_phewas*", "torchwgs*"]
 
 [tool.setuptools.package-data]
-staar_phewas = ["_gds_flat.cpp"]
+staar_phewas = ["_gds_flat.cpp", "_gds_packed.cpp"]

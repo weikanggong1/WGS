@@ -117,18 +117,32 @@ def chromosome_configuration(config: Mapping, manifest: Mapping) -> dict:
                      'output': str(output / f'{prefix}_Individual_Analysis_{array_id}.Rdata'),
                      'layout': 'base'})
     selected = ('phenotypes', 'qc_path', 'annotation_catalog', 'analysis_options',
-                'statistics_execution', 'debug_json')
+                'statistics_execution', 'debug_json', 'matmul_mode', 'precision_control',
+                'stage_profile', 'resident_genotypes', 'tf32_split_k', 'individual_genotype_block_size',
+                'statistics_tail_optimization', 'local_mask_reuse', 'weight_batch_optimization')
+    if {'tf32_binned_tile_shape', 'tf32_binned_fused_small'} & config.keys():
+        raise ValueError('Removed TF32 reconstruction parameters')
     expanded = {key: copy.deepcopy(config[key]) for key in selected if key in config}
     expanded['annotation_names'] = list(config.get('annotation_names', TUTORIAL_ANNOTATIONS))
     expanded['require_single_continuous'] = True
+    from .tf32 import validate_mode, validate_split_k
+    expanded.setdefault('matmul_mode', 'tf32')
+    validate_mode(expanded['matmul_mode'])
+    expanded.setdefault('tf32_split_k', 0)
+    validate_split_k(expanded['tf32_split_k'])
+    expanded.setdefault('statistics_tail_optimization', True)
+    expanded.setdefault('local_mask_reuse', True)
+    expanded.setdefault('weight_batch_optimization', True)
+    if expanded.get('statistics_execution', 'serial') != 'serial':
+        raise ValueError('complete chromosome GPU validation requires serial statistics execution')
     association_options = expanded.setdefault('analysis_options', {})
     if association_options.get('wrapper_semantics', 'base') != 'base':
         raise ValueError('the original base chromosome schedule requires wrapper_semantics=base')
     association_options['wrapper_semantics'] = 'base'
     expanded['qc_path'] = config.get('qc_path', 'annotation/info/QC_label')
     expanded['statistics_execution'] = config.get('statistics_execution', 'serial')
-    if expanded['statistics_execution'] not in ('serial', 'batched'):
-        raise ValueError('statistics_execution must be serial or batched')
+    if expanded['statistics_execution'] != 'serial':
+        raise ValueError('statistics_execution must be serial')
     expanded['chromosomes'] = [{'name': chromosome, 'gds': config['gds'],
                                'annotation_index': {'promoter_intervals_file': promoter_file},
                                'jobs': jobs}]

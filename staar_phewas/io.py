@@ -44,20 +44,34 @@ def save_null_model(model: GaussianNullModel, path):
             values[name] = array(getattr(model, name))
     values["has_kinship"] = model.has_kinship
     values["model_kind"] = "gaussian_single"
+    values["matmul_mode"] = getattr(model, "matmul_mode", "fp64")
     if getattr(model,"gds_sample_ids",None) is not None:
         values["gds_sample_ids"] = np.asarray(model.gds_sample_ids,dtype=str)
     values.update(sample_ids=model.sample_ids.astype(str), eigenvalues=array(model.spectrum.eigenvalues),
-                  number_blocks=len(model.spectrum.blocks), iterations=model.iterations)
+                  number_blocks=len(model.spectrum.blocks), iterations=model.iterations,
+                  converged=model.converged)
     for index, (rows, rotation) in enumerate(model.spectrum.blocks):
         values[f"block_{index}_rows"] = array(rows)
         values[f"block_{index}_rotation"] = array(rotation)
     np.savez_compressed(path, **values)
 
 
-def load_null_model(path, *, device="cpu"):
-    """Load a fitted model; every tensor is float64 except block indices."""
+def load_null_model(path, *, device="cpu", matmul_mode=None):
+    """Load a fitted state; optionally convert Gaussian storage to native FP32.
+
+    Without an override, historical FP64 caches retain their stored mode.
+    """
     with np.load(path, allow_pickle=False) as values:
-        def tensor(name, dtype=torch.float64):
+        stored_mode = str(values["matmul_mode"]) if "matmul_mode" in values else "fp64"
+        selected_mode = stored_mode if matmul_mode is None else matmul_mode
+        # Removed reconstruction caches are only reusable via an explicit mode.
+        from .tf32 import validate_mode
+        kind=str(values["model_kind"]) if "model_kind" in values else "gaussian_single"
+        if kind == "gaussian_single":
+            selected_mode = validate_mode(selected_mode)
+        storage_dtype = torch.float32 if selected_mode == "tf32" else torch.float64
+        def tensor(name, dtype=None):
+            dtype = storage_dtype if dtype is None else dtype
             return torch.as_tensor(values[name], dtype=dtype, device=device)
         kind=str(values["model_kind"]) if "model_kind" in values else "gaussian_single"
         if kind in ("gaussian_joint","binary_state"):
@@ -90,11 +104,19 @@ def load_null_model(path, *, device="cpu"):
             for i in range(int(values["number_blocks"]))])
         model=GaussianNullModel(values["sample_ids"].astype(str),
             *(tensor(name) for name in ("x", "scaled_residuals", "coefficients", "theta", "precision_theta", "fixed_effect_covariance")),
-            spectrum, tensor("inverse_variance"), tensor("precision_x"), int(values["iterations"]), True,
+            spectrum, tensor("inverse_variance"), tensor("precision_x"), int(values["iterations"]),
+            bool(values["converged"]) if "converged" in values else True,
             phenotype=tensor("phenotype") if "phenotype" in values else None,
             has_kinship=bool(values["has_kinship"]) if "has_kinship" in values else True,
             fitted_values=tensor("fitted_values") if "fitted_values" in values else None,
-            working_phenotype=tensor("working_phenotype") if "working_phenotype" in values else None)
+            working_phenotype=tensor("working_phenotype") if "working_phenotype" in values else None,
+            matmul_mode=selected_mode)
+        model.source_matmul_mode = stored_mode
+        if selected_mode == "tf32" and "phenotype" in values and "fitted_values" in values:
+            # Preserve the original cache dtype only for the native R residual
+            # vector. Association tensors remain FP32; no model is recomputed.
+            model.native_cached_residuals = np.subtract(values["phenotype"], values["fitted_values"]).astype(np.float64)
+            model.native_cached_residuals.flags.writeable = False
         if "gds_sample_ids" in values:model.gds_sample_ids=values["gds_sample_ids"].astype(str)
         return model
 

@@ -53,17 +53,11 @@ torchwgs --inputs /results/config/discovery_inputs.json \
 
 ## STAAR / MultiSTAAR PheWAS
 
-`staar_phewas` 使用 PyTorch float64 复现 STAARpipelinePheWAS 的关联计算，并从原生 GDS 流式读取基因型。R 用于独立验证，生产分析不调用 R。
+`staar_phewas` 从原生 GDS 读取基因型，以 PyTorch GPU 实现 STAAR 原零模型和关联公式，生产分析不调用 R。已发布 0.2.0 的 FP64 版本在真实单连续表型 chr21 上完成全部 795 项串行分析和原 R 输出对照，见 [benchmark](docs/benchmark.md)。
 
-安装、Python/命令行调用、全部参数、原 R 示例与流程图见 [pipeline 文档](docs/pipeline.md)。真实数据对照范围和误差见 [benchmark](docs/benchmark.md)。
+本版使用原生 TF32 / FP32，移除多分量精度重建。覆盖 Single、全部 coding/noncoding mask 与 ncRNA，保留原 `.Rdata/.rds` 文件名、类型、属性及顺序；固定窗口和滑动窗口已移除。各任务串行，任务内部使用 GPU 矩阵批处理、完整谱和局部中间结果复用；生产关联不调用 R。
 
-读取、主机准备、小矩阵同步与精度校正的速度成本，以及串行/mask 批量和完整计时口径，见 [性能分析](docs/performance.md)。
-
-单个连续表型的完整染色体入口见 [chromosome](docs/chromosome.md)：全部单变异、7 类 coding、7 类 noncoding 及独立 ncRNA mask，按原完整基因目录与 array ID 生成批次文件；支持 mask 批量 GPU 统计。精度选择及实际 FP32/TF32 探针见 [precision](docs/precision.md)。
-
-0.2.0 已在 42,652 个真实样本、一个连续表型的 chr21 上完成 GPU 串行全流程：221 个 coding、221 个 noncoding、349 个 ncRNA 和四个单变异区段，共 795 项任务。18 份关联文件的 3,343,119 个数值单元格全部通过原 R 的严格容差检查，文件结构、8 次单变异元数据读回及零模型对照均通过；单变异输出共 318,132 行。范围、实测耗时和聚合记录见 [最新 benchmark](docs/benchmark.md)。
-
-正式输出采用 STAAR 原生 `.Rdata` 文件，保留保存对象名、列表层次、混合矩阵、factor 与 `row.names`；[文件格式](docs/r_native_output.md)给出批次命名和 R 读回方式。[联合多表型](docs/multi.md)与[二分类 SPA](docs/binary.md)分别说明相关性模型、原包兼容问题和实际验证范围。
+真实 chr21 的 795 项任务已完成：19 份原生文件结构与严格零模型比较通过，478,082 个 P 全部有效、可比较。以原 R 或本版任一 `P<0.05` 的联合范围验收，24,713 个 P 的 `-log10(P)` 误差全部 <=0.001，最大为 `0.0003579714`；其余 P 的误差继续保存作诊断。固定零模型和已有转存缓存上的公开代码复验墙钟为 **419.926 秒（约 7 分钟）**；带细分 profiler 的 F 初轮为 429.097 秒，每染色体 300 秒的速度目标尚未达到。首次转存另需 10,854.84 秒、新增存储约为原 GDS 的 8.53%；该次测量使用共享 A100、暖文件系统及 Triton 缓存。详见 [TF32 benchmark](docs/tf32_benchmark.md)和[匿名完整记录](benchmarks/staar_chr21_native_tf32_2026-10-06.json)。
 
 ```bash
 conda env create -f environments/staar-gpu.yml
@@ -71,13 +65,10 @@ conda activate staar-phewas-torch
 LZMA_PREFIX="$CONDA_PREFIX" python -m pip install --no-deps --no-build-isolation \
   'git+https://github.com/CoreArray/pygds.git@b7a2dbbebf3b06ac4e97c806e36ec4e1a6af5bdd'
 python -m pip install -e .
-# 安装并配置独立精度库，命令见下方链接。
-# STAAR_REFERENCE_LAPACK_LIBRARY 指向已校验的 libmkl_rt.so。
-staar-phewas-torch examples/staar-analysis.json --device cuda --report runs/summary.json
+# 配置保存在私有目录，matmul_mode 为 tf32。
+staar-phewas-chromosome private/full_chromosome.json --device cuda --report private/summary.json
 ```
 
-保持原版近均值 Saddle 输出的 CUDA 分析还需安装独立的参考 LAPACK prefix，设置 `STAAR_REFERENCE_LAPACK_LIBRARY`；完整命令见 [精度与安装说明](docs/precision.md#安装锁定的参考-lapack)。少量标量权重转换和敏感谱求解使用 CPU，score、协方差和关联检验由 PyTorch CUDA 执行；报告记录这些校正的实际次数和耗时。
+[完整流程](docs/pipeline.md)、[全部输入格式和参数](docs/tf32_pipeline.md)、[染色体任务](docs/chromosome.md)、[零模型](docs/null_model.md)、[样本对齐](docs/prepare.md)、[无损剂量缓存](docs/sixstate_cache.md)、[矩阵复用](docs/matrix_reuse.md)、[统计公式](docs/tf32_statistics.md)、[原生输出](docs/r_native_output.md)与[logP 验收](validation/README_logp.md)给出 Python/CLI、原 R 调用和参考文献。[多表型](docs/multi.md)及[二分类](docs/binary.md)保留各自实际验证范围。
 
-示例配置使用占位路径。输入 GDS、表型、亲缘信息和零模型均保存在分析者的私有目录。
-
-从表型表和原生 R 格式的稀疏 GRM 准备输入：见 [样本对齐](docs/prepare.md)。零模型输入、输出和原 R 调用见 [零模型](docs/null_model.md)。
+公开配置使用占位路径；真实基因型、表型、亲缘信息和分析结果保存在私有目录。原生 TF32 无需旧参考 CPU LAPACK 精度库。

@@ -110,13 +110,14 @@ def test_individual_coverage_counts_only_explicit_initial_mac_calls(device):
         "half_missing_genotypes":2,"ref_af_tie_variants":1,"all_missing_variants":0,"max_bit2_layers":1}
 
 
-def test_individual_nonpositive_variance_preserves_original_ieee_values():
+@pytest.mark.parametrize("core_dtype", [torch.float32, torch.float64])
+def test_individual_nonpositive_variance_preserves_original_ieee_values(core_dtype):
     from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
     reader = fake_reader([[[0,0],[0,1],[1,1]]]*6,[1]*6)
     block = reader.minor_block(np.arange(6),np.arange(3))
     pipeline = PheWASPipeline.__new__(PheWASPipeline)
-    variance = torch.tensor([-3.,-3e-12,0.,float("nan"),float("inf"),2.],dtype=torch.float64)
-    score = torch.full((6,),6.,dtype=torch.float64)
+    variance = torch.tensor([-3.,-3e-12,0.,float("nan"),float("inf"),2.],dtype=core_dtype)
+    score = torch.full((6,),6.,dtype=core_dtype)
     model=SimpleNamespace(n=3,n_pheno=1,use_spa=False,device="cpu",
                          individual_score_variance=lambda g:(score,variance))
     pipeline.models=[model]
@@ -135,3 +136,30 @@ def test_individual_nonpositive_variance_preserves_original_ieee_values():
     assert rows[2]["Score_se"]==0 and rows[2]["Est"]==0 and rows[2]["Est_se"]==0
     assert np.isnan(rows[3]["pvalue_log10"]) and np.isnan(rows[3]["Est"])
     assert np.isinf(rows[4]["Score_se"]) and rows[4]["Est"]==0 and rows[4]["Est_se"]==0
+
+
+@pytest.mark.parametrize('imputation', ['mean', 'minor'])
+@pytest.mark.parametrize('frequency_mode', ['count', 'reference'])
+@pytest.mark.parametrize('filtered', [False, True])
+def test_host_fp32_dense_matches_existing_double_route(imputation, frequency_mode, filtered):
+    # Read actual original decoder output: includes half-missing, AF tie,
+    # all-missing and fractional mean fills, with nonphysical variant order.
+    codes = np.array([[[0,3],[3,1],[3,3],[0,0],[0,1],[1,1],[0,1]],
+                      [[0,3],[0,1],[3,1],[0,0],[3,1],[3,3],[0,0]],
+                      [[3,3]]*7, [[0,0],[0,1],[1,1],[0,0],[1,1],[0,1],[0,0]]])
+    reader = fake_reader(codes, [1]*4)
+    samples = np.array([5,2,0,6,1,4,3])
+    block = reader.minor_block(np.array([3,1,2,0]), samples,
+                               minimum_mac=2 if filtered else None)
+    orders = [np.arange(6,-1,-1)]
+    if frequency_mode == 'count':
+        orders += [np.array([5,0,3]), np.array([],dtype=int)]
+    for rows in orders:
+        old = block.trait_dense(rows, imputation, frequency_mode=frequency_mode)
+        direct = block.trait_dense(rows, imputation, frequency_mode=frequency_mode, dtype=np.float32)
+        assert direct[0].dtype == np.float32
+        np.testing.assert_array_equal(direct[0].view(np.uint32), old[0].astype(np.float32).view(np.uint32))
+        for new_metadata, original_metadata in zip(direct[1:], old[1:]):
+            np.testing.assert_array_equal(new_metadata, original_metadata)
+    with pytest.raises(ValueError, match='dtype'):
+        block.trait_dense(orders[0], dtype=np.float16)

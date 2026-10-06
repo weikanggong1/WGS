@@ -1,8 +1,8 @@
 # Base STAARpipeline 的完整 mask 与原版对照
 
-本页记录单个连续表型的 base STAARpipeline 范围和可执行原 R 对照。运行入口见 [全染色体流程](chromosome.md)。原 R 对照调用推荐环境中的 STAARpipeline 0.9.9、STAAR 0.9.9；其 pipeline 来源为 [作者维护的参考版本](https://github.com/yuxinyuanqt/STAARpipeline/tree/fbce778bf14cc4f9e892989a194c64bae2670311)。源码采用 GPL-3.0。
+本页记录 0.2.0 历史 FP64 基线的单连续表型 base STAARpipeline 范围和可执行原 R 对照，保留原数值、源码摘要及验证范围。当前生产 CLI 为 CUDA 串行强制 `tf32`；其验收状态另见 [TF32 benchmark](tf32_benchmark.md)。低级 API 保留 FP64 控制；CLI 控制需 `matmul_mode="fp64"` 和 JSON 布尔值 `precision_control=true`。运行入口见 [全染色体流程](chromosome.md)。原 R 对照调用推荐环境中的 STAARpipeline 0.9.9、STAAR 0.9.9；其 pipeline 来源为 [作者维护的参考版本](https://github.com/yuxinyuanqt/STAARpipeline/tree/fbce778bf14cc4f9e892989a194c64bae2670311)。源码采用 GPL-3.0。
 
-2026-10-05，chr21、一个连续表型的完整串行 GPU 流程通过原 R 严格验收。全部 795 项任务、18 个正式输出和 15 个 mask 均已覆盖：221 个 coding gene、221 个 noncoding gene、349 个 ncRNA gene，以及四个单变异区间。执行源码 SHA-256 为 `c6362c6d392dce8c29668a9563a88182714571ebc8aa68285e5988a7ad423300`；`executable_source` 包含 33 个执行及依赖定义文件（含参考 LAPACK 显式锁），不含文档。实际 33 个执行文件及 108 个快照文件的哈希、795 个任务的唯一名称、顺序和计时记录均已独立核对。
+0.2.0 FP64 基线：2026-10-05，chr21、一个连续表型的完整串行 GPU 流程通过原 R 严格验收。全部 795 项任务、18 个正式输出和 15 个 mask 均已覆盖：221 个 coding gene、221 个 noncoding gene、349 个 ncRNA gene，以及四个单变异区间。执行源码 SHA-256 为 `c6362c6d392dce8c29668a9563a88182714571ebc8aa68285e5988a7ad423300`；`executable_source` 包含 33 个执行及依赖定义文件（含参考 LAPACK 显式锁），不含文档。实际 33 个执行文件及 108 个快照文件的哈希、795 个任务的唯一名称、顺序和计时记录均已独立核对。
 
 本轮单模式验收为 **18 项 `serial_vs_R` 关联文件比较、八份 Single 元数据原 R 读回（R/GPU 各四份）、一项 `serial_vs_R` 零模型比较**。18 个文件的对象结构、列类型及顺序一致，161,839 个数值字段、3,343,119 个数值单元格全部满足 `|GPU-R| <= 1e-10 + 1e-7*|R|`；结构差异和超容差单元格均为零。最大绝对差为 `1.0913936421275139e-10`，最大相对差为 `1.7739502638151633e-9`。原始表型经 RINT 和重新拟合写出的零模型，12 个数值字段、341,221 个数值单元格与 R 差异均为 0。最终独立审计只读原生文件元数据，不重新运行关联分析，审计 SHA-256 为 `165f6b661beeab443fdf703fc36b8ab0000b6c33e28850e76f49dc436cb044a9`。
 

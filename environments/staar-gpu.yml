@@ -18,5 +18,6 @@ dependencies:
   - xz
   - pytest
   - xarray
+  - zstandard>=0.22
   - pip:
       - rdata==1.1.0

@@ -1,18 +1,25 @@
 """Private JSON configuration for chromosome-sharded association analyses."""
+from dataclasses import replace
 import argparse
 from collections import Counter
+from collections.abc import Mapping
 import json
 from pathlib import Path
 import time
 import numpy as np
 import torch
 from .gds import SeqArrayGDS
+from .tf32 import validate_mode, configure_tf32, execution_metadata as tf32_execution_metadata
+from .profiling import StageProfiler
+from .precision_audit import DenseProductAudit
 from .sparse_numerics import sparse_execution_metadata
 from .numerics import reference_dot_execution_metadata
 from ._precision_eigen import precision_eigen_execution_metadata
 from ._reference_weights import reference_weights_execution_metadata
 from .pipeline import PheWASPipeline, AnalysisOptions
+from .masks import NONCODING_CATEGORIES
 from .io import fit_prepared_input, save_null_model, load_null_model
+from .null_model import GaussianNullModel
 from .r_output import write_association_output, write_association_batch
 from .compat import write_gaussian_null
 from .compat_joint import write_joint_gaussian_null
@@ -26,6 +33,46 @@ def _json_value(value):
     raise TypeError(type(value).__name__)
 
 
+def _association_result_row_count(result, *, kind):
+    """Count computed trait rows, independently of their P values.
+
+    Gene categories contain trait row lists; direct gene/Single outputs contain
+    trait row lists without a category layer. Empty lists serialize as R NULL.
+    Unexpected shapes fail closed instead of being classified as empty.
+    """
+    if kind not in {"coding", "noncoding", "ncrna", "singlevariant", "individual"}:
+        raise ValueError("unsupported association result kind")
+    if isinstance(result, Mapping):
+        if kind not in {"coding", "noncoding"}:
+            raise ValueError("unexpected association result category layer")
+        groups = result.values()
+    else:
+        groups = [result]
+    count = 0
+    for traits in groups:
+        if not isinstance(traits, list) or not traits:
+            raise ValueError("association results require a nonempty trait list")
+        for rows in traits:
+            if not isinstance(rows, list) or any(not isinstance(row, Mapping) or not row for row in rows):
+                raise ValueError("association results require trait lists of nonempty records")
+            count += len(rows)
+    return count
+
+
+def _native_execution_status(metadata, jobs, *, planned_jobs):
+    """Allow zero products only for a completed, explicitly empty schedule."""
+    if metadata["ptx_verified_tf32_gemm_count"] != metadata["tf32_gemm_call_count"] or metadata["fp64_gemm_fallback_count"] != 0:
+        raise RuntimeError("Forced TF32 verification failed")
+    if metadata["logical_product_count"] > 0:
+        return "executed_products"
+    complete_empty = metadata["logical_product_count"] == 0 and planned_jobs > 0 and len(jobs) == planned_jobs and all(
+        type(job.get("eligible_association_tests")) is int and job["eligible_association_tests"] == 0
+        for job in jobs)
+    if not complete_empty:
+        raise RuntimeError("Native run performed no matrix/vector products")
+    return "no_eligible_analysis_products"
+
+
 def _read_promoter_intervals(filename):
     intervals = []
     with open(filename) as stream:
@@ -36,6 +83,28 @@ def _read_promoter_intervals(filename):
                     continue
                 intervals.append((chromosome, int(start), int(end)))
     return intervals
+
+
+def _scheduled_index_categories(jobs):
+    """Collect only categories used by coordinate-free gene jobs, in job order."""
+    categories = []
+    for job in jobs:
+        arguments = job.get("arguments", {})
+        if arguments.get("start") is not None or arguments.get("end") is not None:
+            continue
+        if job["kind"] == "ncrna":
+            requested = ["ncRNA"]
+        elif job["kind"] == "noncoding":
+            category = arguments.get("category", "all_categories")
+            requested = list(NONCODING_CATEGORIES) if category == "all_categories" else [category]
+            if arguments.get("include_ncrna", False):
+                requested.append("ncRNA")
+        else:
+            continue
+        for category in requested:
+            if category not in categories:
+                categories.append(category)
+    return categories
 
 
 def _bind_gds_samples(gds,model,prepared_indices=None,rule="auto"):
@@ -84,7 +153,62 @@ def _bind_gds_samples(gds,model,prepared_indices=None,rule="auto"):
 
 
 def run_configuration(config, *, device="cuda"):
+    """Run a forced TF32 analysis, or an explicit FP64 reference control."""
+    mode = validate_mode(config.get("matmul_mode", "tf32"))
+    # Every run resets the native backend. Reconstruction controls were
+    # removed rather than silently mapped to a different arithmetic mode.
+    obsolete = {"tf32_binned_tile_shape", "tf32_binned_fused_small"} & config.keys()
+    if obsolete:
+        raise ValueError("Removed TF32 reconstruction parameters: " + ", ".join(sorted(obsolete)))
+    requested_split_k = config.get("tf32_split_k", 0)
+    tf32_configuration = configure_tf32(split_k=requested_split_k,
+        memory_limit_gib=config.get("analysis_options", {}).get("memory_limit_gib", 20))
+    tf32_configuration.update(requested_split_k=requested_split_k,
+        effective_split_k=0 if mode == "tf32" else None,
+        split_k_applies=False)
+    if mode == "fp64":
+        report = _run_configuration(config, device=device)
+        report["dense_product_audit"] = {"enabled": False, "scope": "reference control"}
+        report["tf32_configuration"] = tf32_configuration
+        return report
+    with DenseProductAudit(forced=True) as audit:
+        report = _run_configuration(config, device=device)
+    report["dense_product_audit"] = audit.report()
+    report["tf32_configuration"] = tf32_configuration
+    return report
+
+
+def _run_configuration(config, *, device="cuda"):
     """Fit/load one model per phenotype, then run ordered chromosome jobs."""
+    matmul_mode = validate_mode(config.get("matmul_mode", "tf32"))
+    tail_optimization = config.get("statistics_tail_optimization", True)
+    if not isinstance(tail_optimization, bool):
+        raise ValueError("statistics_tail_optimization must be a JSON boolean")
+    precision_control = config.get("precision_control", False)
+    if not isinstance(precision_control, bool):
+        raise ValueError("precision_control must be a JSON boolean")
+    if matmul_mode == "fp64" and not precision_control:
+        raise ValueError("FP64 controls require explicit precision_control=true; production uses native tf32")
+    if matmul_mode != "fp64" and not str(device).startswith("cuda"):
+        raise ValueError("Forced TF32 requires CUDA; CPU controls require matmul_mode=fp64 and precision_control=true")
+    if config.get("statistics_execution", "serial") != "serial":
+        raise ValueError("TF32 validation runs require serial statistics execution")
+    supported_kinds = {"coding", "noncoding", "ncrna", "singlevariant", "individual"}
+    packed_directory = config.get("packed_reader_directory")
+    if packed_directory is not None and (not isinstance(packed_directory, str) or not packed_directory.strip()):
+        raise ValueError("packed_reader_directory must be a nonempty local build directory string")
+    for chromosome in config.get("chromosomes", []):
+        for job in chromosome.get("jobs", []):
+            if job.get("kind") not in supported_kinds:
+                raise ValueError("Pipeline jobs must be coding, noncoding, ncrna, singlevariant, or individual")
+    for optimization in ("local_mask_reuse", "weight_batch_optimization"):
+        if not isinstance(config.get(optimization, True), bool):
+            raise ValueError(f"{optimization} must be a JSON boolean")
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    tf32_execution_metadata(reset=True)
+    from .statistics import statistics_execution_metadata
+    statistics_execution_metadata(reset=True)
     precision_eigen_execution_metadata(reset=True)
     reference_weights_execution_metadata(reset=True)
     full_started = time.perf_counter()
@@ -96,9 +220,10 @@ def run_configuration(config, *, device="cuda"):
     cuda_initialization_seconds = time.perf_counter() - full_started if device.startswith('cuda') else 0.0
     models_started = time.perf_counter()
     models, rows = [], []
+    source_modes, model_sources = [], []
     for phenotype in config["phenotypes"]:
         if "model" in phenotype:
-            model = load_null_model(phenotype["model"], device=device)
+            model = load_null_model(phenotype["model"], device=device, matmul_mode=matmul_mode)
             index = None
             if "sample_indices_file" in phenotype:
                 index = np.load(phenotype["sample_indices_file"], allow_pickle=False)
@@ -109,8 +234,25 @@ def run_configuration(config, *, device="cuda"):
                     if key in fit_options and fit_options[key]!=phenotype[key]:
                         raise ValueError("conflicting phenotype fitting modes")
                     fit_options[key]=phenotype[key]
+            run_split_k = config.get("tf32_split_k", 0)
+            if fit_options.pop("tf32_split_k", run_split_k) != run_split_k:
+                raise ValueError("phenotype fit_options.tf32_split_k conflicts with run tf32_split_k")
+            if fit_options.get("matmul_mode", matmul_mode) != matmul_mode:
+                raise ValueError("phenotype fit_options.matmul_mode conflicts with run matmul_mode")
+            if fit_options.get("family", "gaussian") == "gaussian" and fit_options.get("joint_mode") is None:
+                fit_options["matmul_mode"] = matmul_mode
             model, index = fit_prepared_input(phenotype["input"], device=device,
                 transform=phenotype.get("transform", "none"), **fit_options)
+        if matmul_mode != "fp64" and (not isinstance(model, GaussianNullModel) or model.n_pheno != 1):
+            raise ValueError("Forced TF32 pipeline currently supports single Gaussian models")
+        source_modes.append(getattr(model, "source_matmul_mode", getattr(model, "matmul_mode", "fp64")))
+        model_sources.append("loaded_cache" if "model" in phenotype else "fitted_input")
+        # A legacy cache defaults to FP64; explicit run mode always overrides
+        # the loaded state before association and before save_model writes.
+        if isinstance(model, GaussianNullModel):
+            model.set_matmul_mode(matmul_mode)
+        else:
+            model.matmul_mode = matmul_mode
         if model.n_pheno>1:
             requested=phenotype.get("joint_mode",phenotype.get("fit_options",{}).get("joint_mode"))
             expected={"ordinary_REML":"ordinary","AI_REML":"strict","factor_REML":"robust"}.get(model.fit_method)
@@ -141,10 +283,13 @@ def run_configuration(config, *, device="cuda"):
     index_seconds = 0.0
     setup_seconds = 0.0
     native_output_seconds = 0.0
+    stage_reports = []
+    reader_reports = []
     null_output_seconds = 0.0
     for chromosome in config["chromosomes"]:
         before_setup = time.perf_counter()
-        with SeqArrayGDS(chromosome["gds"]) as gds:
+        reader_options = {} if packed_directory is None else {"packed_reader_directory": packed_directory}
+        with SeqArrayGDS(chromosome["gds"], **reader_options) as gds:
             current_rows=[_bind_gds_samples(gds,model,index,phenotype.get("sample_id_rule","auto"))
                           for model,index,phenotype in zip(models,rows,config["phenotypes"])]
             pipeline = PheWASPipeline(gds, models, qc_path=config.get("qc_path", "annotation/filter"),
@@ -152,16 +297,24 @@ def run_configuration(config, *, device="cuda"):
                 gds_sample_indices=current_rows,
                 options=AnalysisOptions(**config.get("analysis_options", {})))
             pipeline.statistics_execution = statistics_execution
+            pipeline.statistics_tail_optimization = tail_optimization
+            pipeline.local_mask_reuse = config.get("local_mask_reuse", True)
+            pipeline.weight_batch_optimization = config.get("weight_batch_optimization", True)
+            pipeline.resident_genotypes = bool(config.get("resident_genotypes", device.startswith("cuda")))
+            pipeline.profiler = StageProfiler(device, enabled=config.get("stage_profile", False))
+            gds._stage_profiler = pipeline.profiler if pipeline.profiler.enabled else None
             setup_seconds += time.perf_counter() - before_setup
-            if 'annotation_index' in chromosome:
+            index_categories = _scheduled_index_categories(chromosome['jobs'])
+            if 'annotation_index' in chromosome and index_categories:
                 index_config = chromosome['annotation_index']
-                promoter_file = index_config.get('promoter_intervals_file')
+                promoter_file = (index_config.get('promoter_intervals_file')
+                    if any(category.startswith('promoter_') for category in index_categories) else None)
                 if promoter_file is not None and promoter_file not in interval_cache:
                     interval_cache[promoter_file] = _read_promoter_intervals(promoter_file)
                 before_index = time.perf_counter()
                 pipeline.prepare_annotation_index(chromosome['name'],
                     promoter_intervals=None if promoter_file is None else interval_cache[promoter_file],
-                    include_ncrna=index_config.get('include_ncrna', True))
+                    include_ncrna=False, categories=index_categories)
                 index_seconds += time.perf_counter() - before_index
             if not report.get("models_saved",False):
                 before_null_output = time.perf_counter()
@@ -189,10 +342,23 @@ def run_configuration(config, *, device="cuda"):
                     arguments["promoter_intervals"] = interval_cache[filename]
                 print(json.dumps({"event": "started", "job": job.get("name", kind), "chromosome": chromosome["name"]}), flush=True)
                 started = time.perf_counter()
-                result = getattr(pipeline, kind)(**arguments)
+                individual_block = config.get("individual_genotype_block_size", 8192 if matmul_mode == "tf32" else None)
+                if kind == "individual" and individual_block is not None:
+                    if type(individual_block) is not int or individual_block < 1:
+                        raise ValueError("individual_genotype_block_size must be a positive integer")
+                    old_options = pipeline.options
+                    pipeline.options = replace(old_options, genotype_block_size=individual_block)
+                    try:
+                        result = getattr(pipeline, kind)(**arguments)
+                    finally:
+                        pipeline.options = old_options
+                else:
+                    result = getattr(pipeline, kind)(**arguments)
+                eligible_tests = _association_result_row_count(result, kind=kind)
                 if device.startswith("cuda"):
                     torch.cuda.synchronize(device)
                 elapsed = time.perf_counter() - started
+                pipeline.profiler.flush()
                 output = Path(job["output"])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 if output.suffix.lower() in (".rdata", ".rda", ".rds"):
@@ -227,10 +393,19 @@ def run_configuration(config, *, device="cuda"):
                     debug_path.parent.mkdir(parents=True,exist_ok=True)
                     debug_path.write_text(json.dumps(result,ensure_ascii=False,default=_json_value,allow_nan=False))
                 report["jobs"].append({"name": job.get("name", kind), "chromosome": chromosome["name"],
-                                       "kind": kind, "seconds": elapsed})
+                                       "kind": kind, "seconds": elapsed,
+                                       "eligible_association_tests": eligible_tests})
                 print(json.dumps({"event": "finished", "job": job.get("name", kind),
                                   "seconds": elapsed}), flush=True)
                 del result
+            report["statistics_tail_optimization_calls"] = report.get("statistics_tail_optimization_calls", 0) + getattr(pipeline, "statistics_tail_optimization_calls", 0)
+            report["memory_guard_max_estimated_bytes"] = max(report.get("memory_guard_max_estimated_bytes", 0),
+                getattr(pipeline, "memory_guard_max_estimated_bytes", 0))
+            stage_reports.append(pipeline.profiler.report())
+            reader_reports.append(gds.reader_metadata)
+            reuse_report = report.setdefault("local_mask_reuse_execution", {})
+            for key, value in getattr(pipeline, "local_mask_reuse_counters", {}).items():
+                reuse_report[key] = reuse_report.get(key, 0) + int(value)
             if getattr(pipeline, 'batch_diagnostics', None):
                 report.setdefault('batch_diagnostics', []).extend(pipeline.batch_diagnostics)
     for group in output_groups.values():
@@ -239,10 +414,47 @@ def run_configuration(config, *, device="cuda"):
             before_write = time.perf_counter()
             write_association_batch(group["path"],group["results"],kind=kind,object_name=object_name,layout=layout)
             native_output_seconds += time.perf_counter() - before_write
+    tf32_metadata = tf32_execution_metadata()
+    report["eligible_association_tests"] = sum(job["eligible_association_tests"] for job in report["jobs"])
+    report["association_test_count_scope"] = "computed gene-mask-trait or Single variant-trait output rows; independent of P values"
+    if matmul_mode != "fp64":
+        report["native_execution_status"] = _native_execution_status(tf32_metadata, report["jobs"],
+            planned_jobs=sum(len(chromosome["jobs"]) for chromosome in config["chromosomes"]))
+    else:
+        report["native_execution_status"] = "reference_control"
+    core_dtype = "float32" if matmul_mode == "tf32" else "float64"
+    report["precision_boundary"] = {"dense_products": matmul_mode,
+        "null_genotype_score_covariance": core_dtype,
+        "eigh_cholesky_solve": core_dtype + " library precision",
+        "matrix_accumulation": "float32" if matmul_mode == "tf32" else "float64",
+        "vector_products": "CUDA float32 mv/dot (not TF32 MMA)" if matmul_mode == "tf32" else "float64",
+        "native_R_real_storage": "double serialized from computed values",
+        "reconstruction_components": 0}
+    report["matmul_mode"] = matmul_mode
+    report["precision_control"] = bool(config.get("precision_control", False))
+    report["model_matmul_modes"] = [model.matmul_mode for model in models]
+    report["source_model_matmul_modes"] = source_modes
+    report["null_model_sources"] = model_sources
+    report["null_cache_written"] = ["save_model" in phenotype for phenotype in config["phenotypes"]]
+    report["tf32_execution"] = tf32_metadata
+    report["stage_profile"] = stage_reports
+    from .statistics import statistics_execution_metadata
+    report["statistics_execution_metadata"] = statistics_execution_metadata()
+    if matmul_mode == "tf32":
+        from . import _burden, _weighted_spectra, _fused_saddle
+        report["burden_execution"] = _burden.execution_metadata()
+        report["weighted_spectrum_execution"] = _weighted_spectra.execution_metadata()
+        report["probability_execution"] = _fused_saddle.execution_metadata()
+    report["resident_genotypes"] = bool(config.get("resident_genotypes", device.startswith("cuda")))
     report["null_fit_seconds"] = null_fit_seconds
     report["total_seconds"] = time.perf_counter() - full_started
     report["peak_gpu_mib"] = torch.cuda.max_memory_allocated(device) / 2**20 if device.startswith("cuda") else None
     report["peak_gpu_reserved_mib"] = torch.cuda.max_memory_reserved(device) / 2**20 if device.startswith("cuda") else None
+    memory_limit_gib = float(config.get("analysis_options", {}).get("memory_limit_gib", 20.0))
+    report["memory_limit_gib"] = memory_limit_gib
+    report["peak_gpu_budget_pass"] = report["peak_gpu_mib"] is None or report["peak_gpu_mib"] <= memory_limit_gib * 1024
+    if not report["peak_gpu_budget_pass"]:
+        raise MemoryError(f"Actual peak CUDA allocation {report['peak_gpu_mib']:.3f} MiB exceeded configured {memory_limit_gib:.3f} GiB budget; precision and chunks were not changed")
     report.pop("models_saved",None)
     report["number_samples"] = [model.n for model in models]
     report["number_phenotypes"] = [model.n_pheno for model in models]
@@ -250,9 +462,15 @@ def run_configuration(config, *, device="cuda"):
     report["reference_validation"] = bool(config.get("validation_reference",False))
     report["device"] = device
     report['statistics_execution'] = statistics_execution
+    report['statistics_tail_optimization'] = tail_optimization
+    report['local_mask_reuse'] = config.get("local_mask_reuse", True)
+    report['weight_batch_optimization'] = config.get("weight_batch_optimization", True)
     report['index_preparation_seconds'] = index_seconds
     report['gds_setup_seconds'] = setup_seconds
     report['genotype_reader'] = gds.reader_metadata
+    report['genotype_readers'] = reader_reports
+    report['gds_sdk_read_seconds'] = sum(float(route.get('seconds', 0.0))
+        for reader in reader_reports for route in reader.get('native_reads', {}).values())
     report['ordered_addition_execution'] = sparse_execution_metadata()
     report['reference_projection_execution'] = reference_dot_execution_metadata()
     report['precision_eigen_execution'] = precision_eigen_execution_metadata()

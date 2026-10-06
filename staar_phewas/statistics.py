@@ -1,4 +1,4 @@
-"""Float64 STAAR score tests, without an R runtime.
+"""STAAR score tests with explicit matrix precision, without an R runtime.
 
 SPDX-License-Identifier: GPL-3.0-only
 Mathematical/algorithmic source: Xihao Li, Zilin Li and STAAR contributors,
@@ -10,14 +10,58 @@ This module preserves their saddlepoint and fourth-moment fallback choices.
 
 from __future__ import annotations
 
+import copy
 import math
 import warnings
 from typing import Sequence
 
 import torch
 
-from ._precision_eigen import (refine_near_mean_spectrum, record_gpu_eigen_route,
-                               record_ordered_tail)
+from .tf32 import matmul, validate_mode
+
+from ._precision_eigen import record_gpu_eigen_route, record_ordered_tail
+
+
+_STATISTICS_METADATA = {
+    "matmul_mode_calls": {},
+    "burden_matrix_products": 0,
+    "rare_burden_matrix_products": 0,
+    "weight_batch_optimization_calls": 0,
+    "matrix_product_backend": "explicit tf32.matmul mode; no FP64 fallback",
+    "scalar_reduction_dtype": "float64",
+    "eigenvalue_dtype": "float64",
+    "tail_dtype": "float64",
+    "weight_transform_dtype": "mode dependent: device FP32 native, CPU FP64 explicit control",
+    "native_batch_calls": 0,
+    "native_complete_spectra": 0,
+    "native_spectra_reused": 0,
+    "native_relation_row_batches": 0,
+    "native_relation_bulk_d2h_calls": 0,
+    "native_relation_max_scratch_bytes": 0,
+    "probability_output_d2h_calls": 0,
+    "probability_output_d2h_values": 0,
+    "cct_validation_flag_batches": 0,
+    "probability_output_transfer_scope": "final elementary and combined P only; excludes validation, spectrum, root and cMAC synchronization",
+    "native_eigen_core_dtype": "float32",
+    "native_spectrum_reuse": "exact FP64 cross-products of represented FP32 weights; no tolerance",
+    "native_relation_transfer_scope": "one complete Boolean relation table per CUDA test; excludes validation and probability transfers",
+    "native_tail_batch": "original Saddle/moment/CCT branches, FP64 probability arithmetic",
+}
+
+
+def statistics_execution_metadata(*, reset=False):
+    """Actual STAAR precision boundaries, without data or trait identifiers."""
+    result = copy.deepcopy(_STATISTICS_METADATA)
+    if reset:
+        _STATISTICS_METADATA["matmul_mode_calls"].clear()
+        _STATISTICS_METADATA["burden_matrix_products"] = 0
+        _STATISTICS_METADATA["rare_burden_matrix_products"] = 0
+        _STATISTICS_METADATA["weight_batch_optimization_calls"] = 0
+        for key in ("native_batch_calls", "native_complete_spectra", "native_spectra_reused",
+                    "native_relation_row_batches", "native_relation_bulk_d2h_calls", "native_relation_max_scratch_bytes",
+                    "probability_output_d2h_calls", "probability_output_d2h_values", "cct_validation_flag_batches"):
+            _STATISTICS_METADATA[key] = 0
+    return result
 
 
 class DegenerateTestError(ValueError):
@@ -44,8 +88,12 @@ def score_covariance(
     precision=None,
     precision_covariates=None,
     fixed_effect_covariance=None,
+    matmul_mode: str = "fp64",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute U=G' r and V=G' P G on G's device in float64.
+    """Compute U=G' r and V=G' P G with mode-selected core storage.
+
+    Native tf32 uses FP32 storage, solves and reductions; fp64 is an explicit control.
+    Sparse precision/projector products are supported only in fp64 mode.
 
     Supply exactly one of (a) covariates with optional working_weights,
     (b) an already fitted projector P, or (c) precision=Sigma_i,
@@ -57,12 +105,20 @@ def score_covariance(
     No null-model fitting, sample alignment, imputation or allele flipping
     takes place here.
     """
-    g = _double(genotype)
+    validate_mode(matmul_mode)
+    def mm(left, right):
+        if matmul_mode != "fp64" and (left.layout != torch.strided or right.layout != torch.strided):
+            raise ValueError("TF32 statistics require dense matrix operands; sparse precision/projector is unsupported")
+        return matmul(left, right, mode=matmul_mode)
+    core_dtype = torch.float32 if matmul_mode == "tf32" else torch.float64
+    def core(value, **kwargs):
+        return torch.as_tensor(value, dtype=core_dtype, **kwargs)
+    g = core(genotype)
     if g.ndim != 2 or g.shape[0] < 1 or g.shape[1] < 1:
         raise ValueError("genotype must be a nonempty samples-by-variants matrix")
     if g.layout != torch.strided:
         g = g.to_dense()
-    r = _double(residual, device=g.device)
+    r = core(residual, device=g.device)
     if r.ndim != 1 or r.shape[0] != g.shape[0]:
         raise ValueError("residual must have one value per genotype row")
     _finite(g, "genotype")
@@ -75,49 +131,49 @@ def score_covariance(
     if projector is not None:
         if dispersion != 1 or working_weights is not None:
             raise ValueError("an explicit projector already contains fitted scaling")
-        p = _double(projector, device=g.device)
+        p = core(projector, device=g.device)
         if p.shape != (g.shape[0], g.shape[0]):
             raise ValueError("projector must have shape samples-by-samples")
-        projected_g = p @ g
-        covariance = projected_g.T @ g
+        projected_g = mm(p, g)
+        covariance = mm(projected_g.T, g)
     elif precision is not None:
         if dispersion != 1 or working_weights is not None:
             raise ValueError("precision already contains fitted scaling")
         if precision_covariates is None or fixed_effect_covariance is None:
             raise ValueError("precision also requires precision_covariates and fixed_effect_covariance")
-        inverse_sigma = _double(precision, device=g.device)
-        inverse_sigma_x = _double(precision_covariates, device=g.device)
-        cov = _double(fixed_effect_covariance, device=g.device)
+        inverse_sigma = core(precision, device=g.device)
+        inverse_sigma_x = core(precision_covariates, device=g.device)
+        cov = core(fixed_effect_covariance, device=g.device)
         if inverse_sigma.shape != (g.shape[0], g.shape[0]):
             raise ValueError("precision must have shape samples-by-samples")
         if inverse_sigma_x.ndim != 2 or inverse_sigma_x.shape[0] != g.shape[0]:
             raise ValueError("precision_covariates must have one row per sample")
         if cov.shape != (inverse_sigma_x.shape[1], inverse_sigma_x.shape[1]):
             raise ValueError("fixed_effect_covariance has an incompatible shape")
-        cross = inverse_sigma_x.T @ g
-        covariance = (inverse_sigma @ g).T @ g - cross.T @ cov @ cross
+        cross = mm(inverse_sigma_x.T, g)
+        covariance = mm(mm(inverse_sigma, g).T, g) - mm(mm(cross.T, cov), cross)
     else:
-        x = _double(covariates, device=g.device)
+        x = core(covariates, device=g.device)
         if x.ndim != 2 or x.shape[0] != g.shape[0]:
             raise ValueError("covariates must have one row per genotype sample")
         _finite(x, "covariates")
         v = torch.ones(g.shape[0], dtype=g.dtype, device=g.device)
         if working_weights is not None:
-            v = _double(working_weights, device=g.device)
+            v = core(working_weights, device=g.device)
             if v.shape != (g.shape[0],):
                 raise ValueError("working_weights must have one value per sample")
             _finite(v, "working_weights")
             if bool((v < 0).any()):
                 raise ValueError("working_weights cannot be negative")
         wg = v[:, None] * g
-        cross = x.T @ wg
+        cross = mm(x.T, wg)
         if x.shape[1]:
-            gram = x.T @ (v[:, None] * x)
-            covariance = g.T @ wg - cross.T @ torch.linalg.solve(gram, cross)
+            gram = mm(x.T, v[:, None] * x)
+            covariance = mm(g.T, wg) - mm(cross.T, torch.linalg.solve(gram, cross))
         else:
-            covariance = g.T @ wg
+            covariance = mm(g.T, wg)
         covariance = dispersion * covariance
-    score = g.T @ r
+    score = mm(g.T, r)
     _finite(covariance, "score covariance")
     return score, (covariance + covariance.T) * 0.5
 
@@ -128,31 +184,69 @@ def _cauchy_sf_tensor(statistic: torch.Tensor) -> torch.Tensor:
     return torch.where(statistic.abs() > 1, far, 0.5 - torch.atan(statistic) / math.pi)
 
 
-def _cct_tensor(pvalues, weights=None, *, internal: bool = False) -> torch.Tensor:
+def _cct_tensor(pvalues, weights=None, *, internal: bool = False, sync_light: bool = False, _normal_transform=None) -> torch.Tensor:
     p = _double(pvalues).reshape(-1)
-    if not p.numel() or not bool(torch.isfinite(p).all()) or bool(((p < 0) | (p > 1)).any()):
-        raise ValueError("pvalues must be a nonempty finite vector in [0, 1]")
-    if not internal:
-        if bool((p == 0).any()) and bool((p == 1).any()):
-            raise ValueError("cannot combine both exact 0 and exact 1 pvalues")
-        if bool((p == 0).any()):
-            return p.new_tensor(0.)
-        if bool((p == 1).any()):
-            warnings.warn("there are pvalues that are exactly 1", RuntimeWarning, stacklevel=3)
-            return p.new_tensor(1.)
+    if sync_light:
+        from ._statistics_sync import host_flags
+        if not p.numel():
+            raise ValueError("pvalues must be a nonempty finite vector in [0, 1]")
+        finite, out_of_range, has_zero, has_one = host_flags(
+            torch.isfinite(p).all(), ((p < 0) | (p > 1)).any(), (p == 0).any(), (p == 1).any())
+        if not finite or out_of_range:
+            raise ValueError("pvalues must be a nonempty finite vector in [0, 1]")
+        if not internal:
+            if has_zero and has_one:
+                raise ValueError("cannot combine both exact 0 and exact 1 pvalues")
+            if has_zero:
+                return p.new_tensor(0.)
+            if has_one:
+                warnings.warn("there are pvalues that are exactly 1", RuntimeWarning, stacklevel=3)
+                return p.new_tensor(1.)
+    else:
+        if not p.numel() or not bool(torch.isfinite(p).all()) or bool(((p < 0) | (p > 1)).any()):
+            raise ValueError("pvalues must be a nonempty finite vector in [0, 1]")
+        if not internal:
+            if bool((p == 0).any()) and bool((p == 1).any()):
+                raise ValueError("cannot combine both exact 0 and exact 1 pvalues")
+            if bool((p == 0).any()):
+                return p.new_tensor(0.)
+            if bool((p == 1).any()):
+                warnings.warn("there are pvalues that are exactly 1", RuntimeWarning, stacklevel=3)
+                return p.new_tensor(1.)
     if weights is None:
         w = torch.full_like(p, 1 / p.numel())
     else:
         w = _double(weights, device=p.device).reshape(-1)
-        if w.shape != p.shape or not bool(torch.isfinite(w).all()) or bool((w < 0).any()):
-            raise ValueError("weights must be finite, nonnegative and match pvalues")
-        mass = w.sum()
-        if not bool(torch.isfinite(mass)) or bool(mass <= 0):
-            raise DegenerateTestError("CCT requires a positive finite weight sum")
+        if sync_light:
+            if w.shape != p.shape:
+                raise ValueError("weights must be finite, nonnegative and match pvalues")
+            mass = w.sum()
+            finite, negative, mass_finite, mass_nonpositive = host_flags(
+                torch.isfinite(w).all(), (w < 0).any(), torch.isfinite(mass), mass <= 0)
+            if not finite or negative:
+                raise ValueError("weights must be finite, nonnegative and match pvalues")
+            if not mass_finite or mass_nonpositive:
+                raise DegenerateTestError("CCT requires a positive finite weight sum")
+        else:
+            if w.shape != p.shape or not bool(torch.isfinite(w).all()) or bool((w < 0).any()):
+                raise ValueError("weights must be finite, nonnegative and match pvalues")
+            mass = w.sum()
+            if not bool(torch.isfinite(mass)) or bool(mass <= 0):
+                raise DegenerateTestError("CCT requires a positive finite weight sum")
         w = w / mass
     small = p < 1e-16
     statistic = (w[small] / p[small] / math.pi).sum()
-    statistic = statistic + (w[~small] * torch.tan((0.5 - p[~small]) * math.pi)).sum()
+    normal_transform = (torch.tan((0.5 - p[~small]) * math.pi)
+                        if _normal_transform is None else _normal_transform[~small])
+    statistic = statistic + (w[~small] * normal_transform).sum()
+    if sync_light:
+        is_nan, large, nonpositive = host_flags(torch.isnan(statistic), statistic > 1e15, statistic <= 0)
+        if is_nan:
+            raise DegenerateTestError("CCT statistic is undefined")
+        if large:
+            return (1 / statistic) / math.pi
+        tail = _cauchy_sf_tensor(statistic)
+        return tail if internal or nonpositive else 1 - (1 - tail)
     if bool(torch.isnan(statistic)):
         raise DegenerateTestError("CCT statistic is undefined")
     if bool(statistic > 1e15):
@@ -161,7 +255,7 @@ def _cct_tensor(pvalues, weights=None, *, internal: bool = False) -> torch.Tenso
     return tail if internal or bool(statistic <= 0) else 1 - (1 - tail)
 
 
-def cct(pvalues, weights=None, *, internal: bool = False) -> float:
+def cct(pvalues, weights=None, *, internal: bool = False, sync_light: bool = False) -> float:
     """Cauchy combination on the input device, with R/C++ boundary rules.
 
     Default matches exported R CCT: any exact 0 returns 0, any exact 1
@@ -169,7 +263,7 @@ def cct(pvalues, weights=None, *, internal: bool = False) -> float:
     zero-weight elements). internal=True matches CCT_pval.cpp used inside
     ACAT-V. Invalid or zero weight mass raises an error instead of R NaN.
     """
-    return float(_cct_tensor(pvalues, weights, internal=internal))
+    return float(_cct_tensor(pvalues, weights, internal=internal, sync_light=sync_light))
 
 
 def _ordered_sum(values: torch.Tensor) -> torch.Tensor:
@@ -180,7 +274,7 @@ def _ordered_sum(values: torch.Tensor) -> torch.Tensor:
     return values.sum(dim=0)
 
 
-def _quadratic_form_sf_tensor(statistic, eigenvalues, *, moment_eigenvalues=None, reference_reduction=False) -> torch.Tensor:
+def _quadratic_form_sf_tensor(statistic, eigenvalues, *, moment_eigenvalues=None, reference_reduction=False, sync_light=False) -> torch.Tensor:
     raw = _double(eigenvalues).reshape(-1)
     q_raw = _double(statistic, device=raw.device)
     if not raw.numel() or not bool(torch.isfinite(raw).all()) or q_raw.numel() != 1 or not bool(torch.isfinite(q_raw)) or bool(q_raw < 0):
@@ -195,19 +289,23 @@ def _quadratic_form_sf_tensor(statistic, eigenvalues, *, moment_eigenvalues=None
         record_ordered_tail()
     reduce = _ordered_sum if reference_reduction else lambda values: values.sum()
     scaled, q = spectrum / maximum, q_raw / maximum
-    lower = q.new_tensor(-0.01) if bool(q > reduce(scaled)) else -torch.full_like(q, scaled.numel()) / (2 * q)
-    upper, root = q.new_tensor(0.499995), q.new_tensor(0.)
-    for _ in range(2048):
-        if bool((upper - lower).abs() <= 1e-8):
-            break
-        root = (upper + lower) / 2
-        derivative = reduce(scaled / (1 - 2 * scaled * root)) - q
-        if bool(derivative == 0):
-            break
-        upper = torch.where(derivative > 0, root, upper)
-        lower = torch.where(derivative > 0, lower, root)
+    if sync_light:
+        from ._statistics_sync import bisection_root
+        root = bisection_root(scaled, q, reduce)
     else:
-        raise ArithmeticError("STAAR saddlepoint bisection did not converge")
+        lower = q.new_tensor(-0.01) if bool(q > reduce(scaled)) else -torch.full_like(q, scaled.numel()) / (2 * q)
+        upper, root = q.new_tensor(0.499995), q.new_tensor(0.)
+        for _ in range(2048):
+            if bool((upper - lower).abs() <= 1e-8):
+                break
+            root = (upper + lower) / 2
+            derivative = reduce(scaled / (1 - 2 * scaled * root)) - q
+            if bool(derivative == 0):
+                break
+            upper = torch.where(derivative > 0, root, upper)
+            lower = torch.where(derivative > 0, lower, root)
+        else:
+            raise ArithmeticError("STAAR saddlepoint bisection did not converge")
     if bool(root.abs() < 1e-4):
         moments = raw if moment_eigenvalues is None else _double(moment_eigenvalues, device=raw.device).reshape(-1)
         _finite(moments, "moment_eigenvalues")
@@ -281,8 +379,12 @@ def _student_t_two_sided(t_squared: torch.Tensor, dof: int) -> torch.Tensor:
     return result
 
 
-def annotation_weights(maf, annotations=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return burden, SKAT and ACAT-V weights in beta-then-annotation order."""
+def annotation_weights(maf, annotations=None, *, dtype=torch.float64) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return three distinct weight families in beta-then-annotation order.
+
+    dtype=float32 computes all columns on the input device; dtype=float64
+    selects the explicit scalar control. PHRED ranks keep the original formula.
+    """
     f = _double(maf)
     if f.ndim != 1 or not f.numel():
         raise ValueError("maf must be a nonempty vector")
@@ -297,6 +399,9 @@ def annotation_weights(maf, annotations=None) -> tuple[torch.Tensor, torch.Tenso
         _finite(phred, "annotations")
         if bool((phred < 0).any()):
             raise ValueError("PHRED annotations cannot be negative")
+    if dtype == torch.float32:
+        from ._reference_weights import native_annotation_weights
+        return native_annotation_weights(f, phred)
     # The original scalar libm transformations are retained at this small
     # weight boundary. Score/covariance and probability calculations stay on
     # the input device; the helper reports its CPU and transfer work.
@@ -305,9 +410,134 @@ def annotation_weights(maf, annotations=None) -> tuple[torch.Tensor, torch.Tenso
 
 
 def _chi1_from_score(score: torch.Tensor, variance: torch.Tensor) -> torch.Tensor:
+    # Probability arithmetic alone uses FP64 to retain small positive P.
+    score = _double(score)
+    variance = _double(variance, device=score.device)
     if bool((variance <= 0).any()):
         raise DegenerateTestError("score test variance must be positive")
     return torch.erfc(torch.sqrt(score.square() / variance / 2))
+
+
+def _cct_rows(pvalues, weights, *, batch_validation=True):
+    """Internal CCT for all annotation columns, with unchanged tail branches."""
+    p = pvalues.double()
+    w = weights.double()
+    if p.ndim != 2 or p.shape != w.shape or not p.shape[1]:
+        raise ValueError("pvalues must be a nonempty finite vector in [0, 1]")
+    if batch_validation:
+        from ._statistics_sync import host_flags
+        mass = w.sum(dim=1)
+        _STATISTICS_METADATA["cct_validation_flag_batches"] += 1
+        finite_p, out_of_range, finite_w, negative_w, finite_mass, nonpositive_mass = host_flags(
+            torch.isfinite(p).all(), ((p<0)|(p>1)).any(), torch.isfinite(w).all(),
+            (w<0).any(), torch.isfinite(mass).all(), (mass<=0).any())
+        if not finite_p or out_of_range:
+            raise ValueError("pvalues must be a nonempty finite vector in [0, 1]")
+        if not finite_w or negative_w:
+            raise ValueError("weights must be finite, nonnegative and match pvalues")
+        if not finite_mass or nonpositive_mass:
+            raise DegenerateTestError("CCT requires a positive finite weight sum")
+    else:
+        if not bool(torch.isfinite(p).all()) or bool(((p<0)|(p>1)).any()):
+            raise ValueError("pvalues must be a nonempty finite vector in [0, 1]")
+        mass = w.sum(dim=1)
+        if not bool(torch.isfinite(w).all()) or bool((w<0).any()):
+            raise ValueError("weights must be finite, nonnegative and match pvalues")
+        if not bool(torch.isfinite(mass).all()) or bool((mass<=0).any()):
+            raise DegenerateTestError("CCT requires a positive finite weight sum")
+    w = w / mass[:,None]
+    small = p < 1e-16
+    statistic = torch.where(small,w/p/math.pi,0.).sum(dim=1)
+    statistic += torch.where(~small,w*torch.tan((.5-p)*math.pi),0.).sum(dim=1)
+    if bool(torch.isnan(statistic).any()):raise DegenerateTestError("CCT statistic is undefined")
+    return torch.where(statistic>1e15,(1/statistic)/math.pi,_cauchy_sf_tensor(statistic))
+
+
+def _native_weight_relations(rows, *, scratch_limit=64 * 2**20):
+    """Prove proportionality exactly, batching only elementwise comparisons.
+
+    The scratch bound covers two FP64 cross-products, their Boolean equality,
+    and the pivot gather. These are weight identity checks, not FP64 dense
+    score/covariance products. One table reaches the CPU to retain the original
+    representative order; pivot indexes remain on the device.
+    """
+    if rows.dtype != torch.float32 or rows.ndim != 2:
+        raise ValueError("native weight relations require an FP32 row matrix")
+    if bool((~(rows != 0).any(dim=1)).any()):
+        raise DegenerateTestError("SKAT covariance has no eigenvalue at or above 1e-8")
+    number_weights, number_variants = rows.shape
+    if number_weights < 1 or number_variants < 1:
+        raise ValueError("native weight relations require nonempty rows")
+    persistent_bytes = 8 * number_weights * number_variants + 16 * number_weights + number_weights**2
+    budget = int(scratch_limit)
+    if rows.is_cuda:
+        from . import tf32
+        with torch.cuda.device(rows.device):
+            free, _ = torch.cuda.mem_get_info()
+        available = tf32._product_workspace_availability(
+            allocated=torch.cuda.memory_allocated(rows.device),
+            reserved=torch.cuda.memory_reserved(rows.device), free=free,
+            limit=min(20 * 2**30, tf32._memory_limit_bytes),
+            reserve=tf32._memory_reserve_bytes)["available_bytes"]
+        budget = min(budget, available - persistent_bytes)
+    bytes_per_row = 17 * number_weights * number_variants + 9 * number_weights
+    if budget < bytes_per_row:
+        raise MemoryError("exact weight relation scratch cannot fit one row within the memory budget")
+    row_chunk = min(number_weights, budget // bytes_per_row)
+    exact = rows.double()
+    pivots = (rows != 0).to(torch.int32).argmax(dim=1)
+    pivot_values = exact.gather(1, pivots[:, None])[:, 0]
+    related = torch.empty((number_weights, number_weights), dtype=torch.bool, device=rows.device)
+    for start in range(0, number_weights, row_chunk):
+        end = min(number_weights, start + row_chunk)
+        left = exact[None, :, :] * pivot_values[start:end, None, None]
+        right = exact[:, pivots[start:end]].T[:, :, None] * exact[start:end, None, :]
+        related[start:end] = (left == right).all(dim=2)
+        del left, right
+        _STATISTICS_METADATA["native_relation_row_batches"] += 1
+    _STATISTICS_METADATA["native_relation_max_scratch_bytes"] = max(
+        _STATISTICS_METADATA["native_relation_max_scratch_bytes"], row_chunk * bytes_per_row)
+    _STATISTICS_METADATA["native_relation_bulk_d2h_calls"] += int(rows.is_cuda)
+    return exact, pivots, related.cpu().tolist()
+
+
+def _native_weighted_spectra(covariance, weights):
+    from ._weighted_spectra import native_weighted_spectra
+    return native_weighted_spectra(covariance, weights)
+
+
+def _staar_probability_fields(pvalues, labels, *, tail_optimization=False, batch_copy=True):
+    """Retain CCT calls and key order; copy final FP64 P values together.
+
+    The scalar path is an explicit differential control. Only the final output
+    transfer changes; CCT validation/branches/reductions execute as before.
+    """
+    if pvalues.ndim != 2 or pvalues.shape != (3, 2 * (len(labels) + 1)) or pvalues.dtype != torch.float64:
+        raise ValueError("STAAR output requires complete FP64 probability rows")
+    fields = {}
+    def emit(value):
+        if not batch_copy and value.is_cuda:
+            _STATISTICS_METADATA["probability_output_d2h_calls"] += 1
+            _STATISTICS_METADATA["probability_output_d2h_values"] += 1
+        return value if batch_copy else float(value)
+    width = len(labels) + 1
+    for row, method, combined in ((0, "SKAT", "STAAR-S"), (1, "Burden", "STAAR-B"), (2, "ACAT-V", "STAAR-A")):
+        for beta_index, beta_name in enumerate(("1,25", "1,1")):
+            values = pvalues[row, beta_index * width:(beta_index + 1) * width]
+            base = f"{method}({beta_name})"
+            fields[base] = emit(values[0])
+            for label, value in zip(labels, values[1:]):
+                fields[f"{base}-{label}"] = emit(value)
+            fields[f"{combined}({beta_name})"] = emit(_cct_tensor(values, sync_light=tail_optimization))
+    fields["ACAT-O"] = emit(_cct_tensor(pvalues[:, (0, width)].reshape(-1), sync_light=tail_optimization))
+    fields["STAAR-O"] = emit(_cct_tensor(pvalues.reshape(-1), sync_light=tail_optimization))
+    if batch_copy:
+        if pvalues.is_cuda:
+            _STATISTICS_METADATA["probability_output_d2h_calls"] += 1
+            _STATISTICS_METADATA["probability_output_d2h_values"] += len(fields)
+        values = torch.stack(list(fields.values())).detach().to(device="cpu").tolist()
+        return dict(zip(fields, values))
+    return fields
 
 
 def staar_test(
@@ -328,9 +558,23 @@ def staar_test(
     rv_num_cutoff_max: int = 1_000_000_000,
     cmac: float | None = None,
     _skat_pvalues: torch.Tensor | None = None,
+    matmul_mode: str = "fp64",
+    tail_optimization: bool = False,
+    weight_batch_optimization: bool = False,
+    output_batch_optimization: bool = True,
+    cct_validation_optimization: bool = True,
 ) -> dict[str, float | int]:
     """Return STAAR columns from already oriented, imputed score inputs.
 
+    Native tf32 uses FP32 scores, covariance, weights and complete eigvalsh.
+    Probability arithmetic alone uses FP64 for underflow/cancellation stability.
+    Explicit fp64 controls preserve the earlier scalar implementation.
+    weight_batch_optimization groups score products and chi-square tails,
+    retains individual one-dimensional reductions for explicit FP64 controls.
+    Native mode always batches all columns and reuses common ACAT-V inputs.
+    output_batch_optimization copies final P values together;
+    cct_validation_optimization combines ACAT-V input flags. Independent false
+    controls retain scalar output transfers and separate validation checks.
     covariance includes the fitted dispersion. acat_calibration='chi2'
     is the SMMAT/relatedness (or binary ordinary) branch;
     'gaussian_glm' requires dof=n-rank(X), and uses t(dof-1) only for
@@ -340,8 +584,11 @@ def staar_test(
     cmac optionally supplies exact sum(G_rare), important after imputation;
     otherwise the sum of the caller's MAC values is returned.
     """
-    u = _double(score)
-    v = _double(covariance, device=u.device)
+    validate_mode(matmul_mode)
+    native = matmul_mode == "tf32"
+    core_dtype = torch.float32 if native else torch.float64
+    u = torch.as_tensor(score, dtype=core_dtype)
+    v = torch.as_tensor(covariance, dtype=core_dtype, device=u.device)
     f = _double(maf, device=u.device)
     m = _double(mac, device=u.device)
     if u.ndim != 1 or v.shape != (u.numel(), u.numel()) or f.shape != u.shape or m.shape != u.shape:
@@ -374,39 +621,111 @@ def staar_test(
     u, v, f, m = u[mask], v[mask][:, mask], f[mask], m[mask]
     if not bool(torch.allclose(v, v.T, atol=1e-10, rtol=1e-10)):
         raise ValueError("covariance must be symmetric")
-    reference_covariance = v
     v = (v + v.T) * 0.5
     k = 0 if phred is None else phred.shape[1]
     labels = [f"annotation_{i + 1}" for i in range(k)] if names is None else list(names)
     if len(labels) != k or len(set(labels)) != k or any(not isinstance(s, str) or not s for s in labels):
         raise ValueError("names must be nonempty distinct annotation names")
-    burden_weights, skat_weights, acat_weights = annotation_weights(f, phred)
+    burden_weights, skat_weights, acat_weights = annotation_weights(f, phred, dtype=core_dtype)
+    _STATISTICS_METADATA["scalar_reduction_dtype"] = str(core_dtype)
+    _STATISTICS_METADATA["eigenvalue_dtype"] = str(core_dtype)
+    _STATISTICS_METADATA["weight_transform_dtype"] = "device float32" if native else "CPU float64 explicit control"
+    if native:
+        weight_batch_optimization = True
+        _STATISTICS_METADATA["native_batch_calls"] += 1
+    mode_calls = _STATISTICS_METADATA["matmul_mode_calls"]
+    mode_calls[matmul_mode] = mode_calls.get(matmul_mode, 0) + 1
     common = m > mac_threshold
     very_rare = ~common
     common_p = _chi1_from_score(u[common], v.diagonal()[common])
     if acat_calibration == "gaussian_glm" and bool(common.any()):
-        explained = u[common].square() / v.diagonal()[common]
+        explained = _double(u[common]).square() / _double(v.diagonal()[common])
         if bool((explained > dof).any()):
             raise ArithmeticError("Gaussian single-variant explained sum of squares exceeds the null total")
         t_squared = explained / (dof - explained) * (dof - 1)
         common_p = _student_t_two_sided(t_squared, dof - 1)
     number_weights = burden_weights.shape[1]
-    pvalues = torch.empty((3, number_weights), dtype=u.dtype, device=u.device)
+    has_very_rare = bool(very_rare.any())
+    all_very_rare = has_very_rare and not bool(common.any())
+    rare_covariance = (v if all_very_rare else v[very_rare][:, very_rare]) if has_very_rare else None
+    burden_variances = rare_variances = None
+    if matmul_mode != "fp64":
+        # One matrix product across annotation columns. Native quadratic forms
+        # use FP32 elementwise products and reductions; only P arithmetic is FP64.
+        # No TF32 request reaches the FP64 matrix/vector path below.
+        from ._burden import ieee_burden_product
+        products = ieee_burden_product(v, burden_weights) if native else matmul(v, burden_weights, mode=matmul_mode)
+        burden_variances = (burden_weights * products).sum(dim=0)
+        _STATISTICS_METADATA["burden_matrix_products"] += 1
+        if all_very_rare:
+            rare_variances = burden_variances
+        elif has_very_rare:
+            rare_weights = burden_weights[very_rare]
+            rare_products = ieee_burden_product(rare_covariance, rare_weights) if native else matmul(rare_covariance, rare_weights, mode=matmul_mode)
+            rare_variances = (rare_weights * rare_products).sum(dim=0)
+            _STATISTICS_METADATA["rare_burden_matrix_products"] += 1
+    pvalues = torch.empty((3, number_weights), dtype=torch.float64, device=u.device)
     if _skat_pvalues is not None:
         _skat_pvalues = _double(_skat_pvalues, device=u.device)
         if _skat_pvalues.shape != (number_weights,):
             raise ValueError("precomputed SKAT values do not match the annotation weights")
     small_spectra = None
-    if _skat_pvalues is None and u.is_cuda and len(u) <= 32 and number_weights > 1:
+    if native and _skat_pvalues is None:
+        small_spectra = _native_weighted_spectra(v, skat_weights)
+    elif _skat_pvalues is None and u.is_cuda and len(u) <= 32 and number_weights > 1:
         # A natural batch of annotation weights selects the small-matrix
         # CUDA Jacobi solver. Reuse that spectrum through the scalar tail.
         matrices = torch.stack([v * ws[:, None] * ws[None, :]
                                 for ws in skat_weights.T])
         small_spectra = torch.linalg.eigvalsh(matrices, UPLO="U")
         record_gpu_eigen_route(matrices)
-    q_values = (_ordered_sum(u.square()[:, None] * skat_weights.square())
+    q_values = ((u.square()[:, None] * skat_weights.square()).sum(dim=0) if native and _skat_pvalues is None
+                else _ordered_sum(u.square()[:, None] * skat_weights.square())
                 if _skat_pvalues is None and u.is_cuda else None)
-    for i in range(number_weights):
+    burden_pvalues = rare_pvalues = rare_acat_means = None
+    common_normal_transform = rare_normal_transform = None
+    if weight_batch_optimization:
+        _STATISTICS_METADATA["weight_batch_optimization_calls"] += 1
+        # Native mode batches all rows in the FP32 core. Explicit FP64 controls
+        # retain separate one-dimensional reductions for the scalar comparator.
+        burden_products = burden_weights.T.contiguous() * u[None, :]
+        burden_scores = burden_products.sum(dim=1) if native else torch.stack([row.sum() for row in burden_products])
+        if burden_variances is None:
+            burden_variances = torch.stack([wb @ v @ wb for wb in burden_weights.T])
+        burden_pvalues = _chi1_from_score(burden_scores, burden_variances)
+        if has_very_rare:
+            if all_very_rare:
+                rare_scores = burden_scores
+                rare_pvalues = burden_pvalues
+                rare_variances = burden_variances
+            else:
+                rare_burden_products = burden_weights[very_rare].T.contiguous() * u[very_rare][None, :]
+                rare_scores = rare_burden_products.sum(dim=1) if native else torch.stack([row.sum() for row in rare_burden_products])
+                if rare_variances is None:
+                    rare_variances = torch.stack([wb @ rare_covariance @ wb
+                                                 for wb in burden_weights[very_rare].T])
+                rare_pvalues = _chi1_from_score(rare_scores, rare_variances)
+            rare_acat_rows = acat_weights[very_rare].T.contiguous()
+            rare_acat_means = rare_acat_rows.mean(dim=1) if native else torch.stack([row.mean() for row in rare_acat_rows])
+            rare_normal_transform = torch.tan((0.5 - rare_pvalues) * math.pi)
+        common_normal_transform = torch.tan((0.5 - common_p) * math.pi)
+        if q_values is None and _skat_pvalues is None:
+            q_products = skat_weights.T.contiguous().square() * u.square()[None, :]
+            q_values = torch.stack([row.sum() for row in q_products])
+    if native:
+        if _skat_pvalues is None:
+            from ._fused_saddle import quadratic_form_sf_batch
+            pvalues[0] = quadratic_form_sf_batch(q_values, small_spectra)
+        else:
+            pvalues[0] = _skat_pvalues
+        pvalues[1] = burden_pvalues
+        acat_rows = common_p[None,:].expand(number_weights,-1)
+        acat_weight_rows = acat_weights[common].T.contiguous()
+        if has_very_rare:
+            acat_rows = torch.cat((acat_rows,rare_pvalues[:,None]),dim=1)
+            acat_weight_rows = torch.cat((acat_weight_rows,rare_acat_means[:,None]),dim=1)
+        pvalues[2] = _cct_rows(acat_rows,acat_weight_rows, batch_validation=cct_validation_optimization)
+    for i in range(0 if native else number_weights):
         if _skat_pvalues is None:
             ws = skat_weights[:, i]
             if small_spectra is None:
@@ -416,36 +735,36 @@ def staar_test(
             else:
                 eigenvalues = small_spectra[i]
             q = q_values[i] if q_values is not None else torch.sum(u.square() * ws.square())
-            eigenvalues, refined = refine_near_mean_spectrum(
-                reference_covariance, eigenvalues, q, weights=ws)
-            pvalues[0, i] = _quadratic_form_sf_tensor(q, eigenvalues, reference_reduction=refined)
+            refined = False
+            pvalues[0, i] = _quadratic_form_sf_tensor(q, eigenvalues, reference_reduction=refined, sync_light=tail_optimization)
         else:
             pvalues[0, i] = _skat_pvalues[i]
         wb = burden_weights[:, i]
-        burden_score = torch.sum(u * wb)
-        burden_variance = wb @ v @ wb
-        pvalues[1, i] = _chi1_from_score(burden_score, burden_variance)
+        if burden_pvalues is None:
+            burden_score = torch.sum(u * wb)
+            burden_variance = wb @ v @ wb if burden_variances is None else burden_variances[i]
+            pvalues[1, i] = _chi1_from_score(burden_score, burden_variance)
+        else:
+            pvalues[1, i] = burden_pvalues[i]
         acat_p = common_p
         acat_w = acat_weights[common, i]
-        if bool(very_rare.any()):
-            rare_wb = wb[very_rare]
-            rare_score = torch.sum(u[very_rare] * rare_wb)
-            rare_variance = rare_wb @ v[very_rare][:, very_rare] @ rare_wb
-            rare_p = _chi1_from_score(rare_score, rare_variance).reshape(1)
-            rare_weight = acat_weights[very_rare, i].mean().reshape(1)
+        normal_transform = common_normal_transform
+        if has_very_rare:
+            if rare_pvalues is None:
+                rare_wb = wb[very_rare]
+                rare_score = torch.sum(u[very_rare] * rare_wb)
+                rare_variance = rare_wb @ rare_covariance @ rare_wb if rare_variances is None else rare_variances[i]
+                rare_p = _chi1_from_score(rare_score, rare_variance).reshape(1)
+                rare_weight = acat_weights[very_rare, i].mean().reshape(1)
+            else:
+                rare_p = rare_pvalues[i].reshape(1)
+                rare_weight = rare_acat_means[i].reshape(1)
+                normal_transform = torch.cat((common_normal_transform, rare_normal_transform[i].reshape(1)))
             acat_p = torch.cat((acat_p, rare_p))
             acat_w = torch.cat((acat_w, rare_weight))
-        pvalues[2, i] = _cct_tensor(acat_p, acat_w, internal=True)
+        pvalues[2, i] = _cct_tensor(acat_p, acat_w, internal=True, sync_light=tail_optimization,
+                                  _normal_transform=normal_transform)
     result: dict[str, float | int] = {"num_variant": count, "cMAC": float(m.sum()) if cmac is None else float(cmac)}
-    width = k + 1
-    for row, method, combined in ((0, "SKAT", "STAAR-S"), (1, "Burden", "STAAR-B"), (2, "ACAT-V", "STAAR-A")):
-        for beta_index, beta_name in enumerate(("1,25", "1,1")):
-            values = pvalues[row, beta_index * width:(beta_index + 1) * width]
-            base = f"{method}({beta_name})"
-            result[base] = float(values[0])
-            for label, value in zip(labels, values[1:]):
-                result[f"{base}-{label}"] = float(value)
-            result[f"{combined}({beta_name})"] = cct(values)
-    result["ACAT-O"] = cct(pvalues[:, (0, width)].reshape(-1))
-    result["STAAR-O"] = cct(pvalues.reshape(-1))
+    result.update(_staar_probability_fields(pvalues, labels, tail_optimization=tail_optimization,
+                                           batch_copy=output_batch_optimization))
     return result

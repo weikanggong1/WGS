@@ -1,4 +1,4 @@
-"""Reference-precision scalar weight and complementary PHRED transformations.
+"""Original weight definitions: native FP32 device and explicit FP64 control.
 
 The weight API consumes a complete PHRED matrix unchanged.  Complementary PHRED
 construction is a separate helper for the raw annotation reader.  Constants are
@@ -18,6 +18,7 @@ R_LBETA_1_25 = -3.218875824868201
 R_LBETA_HALF = 1.1447298858494004
 _COUNTER_LOCK = threading.Lock()
 _COUNTERS = {
+    'native_weight_calls': 0,
     'weight_calls': 0,
     'weight_rows': 0,
     'weight_annotation_cells': 0,
@@ -57,8 +58,9 @@ def reference_weights_execution_metadata(*, reset=False):
             for key in _COUNTERS:
                 _COUNTERS[key] = 0.0 if key.endswith('_seconds') else 0
     return {
-        'implementation': 'scalar_libm_float64',
-        'arithmetic_reference': 'R 3.6.1 STAAR 0.9.9',
+        'implementation': ('device_fp32_native' if counters['native_weight_calls'] else 'scalar_libm_float64_control'),
+        'arithmetic_reference': ('original STAAR weight definitions; native FP32 arithmetic' if counters['native_weight_calls'] else 'R 3.6.1 STAAR 0.9.9 explicit control'),
+        'native_timing_scope': 'asynchronous device transformations; CPU scalar timing counters exclude native calls',
         'timing_scope': 'host wall time includes validation, implicit synchronization and copies',
         'transfer_bytes_scope': 'logical float64 payloads',
         **counters,
@@ -221,3 +223,25 @@ def reference_annotation_weights(
             "cached": False,
         })
     return outputs
+
+
+def native_annotation_weights(maf, annotations=None):
+    """Original three weight definitions, vectorized on the input device in FP32.
+
+    expm1 expresses 1-exp(-PHRED*log(10)/10) without small-PHRED cancellation.
+    The two beta families and Burden/SKAT/ACAT-V annotation powers are distinct.
+    No host libm loop or host copy participates in this native path.
+    """
+    f = torch.as_tensor(maf, dtype=torch.float32)
+    phred = (torch.empty((len(f), 0), device=f.device, dtype=f.dtype) if annotations is None
+             else torch.as_tensor(annotations, device=f.device, dtype=f.dtype))
+    beta25 = torch.exp(24 * torch.log1p(-f) + math.log(25.))
+    beta_half = torch.exp(-.5 * torch.log(f) - .5 * torch.log1p(-f) - math.log(math.pi))
+    rank = -torch.expm1(-phred * (math.log(10.) / 10.))
+    annotations_rank = torch.cat((torch.ones((len(f), 1), dtype=f.dtype, device=f.device), rank), dim=1)
+    base = torch.stack((beta25, torch.ones_like(f)), dim=1)
+    burden = (base[:, :, None] * annotations_rank[:, None, :]).reshape(len(f), -1)
+    skat = (base[:, :, None] * annotations_rank.sqrt()[:, None, :]).reshape(len(f), -1)
+    acat = ((base.square() / beta_half.square()[:, None])[:, :, None] * annotations_rank[:, None, :]).reshape(len(f), -1)
+    _record(native_weight_calls=1, weight_calls=1, weight_rows=len(f), weight_annotation_cells=phred.numel())
+    return burden, skat, acat

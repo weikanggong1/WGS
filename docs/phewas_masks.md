@@ -94,7 +94,7 @@ promoter 的 `promoter_overlap` 必须是与每个变异对齐的布尔数组。
 
 PheWAS 的 `obj_nullmodel_list` 是多个分析对象的列表。单个对象 `n.pheno == 1` 时执行逐表型 STAAR；`n.pheno > 1` 时执行利用表型相关结构的 MultiSTAAR 联合检验。多个单表型模型的列表不等于 MultiSTAAR 联合模型。
 
-原版单个 category、single-variant 和 sliding-window 返回按模型顺序的列表；`all_categories` coding/noncoding 返回以类别为外层的命名列表，每个类别内再按模型排列结果。Coding/noncoding 表首五列为 `Gene name`、`Chr`、`Category`、`#SNV`、`cMAC`；滑窗表首五列为 `Chr`、`Start Loc`、`End Loc`、`#SNV`、`cMAC`。普通分支包含六类检验、`ACAT-O` 和 `STAAR-O`，SPA 分支采用 Burden 与 `STAAR-B`。
+原版单个 category和 single-variant 返回按模型顺序的列表；`all_categories` coding/noncoding 返回以类别为外层的命名列表，每个类别内再按模型排列结果。Coding/noncoding 表首五列为 `Gene name`、`Chr`、`Category`、`#SNV`、`cMAC`。普通分支包含六类检验、`ACAT-O` 和 `STAAR-O`，SPA 分支采用 Burden 与 `STAAR-B`。
 
 原版 missense 汇总还纳入 disruptive missense 的六个基础 p 值，并添加 `-Disruptive` 列。`staar_phewas.results` 实现结果组装：
 
@@ -122,7 +122,7 @@ first_trait_missense_rows = coding_results["missense"][0]
 
 `coding_record(chromosome, gene_name, category, statistics)` 将统计字典的 `num_variant` 改为 `#SNV`，并放在原版五个元数据列后；剩余统计列按输入顺序保留。`window_record(chromosome, start, end, statistics)` 生成滑窗表的五个元数据列。`single_variant_record(chromosome, position, ref, alt, alt_af, maf, number_samples, statistics, number_phenotypes=1, use_spa=False)` 接受原版 score 结果；普通单表型输出 `Score`、`Score_se`、`Est`、`Est_se`，联合模型输出 `Score1` 等列，SPA 仅输出 p 值。`pvalue_log10` 为正的 `−log10(p)`。
 
-`assemble_phewas_results` 的 `kind` 接受 `coding`、`noncoding`、`ncrna`、`singlevariant`、`sliding`；`category` 默认 `all_categories`，也可指定单个类别。`include_ptv=True` 添加两个 PTV 类别；原 R 的 `all_categories_incl_ptv` 别名也受支持。`include_ncrna=True` 可将 ncRNA 添加到 noncoding 集合。`use_spa` 决定补充列和组合规则；`cauchy_combiner` 可传入 Cauchy 组合函数，默认使用统计模块的 `cct`。结果仅含普通字典和列表，可以写为 JSON；缺少有效统计结果的 mask 保留空列表。singlevariant 按位置排序。
+`assemble_phewas_results` 的 `kind` 接受 `coding`、`noncoding`、`ncrna`、`singlevariant`；`category` 默认 `all_categories`，也可指定单个类别。`include_ptv=True` 添加两个 PTV 类别；原 R 的 `all_categories_incl_ptv` 别名也受支持。`include_ncrna=True` 可将 ncRNA 添加到 noncoding 集合。`use_spa` 决定补充列和组合规则；`cauchy_combiner` 可传入 Cauchy 组合函数，默认使用统计模块的 `cct`。结果仅含普通字典和列表，可以写为 JSON；缺少有效统计结果的 mask 保留空列表。singlevariant 按位置排序。
 
 对于非空 disruptive mask，组装器重算 missense 的六个 STAAR 分组 p 值和 `STAAR-O`，保留 `ACAT-O`；若 disruptive mask 没有有效统计结果，附加的六列填为 1，并保留原来的汇总值。SPA 分支附加两个 Burden 值，按原 R 规则处理缺失值和等于 1 的值，并更新 `STAAR-B`。这项结果组装支持不代表 SPA 统计或 MultiSTAAR 联合 null model 已实现。
 

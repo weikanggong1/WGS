@@ -1,0 +1,471 @@
+{
+  "schema_version": 1,
+  "package_version": "0.3.0",
+  "date": "2026-10-05",
+  "logp_absolute_error_target": 0.001,
+  "nonP_numeric_tolerance": {
+    "absolute": 1e-10,
+    "relative": 1e-07
+  },
+  "arithmetic": {
+    "production_matrix_mode": "tf32_binned",
+    "components_per_operand": 8,
+    "signed_radix": 128,
+    "inner_chunk_size": 1024,
+    "requested_tile": [
+      32,
+      64
+    ],
+    "small_tile": [
+      32,
+      32
+    ],
+    "fused_small": true,
+    "tail_sync_optimization": true,
+    "element_reassembly_and_solvers": "float64",
+    "reference_R_arithmetic": "float64",
+    "no_float16_or_bfloat16": true
+  },
+  "timing_contract": {
+    "serial": true,
+    "device": "shared A100 80GB",
+    "cpu_threads": 1,
+    "profile_short": true,
+    "profile_full": false,
+    "shared_device_and_cache_state_may_affect_observed_timings": true,
+    "nested_stages_not_additive": true,
+    "cuda_stream_elapsed_includes_wait_and_host_launch_gaps": true
+  },
+  "native_short": {
+    "control": {
+      "local_mask_reuse": false,
+      "weight_batch_optimization": false,
+      "scope": {
+        "serial_jobs": 10,
+        "association_files": 6,
+        "null_files": 1,
+        "valid_unique_gene_masks": 39,
+        "single_rows": 27,
+        "single_scan_physical_variants": 12000,
+        "ncrna_selected_directory_tasks": 3,
+        "ncrna_nonempty_results": 0
+      },
+      "pipeline_wall_seconds": 388.5187247097492,
+      "wrapper_wall_seconds": 388.63514453172684,
+      "nonP_strict_and_logP_gate_passed": true,
+      "original_raw_numeric_strict_all_passed": false,
+      "native_files": 7,
+      "maximum_logp_absolute_difference": 0.000320824797402919,
+      "raw_p_cells": 3571,
+      "uncomparable_p_cells": 0,
+      "logp_exceeded_001": 0,
+      "peak_allocated_mib": 5950.61083984375,
+      "peak_reserved_mib": 10382.0,
+      "stages": {
+        "gds_sdk_decode_prepare": {
+          "calls": 107,
+          "host_wall_seconds": 129.80974616110325,
+          "cuda_stream_seconds": 9.585374499091879
+        },
+        "genotype_trait_prepare": {
+          "calls": 59,
+          "host_wall_seconds": 13.471757158637047,
+          "cuda_stream_seconds": 13.478956728696826
+        },
+        "genotype_h2d": {
+          "calls": 39,
+          "host_wall_seconds": 0.36199016869068146,
+          "cuda_stream_seconds": 0.3649304947853089
+        },
+        "score_covariance": {
+          "calls": 45,
+          "host_wall_seconds": 61.60990861058235,
+          "cuda_stream_seconds": 63.52315711212157
+        },
+        "eigen_tail": {
+          "calls": 39,
+          "host_wall_seconds": 102.82085527479649,
+          "cuda_stream_seconds": 101.4939239501953
+        },
+        "gds_sdk_read": {
+          "calls": 47,
+          "host_wall_seconds": 8.872696191072464,
+          "cuda_stream_seconds": 0.0
+        },
+        "gds_raw_h2d": {
+          "calls": 47,
+          "host_wall_seconds": 0.14919738471508026,
+          "cuda_stream_seconds": 0.10394544029235843
+        },
+        "gds_decode": {
+          "calls": 102,
+          "host_wall_seconds": 0.3390686959028244,
+          "cuda_stream_seconds": 0.48934732973575584
+        },
+        "gds_metadata_d2h": {
+          "calls": 47,
+          "host_wall_seconds": 0.13831306993961334,
+          "cuda_stream_seconds": 0.006445951990783216
+        },
+        "gds_resident_prepare": {
+          "calls": 12,
+          "host_wall_seconds": 0.010478898882865906,
+          "cuda_stream_seconds": 0.020895711958408357
+        },
+        "individual_tail": {
+          "calls": 6,
+          "host_wall_seconds": 0.06515046954154968,
+          "cuda_stream_seconds": 0.037931902222335334
+        },
+        "result_d2h": {
+          "calls": 6,
+          "host_wall_seconds": 0.3211642652750015,
+          "cuda_stream_seconds": 0.0010357120037078858
+        }
+      },
+      "other_wall_seconds": {
+        "null_fit_seconds": 11.093702793121338,
+        "index_preparation_seconds": 36.69610720872879,
+        "gds_sdk_read_seconds": 8.873471796512604,
+        "native_association_output_seconds": 0.31739798188209534,
+        "native_null_and_cache_output_seconds": 13.329534769058228
+      },
+      "tf32": {
+        "actual_kernel_calls": 5007,
+        "ptx_verified_kernel_calls": 5007,
+        "logical_component_products": 19529,
+        "hidden_explicit_fp64_dense_products": 0
+      },
+      "local_reuse_execution": null,
+      "proof": {
+        "source_manifest_sha256": "e96160259bae23c228a06582e22848d6bad227b3509f016e8bf73056faff7e93",
+        "report_sha256": "bd09243ff4edebd3831d52e9999c5f8ef920afe3baa8395ff3daa8b5ac2e20ff",
+        "comparison_sha256": "388d4529dc7a5c3eefc91c1f24cba9d1c930f14b4d2fac063a7954df1e6c466d"
+      }
+    },
+    "optimized": {
+      "local_mask_reuse": true,
+      "weight_batch_optimization": true,
+      "scope": {
+        "serial_jobs": 10,
+        "association_files": 6,
+        "null_files": 1,
+        "valid_unique_gene_masks": 39,
+        "single_rows": 27,
+        "single_scan_physical_variants": 12000,
+        "ncrna_selected_directory_tasks": 3,
+        "ncrna_nonempty_results": 0
+      },
+      "pipeline_wall_seconds": 242.7941805869341,
+      "wrapper_wall_seconds": 242.91184011101723,
+      "nonP_strict_and_logP_gate_passed": true,
+      "original_raw_numeric_strict_all_passed": false,
+      "native_files": 7,
+      "maximum_logp_absolute_difference": 0.000320824797402919,
+      "raw_p_cells": 3571,
+      "uncomparable_p_cells": 0,
+      "logp_exceeded_001": 0,
+      "peak_allocated_mib": 8543.00341796875,
+      "peak_reserved_mib": 10944.0,
+      "stages": {
+        "gds_sdk_decode_prepare": {
+          "calls": 39,
+          "host_wall_seconds": 83.53766885399818,
+          "cuda_stream_seconds": 8.632960892873117
+        },
+        "genotype_trait_prepare": {
+          "calls": 25,
+          "host_wall_seconds": 9.591813892126083,
+          "cuda_stream_seconds": 9.59293880367279
+        },
+        "genotype_h2d": {
+          "calls": 6,
+          "host_wall_seconds": 0.18676289916038513,
+          "cuda_stream_seconds": 0.18732163071632385
+        },
+        "score_covariance": {
+          "calls": 12,
+          "host_wall_seconds": 5.014314040541649,
+          "cuda_stream_seconds": 5.790314331054688
+        },
+        "eigen_tail": {
+          "calls": 39,
+          "host_wall_seconds": 74.8996749818325,
+          "cuda_stream_seconds": 74.85179150390626
+        },
+        "gds_sdk_read": {
+          "calls": 47,
+          "host_wall_seconds": 7.90950371325016,
+          "cuda_stream_seconds": 0.0
+        },
+        "gds_raw_h2d": {
+          "calls": 47,
+          "host_wall_seconds": 0.15070021152496338,
+          "cuda_stream_seconds": 0.106788672208786
+        },
+        "gds_decode": {
+          "calls": 102,
+          "host_wall_seconds": 0.3356560617685318,
+          "cuda_stream_seconds": 0.4985800018310548
+        },
+        "gds_metadata_d2h": {
+          "calls": 47,
+          "host_wall_seconds": 0.14369681477546692,
+          "cuda_stream_seconds": 0.005552735976874828
+        },
+        "gds_resident_prepare": {
+          "calls": 12,
+          "host_wall_seconds": 0.014895617961883545,
+          "cuda_stream_seconds": 0.02906332790851593
+        },
+        "individual_tail": {
+          "calls": 6,
+          "host_wall_seconds": 0.06632283329963684,
+          "cuda_stream_seconds": 0.0030656641088426108
+        },
+        "result_d2h": {
+          "calls": 6,
+          "host_wall_seconds": 0.3118661493062973,
+          "cuda_stream_seconds": 0.0008749440088868141
+        }
+      },
+      "other_wall_seconds": {
+        "null_fit_seconds": 7.805705800652504,
+        "index_preparation_seconds": 35.68194913864136,
+        "gds_sdk_read_seconds": 7.910301625728607,
+        "native_association_output_seconds": 0.3046511709690094,
+        "native_null_and_cache_output_seconds": 13.255633369088173
+      },
+      "tf32": {
+        "actual_kernel_calls": 1398,
+        "ptx_verified_kernel_calls": 1398,
+        "logical_component_products": 11369,
+        "hidden_explicit_fp64_dense_products": 0
+      },
+      "local_reuse_execution": {
+        "families": 6,
+        "union_score_calls": 6,
+        "reused_masks": 39,
+        "input_variant_columns": 25666,
+        "union_variant_columns": 17755,
+        "prepared_union_variant_columns": 3921,
+        "fallback_memory": 0,
+        "fallback_unsupported": 0,
+        "fallback_mapping": 0,
+        "cache_hits": 0,
+        "duplicate_mask_hits": 2,
+        "single_mask_paths": 0
+      },
+      "proof": {
+        "source_manifest_sha256": "18f9bfef3dcefd75f0cc9d8d3e4e2d74dca5b90eb1df3976fa1a58ca2bfc2f64",
+        "report_sha256": "273399fd62009ec94b3a0f33b0b9d26e3c54a8d1c0d08794ff1a390ee27691e7",
+        "comparison_sha256": "79d77998a3cc78c9d4aca9490cfbdb1e1343c68a6aee7673f2a62f0e8a76487d"
+      }
+    },
+    "observed_wall_reduction_fraction": 0.3750772738989133
+  },
+  "fixed_real_uv_weight_batch": {
+    "case_count": 19,
+    "pvalue_count": 1298,
+    "same_mode_maximum_logp_absolute_difference": 8.881784197001252e-16,
+    "bit_mismatch_fields": 38,
+    "schema_errors": 0,
+    "nonP_mismatches": 0,
+    "control_seconds": 28.795072853565216,
+    "optimized_seconds": 26.505004286766052,
+    "proof_sha256": "eba2d4308c5c69f678bffd34f0d77c8b16acb8540ab67249d7a8102635213f42"
+  },
+  "local_union_uv": {
+    "valid_unique_masks": 39,
+    "score_covariance_set_calls_control": 39,
+    "score_covariance_set_calls_reuse": 6,
+    "all_uv_and_preparation_metadata_bitidentical": true,
+    "tail_evaluated": false,
+    "timing_is_benchmark": false,
+    "probe_sha256": "cc005ad9aefb878963414e6984cfafa6cb814375aed51c05b5031f67c499fef4",
+    "report_sha256": "c220c34e96706baa32cbc7319328f611939bbd4f985b3cbae7cc2d7f473712be"
+  },
+  "full_chromosome": {
+    "status": "cancelled_by_user",
+    "acceptance": false,
+    "serial_jobs": 795,
+    "continuous_phenotypes": 1,
+    "fresh_null_fit": true,
+    "source_manifest_sha256": "b7055a360b431b3853f3f373fc7113794328ac1e3cf3737339562e5d4892fb7e",
+    "previous_attempt": {
+      "status": "failed_oom",
+      "completed_jobs": 352,
+      "failed_job_ordinal": 353,
+      "source_manifest_sha256": "581bfa42c0aad6db2178455be6b08a7f46e97a2b66be50aa60d04d557c561f1d"
+    },
+    "stage13_attempt": {
+      "finished_jobs": 490,
+      "started_jobs": 491,
+      "finished_by_kind": {
+        "coding": 221,
+        "noncoding": 221,
+        "ncrna": 48,
+        "individual": 0
+      },
+      "wrapper_wall_seconds": 11467.655318930745,
+      "failure_kind": "TF32 product workspace protection",
+      "required_new_workspace_bytes": 13799206400,
+      "available_new_workspace_bytes": 12770128896,
+      "binding_constraint": "undetermined until a query-time allocated/reserved/free snapshot",
+      "source_manifest_sha256": "f0b940a64ffa377e4dd8bccf2057ad020c99ef112d951e6dba2d1173948f8d95",
+      "precision_unchanged": true,
+      "full_acceptance": false,
+      "completed_stage_native_comparison": {
+        "coding_jobs": 221,
+        "noncoding_jobs": 221,
+        "native_files_with_null": 11,
+        "schema_and_nonP_strict_passed": true,
+        "null_original_strict_passed": true,
+        "maximum_logp_absolute_difference": 0.000524982733251467,
+        "comparison_report_sha256": "f5ddb76046c47eb6648d3f759434bdb424082855232c0343e3841019d1d4644f"
+      },
+      "failure_report_archive_identity_sha256": "9034dad429a3d7c4010c3eeadd66d6c1744281d058de03cc8eecb9089840dd0b"
+    },
+    "stage14_attempt": {
+      "status": "cancelled_by_user",
+      "serial_jobs_target": 795,
+      "continuous_phenotypes": 1,
+      "fresh_null_fit": true,
+      "source_manifest_sha256": "b7055a360b431b3853f3f373fc7113794328ac1e3cf3737339562e5d4892fb7e",
+      "native_files_target": 19,
+      "original_R_acceptance_after_science": false,
+      "completed_jobs": 325,
+      "elapsed_seconds_at_last_observation": 6082.2,
+      "finished_jobs_by_kind": {
+        "coding": 221,
+        "noncoding": 104,
+        "ncrna": 0,
+        "individual": 0
+      }
+    }
+  },
+  "interpretation": "Historical abandoned component-reconstruction implementation. Old evaluation stopped and this version will not be published. New native TF32 candidate preserves original formulas and uses logP error <=0.001 with a full chromosome wall-time target of 300 seconds; it has no accepted full benchmark yet.",
+  "privacy": "Anonymous counts, errors, timings and hashes only; no participant IDs, phenotype labels, association loci, genes, input paths or server endpoints.",
+  "memory_safety_revision": {
+    "status": "single_ncRNA_retest_passed_complete_chromosome_running",
+    "precision_unchanged": true,
+    "process_allocation_budget_gib": 20,
+    "live_cuda_reserve_mib": 256,
+    "union_geometry": "actual rare union square <= sum of valid unique mask squares",
+    "recovery": "Release failed union exception frames and temporary tensors before same-mode per-mask fallback",
+    "short_timings": "Historical source before memory safety revision; complete revised run is separately measured",
+    "real_previously_failed_task": {
+      "native_mask_slots": 7,
+      "native_files_with_null": 2,
+      "schema_and_nonP_strict_passed": true,
+      "maximum_logp_absolute_difference": 2.14554284344581e-06,
+      "peak_allocated_mib": 14020.0751953125,
+      "geometry_fallbacks": 1,
+      "live_workspace_rejections": 0,
+      "cuda_free_queries": 121,
+      "query_host_wall_seconds": 0.221884086728096,
+      "source_manifest_sha256": "afbcf5c72f9bdb19fa21de78a775a28a44f7d5ea2eff0473deddf2f84ba183ee"
+    },
+    "residual_buffer_contract": {
+      "passed": true,
+      "real_sets": 4,
+      "eight_digit_operand_contracts": 12,
+      "score_covariance_single_variance_bitwise_equal": true,
+      "ptx_verified_tf32_kernel_calls": 1954,
+      "hidden_explicit_fp64_dense_products": 0,
+      "source_manifest_sha256": "f0b940a64ffa377e4dd8bccf2057ad020c99ef112d951e6dba2d1173948f8d95",
+      "proof_sha256": "acb42d254525597dc841d988bb9548dbde48e594f24868270d7776f43cb89818",
+      "largest_checked_set": {
+        "samples": 42652,
+        "variants": 1216,
+        "control_peak_allocated_mib": 5942.33447265625,
+        "revised_peak_allocated_mib": 5348.4951171875
+      },
+      "timing_scope": "No timing speed claim: control ran before candidate with compilation/cache differences."
+    },
+    "revised_real_task": {
+      "native_mask_slots": 7,
+      "native_files_with_null": 2,
+      "schema_and_nonP_strict_passed": true,
+      "maximum_logp_absolute_difference": 2.14554284344581e-06,
+      "numeric_difference_vs_previous_tf32": 0,
+      "peak_allocated_mib": 12619.46044921875,
+      "geometry_fallbacks": 1,
+      "source_manifest_sha256": "f0b940a64ffa377e4dd8bccf2057ad020c99ef112d951e6dba2d1173948f8d95",
+      "proof_report_sha256": {
+        "result": "a9612c71424487fe18bdf12f24656b1b8430df05ee10f4690dad74f384b74512",
+        "original_r_comparison": "205caa43e3cd85a32db524630f0ab68ff43d793ad8b0b8d5dd89dd83d9a84b7c",
+        "previous_tf32_comparison": "b9645ce35c606c0afd85c4a8be3539a88451a7624fc63e38ecca59a3866c06f7",
+        "archive_identity": "8e4ffeb318c01ba5b72655c456bf17e1b953c5ea8a06bfa93bb7959f5ebfb6fa"
+      }
+    },
+    "workspace_lifetime": {
+      "private_no_grad_bytes_per_element": 52,
+      "grad_out_of_place_bytes_per_element": 68,
+      "shape_only_conservative_bytes_per_element": 68,
+      "grad_saved_abs_bytes_per_element": 8,
+      "casts_reconstruction_and_axes_accounted_separately": true,
+      "arithmetic_and_digits_unchanged": true
+    },
+    "current_ncRNA_retest": {
+      "scope": "One previously failed ncRNA job and fresh null; independent original R validation; not full chromosome acceptance",
+      "passed": true,
+      "source_manifest_sha256": "b7055a360b431b3853f3f373fc7113794328ac1e3cf3737339562e5d4892fb7e",
+      "native_files": 2,
+      "probability_cells": 86,
+      "maximum_logp_absolute_difference": 1.41131223097002e-07,
+      "schema_and_nonP_strict_passed": true,
+      "null_original_strict_passed": true,
+      "native_numeric_results_bitidentical_to_frozen_control": true,
+      "science_seconds": 140.71575487637892,
+      "peak_allocated_mib": 14815.3271484375,
+      "peak_reserved_mib": 15274.0,
+      "tf32_calls": 394,
+      "ptx_verified_tf32_calls": 394,
+      "hidden_explicit_fp64_products": 0,
+      "guard": {
+        "process_allocated_limit_bytes": 21474836480,
+        "live_cuda_reserve_bytes": 268435456,
+        "cuda_free_queries": 79,
+        "workspace_rejections": 0,
+        "max_estimated_new_workspace_bytes": 12074359520,
+        "query_host_wall_seconds": 0.05860492866486311,
+        "last_rejection": null,
+        "split_workspace_bytes_per_element": {
+          "private_inplace": 52,
+          "grad_out_of_place": 68
+        },
+        "policy": "min(process limit minus allocated, CUDA free plus unused reserved minus reserve); no precision fallback",
+        "limitation": "allocator fragmentation and concurrent device allocations can still OOM"
+      },
+      "proof_sha256": {
+        "original_manifest.json": "f0b940a64ffa377e4dd8bccf2057ad020c99ef112d951e6dba2d1173948f8d95",
+        "original_result.json": "3787f2b0f91b811fc3066f2d32747dd9f07c6bf70500811c72c19f5e588ec018",
+        "original_comparison_comparison.private.json": "81f52d2bc927d3835991f83f53ef822f994e3e4e0dacb818b4d039f7a7f8b287",
+        "original_acceptance.private.json": "90e003bfc0c3bff321c9855014e619367a3910d6d93a11ca0280aa0103780b01",
+        "original_guard_diagnostics.private.json": "8f9c42c2db55eda8e2279f560656bf29ef6fb8e208d637564ce428755a6e9d4d",
+        "original_binding_pre.private.json": "0cc8e6f18f63aa998b4ff4ebbb3e7dca05fbe2fe15a324c4c89bc40239a5b888",
+        "revised_manifest.json": "b7055a360b431b3853f3f373fc7113794328ac1e3cf3737339562e5d4892fb7e",
+        "revised_result.json": "adbb6428aee2582ec760716f1ebb98a8d89d84815fa39701b185820b2911c28e",
+        "revised_comparison_comparison.private.json": "9c93f099e6433cf4e7eca982138d8c2e1acb213732c4b868e5ecd2ca3f64bc57",
+        "revised_acceptance.private.json": "57621449edd08968a50deced629d27ba0c4866994bb66015f8d7274ead11cb94",
+        "revised_guard_diagnostics.private.json": "6e0c569cbbc259cba7226cd6782b860aba20ca9a74da242c5c97c0995f79d08f",
+        "revised_binding_pre.private.json": "3f70573be5d2e3afbd1aa043a3283c652a436500ddd0543619ea20ef7f534e8c",
+        "revised_bitwise_comparison_comparison.private.json": "cdf259fc81742b6c3037889b3d370a2ae7aa98d51f7d9e902f8d974e8e8aa93c",
+        "revised_bitwise_acceptance.private.json": "b4bd2571096c3863a607193a090a8b7633479583ad76ae27a1fd4cbf8f2f1197"
+      },
+      "archive_identity_sha256": "6d396c2d4d077324d3f5e28dad732a5846b5ecb67f4c226b5758b75abef8f935",
+      "timing_scope": "Sequential scientific checks; compilation/cache and shared GPU load uncontrolled; no speed comparison",
+      "original_control_also_passed_without_rejection": true,
+      "previous_complete_run_rejection_not_reproduced_or_explained": true
+    },
+    "current_cpu_regression": {
+      "passed": 334,
+      "skipped": 41,
+      "scope": "STAAR tests; GPU not run; unrelated REGENIE tests excluded",
+      "log_sha256": "878b3577fdfd2f234af0c41b39221ace882b2a4774d2044b5eaf6fed1eed4f6d"
+    }
+  },
+  "status": "abandoned_by_user",
+  "published": false
+}

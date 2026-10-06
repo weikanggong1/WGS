@@ -1,0 +1,81 @@
+{
+  "scope": "one real GDS block, host preparation only; no GPU, association or whole chromosome measurement",
+  "source_manifest_sha256": "06785d1442bd3aeb36f4cefa3230fd01cc3a87880f4dc3e58bb5741874e9f841",
+  "full_chromosome_acceptance": false,
+  "samples": 42652,
+  "variants": 128,
+  "source_missing_calls": 468418,
+  "source_nonzero_entries": 468451,
+  "checks": [
+    {
+      "selection": "all",
+      "imputation": "mean",
+      "frequency_mode": "count",
+      "float32_bit_equality": true,
+      "all_metadata_equality": true,
+      "legacy_prepare_cast_median_seconds": 0.06088537396863103,
+      "direct_float32_prepare_median_seconds": 0.04440298117697239,
+      "dense_bytes_removed": 43675648,
+      "repetitions_including_warmup": 4
+    },
+    {
+      "selection": "all",
+      "imputation": "mean",
+      "frequency_mode": "reference",
+      "float32_bit_equality": true,
+      "all_metadata_equality": true,
+      "legacy_prepare_cast_median_seconds": 0.06213210802525282,
+      "direct_float32_prepare_median_seconds": 0.04504862613976002,
+      "dense_bytes_removed": 43675648,
+      "repetitions_including_warmup": 4
+    },
+    {
+      "selection": "all",
+      "imputation": "minor",
+      "frequency_mode": "count",
+      "float32_bit_equality": true,
+      "all_metadata_equality": true,
+      "legacy_prepare_cast_median_seconds": 0.04721663612872362,
+      "direct_float32_prepare_median_seconds": 0.0318107851780951,
+      "dense_bytes_removed": 43675648,
+      "repetitions_including_warmup": 4
+    },
+    {
+      "selection": "all",
+      "imputation": "minor",
+      "frequency_mode": "reference",
+      "float32_bit_equality": true,
+      "all_metadata_equality": true,
+      "legacy_prepare_cast_median_seconds": 0.04839875502511859,
+      "direct_float32_prepare_median_seconds": 0.032836094964295626,
+      "dense_bytes_removed": 43675648,
+      "repetitions_including_warmup": 4
+    },
+    {
+      "selection": "reversed_subset",
+      "imputation": "mean",
+      "frequency_mode": "count",
+      "float32_bit_equality": true,
+      "all_metadata_equality": true,
+      "legacy_prepare_cast_median_seconds": 0.02738954685628414,
+      "direct_float32_prepare_median_seconds": 0.021180588752031326,
+      "dense_bytes_removed": 21837824,
+      "repetitions_including_warmup": 4
+    },
+    {
+      "selection": "reversed_subset",
+      "imputation": "minor",
+      "frequency_mode": "count",
+      "float32_bit_equality": true,
+      "all_metadata_equality": true,
+      "legacy_prepare_cast_median_seconds": 0.02104645175859332,
+      "direct_float32_prepare_median_seconds": 0.015166718047112226,
+      "dense_bytes_removed": 21837824,
+      "repetitions_including_warmup": 4
+    }
+  ],
+  "input_source_prepost_unchanged": true,
+  "status": "host_preparation_verified",
+  "gpu_association_performance_measured": false,
+  "whole_chromosome_wall_seconds": null
+}

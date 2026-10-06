@@ -1,0 +1,73 @@
+{
+  "scope": "one real cached original R SKAT input; probability-only diagnostic, no GPU matrix or full benchmark",
+  "reference_version": "0.9.9",
+  "actual_return_manifest_bitidentical": true,
+  "original_wrapper_identical": true,
+  "threshold_policy": "raw original-unit eigenvalues <1e-8 set to zero before rescaling; full eigenvalue length retained",
+  "original_width_is_production": true,
+  "tight_width_is_diagnostic_only": true,
+  "production_changed": false,
+  "full_chromosome_acceptance": false,
+  "rows": [
+    {
+      "power_two_exponent": -16,
+      "width_tolerance": 1e-08,
+      "final_width": 6.12711996634055e-09,
+      "moment_branch": false,
+      "absolute_logP_error_vs_actual": 0,
+      "normalized_scale_bitidentical": true,
+      "root_scale_bitidentical": true,
+      "P_scale_bitidentical": true
+    },
+    {
+      "power_two_exponent": -16,
+      "width_tolerance": 1e-12,
+      "final_width": 7.47939470774339e-13,
+      "moment_branch": false,
+      "absolute_logP_error_vs_actual": 0.0342712837137365,
+      "normalized_scale_bitidentical": true,
+      "root_scale_bitidentical": true,
+      "P_scale_bitidentical": true
+    },
+    {
+      "power_two_exponent": 0,
+      "width_tolerance": 1e-08,
+      "final_width": 6.12711996634055e-09,
+      "moment_branch": false,
+      "absolute_logP_error_vs_actual": 0,
+      "normalized_scale_bitidentical": true,
+      "root_scale_bitidentical": true,
+      "P_scale_bitidentical": true
+    },
+    {
+      "power_two_exponent": 0,
+      "width_tolerance": 1e-12,
+      "final_width": 7.47939470774339e-13,
+      "moment_branch": false,
+      "absolute_logP_error_vs_actual": 0.0342712837137365,
+      "normalized_scale_bitidentical": true,
+      "root_scale_bitidentical": true,
+      "P_scale_bitidentical": true
+    },
+    {
+      "power_two_exponent": 16,
+      "width_tolerance": 1e-08,
+      "final_width": 6.12711996634055e-09,
+      "moment_branch": false,
+      "absolute_logP_error_vs_actual": 0,
+      "normalized_scale_bitidentical": true,
+      "root_scale_bitidentical": true,
+      "P_scale_bitidentical": true
+    },
+    {
+      "power_two_exponent": 16,
+      "width_tolerance": 1e-12,
+      "final_width": 7.47939470774339e-13,
+      "moment_branch": false,
+      "absolute_logP_error_vs_actual": 0.0342712837137365,
+      "normalized_scale_bitidentical": true,
+      "root_scale_bitidentical": true,
+      "P_scale_bitidentical": true
+    }
+  ]
+}

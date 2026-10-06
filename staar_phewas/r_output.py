@@ -210,7 +210,7 @@ def write_r_object(path, value: Any, *, object_name: str | None = None,
                                      dir=path.parent, delete=False) as temporary:
         temporary_path = Path(temporary.name)
     try:
-        with opener(temporary_path, "wb") as stream:
+        with opener(temporary_path, "wb", **({"compresslevel": 1} if compression else {})) as stream:
             if rda:
                 stream.write(b"RDX3\n")
             S4Unparser(stream).unparse_r_data(parsed)

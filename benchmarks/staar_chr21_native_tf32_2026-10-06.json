@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "run_date": "2026-10-06",
+  "implementation": "native TF32 covariance; IEEE FP32 Burden; full FP32 eigenspectra; fused original scalar probability rules",
+  "status": "scientific acceptance passed; 300-second speed target not achieved",
+  "precision_scope": "reference P < 0.05 OR candidate P < 0.05; absolute delta negative log10 P <= 0.001",
+  "scope": {
+    "chromosome": "21",
+    "selected_samples": 42652,
+    "variants": 13733596,
+    "jobs": 795,
+    "coding": 221,
+    "noncoding": 221,
+    "ncrna": 349,
+    "individual": 4,
+    "masks": 15,
+    "native_association_files": 18,
+    "native_null_files": 1,
+    "cached_fixed_null": true,
+    "new_null_fit_included": false,
+    "cold_cache_benchmark": false,
+    "serial_one_GPU": true,
+    "hardware": "A100-SXM4-80GB",
+    "shared_node": true,
+    "exclusive_GPU_run_confirmed": false,
+    "stage_profile": true,
+    "first_conversion_included_in_analysis_wall": false,
+    "offline_R_validation_included_in_analysis_wall": false
+  },
+  "analysis": {
+    "parent_wall_seconds": 429.0973201938905,
+    "run_configuration_seconds": 425.2613904681057,
+    "read_decode_prepare_seconds": 63.66181162092835,
+    "complete_eigen_seconds": 117.62460954114795,
+    "native_association_save_seconds": 16.09431311348453,
+    "native_null_save_seconds": 13.163792978040874,
+    "timing_contract": "Nested stage intervals overlap and must not be summed; CUDA intervals include scheduling gaps."
+  },
+  "conversion": {
+    "parent_wall_seconds": 10854.839405298233,
+    "cache_logical_bytes": 1778215969,
+    "additional_source_GDS_fraction": 0.08532825,
+    "original_GDS_retained": true,
+    "semantic_scope": "diploid REF versus any-nonREF states with partial/whole missingness; phase and individual ALT identity not retained"
+  },
+  "validation": {
+    "all19_native_structures_passed": true,
+    "original_null_strict_passed": true,
+    "null_numeric_cells": 341221,
+    "P_cells": 478082,
+    "uncomparable_P_cells": 0,
+    "significant_union_P_cells": 24713,
+    "significant_failed_P_cells": 0,
+    "significant_max_absolute_log10P_error": 0.000357971421594216,
+    "significant_boundary_crossings": 0,
+    "all_P_precision_diagnostic_failed_cells": 49,
+    "all_P_precision_diagnostic_max_error": 0.0674462632157271,
+    "all_P_validity_passed": true
+  },
+  "memory": {
+    "peak_allocated_MiB": 1654.9755859375,
+    "peak_reserved_MiB": 4550.0,
+    "limit_GiB": 20,
+    "budget_passed": true
+  },
+  "implementation_evidence": {
+    "TF32_GEMM_kernels": 1507,
+    "FP32_vector_products": 9555,
+    "FP32_outer_products": 1507,
+    "component_reconstruction_products": 0,
+    "FP64_GEMM_fallbacks": 0,
+    "CPU_genotype_sparse_calls": 0,
+    "genotype_SDK_fallback_calls": 0,
+    "individual_block_size": 8192,
+    "gene_block_size": 1024,
+    "cache_reader_instances": 1,
+    "index_restores": 1
+  },
+  "publication_integration_recheck": {
+    "scientific_passed": true,
+    "parent_wall_seconds": 419.92563711991534,
+    "run_configuration_seconds": 414.75014607142657,
+    "jobs": 795,
+    "native_files": 19,
+    "strict_null_passed": true,
+    "all_P_validity_passed": true,
+    "P_cells": 478082,
+    "significant_union_P_cells": 24713,
+    "significant_failed_P_cells": 0,
+    "significant_max_absolute_log10P_error": 0.000357971421594216,
+    "significant_boundary_crossings": 0,
+    "speed_target_seconds": 300,
+    "speed_target_passed": false,
+    "remaining_seconds_over_target": 119.92563711991534,
+    "source_cache_input_oracle_unchanged": true,
+    "CPU_tests_passed": 642,
+    "CPU_tests_skipped": 2,
+    "CPU_tests_seconds": 28.17,
+    "scope": "Parent includes startup, source/helper proof, fixed-model binding and native saves; conversion/stream verification/CPU R comparison excluded. Warm filesystem, reused Triton cache; nested phases not summed.",
+    "instrumentation": "Public stage_profile and synchronized anonymous job progress; private fine-grained profiler hooks absent. Timing differences do not establish controlled speedup.",
+    "cache_genotype_reader_instances": 1,
+    "annotation_index_restores": 1,
+    "peak_allocated_MiB": 1654.9755859375,
+    "peak_reserved_MiB": 4550.0,
+    "memory_budget_passed": true,
+    "publication_cleanup": "Two whitespace-only files; identical normalized AST and module bytecode."
+  },
+  "job_kind_timings": {
+    "coding": {
+      "jobs": 221,
+      "wall_seconds": 78.58443148666993,
+      "max_seconds": 3.3335887021385133
+    },
+    "noncoding": {
+      "jobs": 221,
+      "wall_seconds": 189.82690143212676,
+      "max_seconds": 5.64584225974977
+    },
+    "ncrna": {
+      "jobs": 349,
+      "wall_seconds": 44.411984698846936,
+      "max_seconds": 5.1197782307863235
+    },
+    "individual": {
+      "jobs": 4,
+      "wall_seconds": 79.07868459494784,
+      "max_seconds": 23.146039203274995
+    }
+  },
+  "reference_precision": "original R FP64"
+}

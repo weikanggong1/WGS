@@ -7,11 +7,15 @@ from __future__ import annotations
 import numpy as np
 import torch
 from scipy import sparse
+from .tf32 import matmul
 from .r_output import RAttributed, RMatrix, RS4, RCall, RSymbol, sparse_matrix, dense_s4_matrix, write_r_object
 
 
 def _array(value):
-    return value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else np.asarray(value)
+    array = value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else np.asarray(value)
+    # R real vectors are doubles. Widening at serialization does not change
+    # the model's native FP32 computation or integer metadata.
+    return array.astype(np.float64, copy=False) if np.issubdtype(array.dtype, np.floating) else array
 
 
 def _named(values, names):
@@ -49,9 +53,17 @@ def gaussian_null_r_object(model, *, original_sample_ids=None, covariate_names=N
         raise ValueError("covariate_assign must give an R model.matrix term number per column")
     row_names = np.arange(1, n+1).astype(str)
     y = _array(model.phenotype)
-    residual = _array(model.scaled_residuals) * float(model.theta[0])
-    fitted = y - residual if model.fitted_values is None else _array(model.fitted_values)
-    residual = y - fitted
+    # Compute the wrapper's residual formula in the fitted model dtype;
+    # widen its result only at the R serialization boundary.
+    fitted_tensor = (model.phenotype - model.scaled_residuals * model.theta[0]
+                     if model.fitted_values is None else model.fitted_values)
+    fitted = _array(fitted_tensor)
+    residual = _array(model.phenotype - fitted_tensor)
+    if getattr(model, "native_cached_residuals", None) is not None:
+        cached = np.asarray(model.native_cached_residuals)
+        if cached.shape != residual.shape or cached.dtype != np.float64 or not np.all(np.isfinite(cached)):
+            raise ValueError("invalid native cached residual vector")
+        residual = cached
     theta_names = ["dispersion", "kins1"] if model.has_kinship else ["dispersion"]
     theta = _array(model.theta)[:len(theta_names)]
     inverse = _array(model.inverse_variance)
@@ -59,7 +71,8 @@ def gaussian_null_r_object(model, *, original_sample_ids=None, covariate_names=N
         coupled = np.zeros(n, dtype=bool)
         rows, columns, values = [], [], []
         for idx, rotation in model.spectrum.blocks:
-            physical = (rotation * model.inverse_variance[idx][None, :]) @ rotation.T
+            physical = matmul(rotation * model.inverse_variance[idx][None, :], rotation.T,
+                              mode=getattr(model, "matmul_mode", "fp64"))
             indices = _array(idx).astype(np.int64)
             coupled[indices] = True
             block = _array(physical)

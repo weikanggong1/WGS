@@ -1,0 +1,106 @@
+{
+  "scope": "Fixed real cached rotated.T @ (inverse_variance * rotated) only; no score/projection/P/GDS/null fit",
+  "left_shape": [
+    1216,
+    42652
+  ],
+  "right_shape": [
+    42652,
+    1216
+  ],
+  "input_dtype": "torch.float32",
+  "accumulator_dtype": "float32",
+  "output_dtype": "float32",
+  "input_rounding": "RNA nearest ties away from zero on both operands",
+  "logical_component_products": 0,
+  "fp64_fallback_count": 0,
+  "source_manifest_sha256": "06785d1442bd3aeb36f4cefa3230fd01cc3a87880f4dc3e58bb5741874e9f841",
+  "P_acceptance": false,
+  "full_acceptance": false,
+  "timing_policy": "one cold call, two warm calls, three measured calls; no speed prediction; choose by warmed observations",
+  "input_source_helper_prepost_unchanged": true,
+  "execution_gate_passed": true,
+  "fastest_observed_BM_BN_warps": [
+    64,
+    128,
+    4
+  ],
+  "variants": [
+    {
+      "BM": 32,
+      "BN": 64,
+      "BK": 32,
+      "num_warps": 4,
+      "num_stages": 3,
+      "steady_median_wall_seconds": 0.004773375112563372,
+      "steady_median_cuda_milliseconds": 4.062880039215088,
+      "bitdifferent_elements_vs_baseline": 0,
+      "max_absolute_difference_vs_baseline": 0.0,
+      "peak_allocated_mib": 401.640625,
+      "execution_gate_passed": true
+    },
+    {
+      "BM": 64,
+      "BN": 64,
+      "BK": 32,
+      "num_warps": 4,
+      "num_stages": 3,
+      "steady_median_wall_seconds": 0.0043284716084599495,
+      "steady_median_cuda_milliseconds": 3.9668478965759277,
+      "bitdifferent_elements_vs_baseline": 0,
+      "max_absolute_difference_vs_baseline": 0.0,
+      "peak_allocated_mib": 401.640625,
+      "execution_gate_passed": true
+    },
+    {
+      "BM": 64,
+      "BN": 128,
+      "BK": 32,
+      "num_warps": 4,
+      "num_stages": 3,
+      "steady_median_wall_seconds": 0.003949502017349005,
+      "steady_median_cuda_milliseconds": 3.459455966949463,
+      "bitdifferent_elements_vs_baseline": 0,
+      "max_absolute_difference_vs_baseline": 0.0,
+      "peak_allocated_mib": 401.640625,
+      "execution_gate_passed": true
+    },
+    {
+      "BM": 128,
+      "BN": 128,
+      "BK": 32,
+      "num_warps": 8,
+      "num_stages": 3,
+      "steady_median_wall_seconds": 0.004379619378596544,
+      "steady_median_cuda_milliseconds": 1.949023962020874,
+      "bitdifferent_elements_vs_baseline": 0,
+      "max_absolute_difference_vs_baseline": 0.0,
+      "peak_allocated_mib": 401.640625,
+      "execution_gate_passed": true
+    }
+  ],
+  "production_integration": {
+    "source_manifest_sha256": "3acb5dee0af257e3445a383b41b0d6d4f6d27c66b6991657701bd3a0f59f25de",
+    "source_prepost_unchanged": true,
+    "P_acceptance": false,
+    "full_chromosome_acceptance": false,
+    "cases": [
+      {
+        "variants": 426,
+        "samples": 42652,
+        "score_bitdifferent_elements": 0,
+        "covariance_bitdifferent_elements": 0,
+        "maximum_covariance_difference": 0.0,
+        "bit_equality_passed": true
+      },
+      {
+        "variants": 1216,
+        "samples": 42652,
+        "score_bitdifferent_elements": 0,
+        "covariance_bitdifferent_elements": 0,
+        "maximum_covariance_difference": 0.0,
+        "bit_equality_passed": true
+      }
+    ]
+  }
+}

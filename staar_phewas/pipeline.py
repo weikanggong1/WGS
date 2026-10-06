@@ -13,7 +13,9 @@ from typing import Mapping, Sequence
 import numpy as np
 import torch
 
-from .gds import SeqArrayGDS
+from .gds import SeqArrayGDS, SparseMinorBlock
+from .gds_device import DeviceMinorBlock
+from .profiling import StageProfiler
 from .masks import (VariantAnnotations, variant_filter, coding_masks, noncoding_masks,
                     ncRNA_mask, annotation_phred_matrix, sample_union, sample_indices,
                     gene_assignments, NONCODING_CATEGORIES, _strings, _chromosome)
@@ -22,7 +24,19 @@ from .null_model import GaussianNullModel
 from .statistics import staar_test
 from .multi import multi_staar_test, joint_individual_logp
 from .binary import staar_binary_spa, individual_score_test_spa
-from .results import coding_record, window_record, single_variant_record, assemble_phewas_results, TraitRows
+from .results import coding_record, single_variant_record, assemble_phewas_results, TraitRows
+
+
+def _individual_log_probabilities(score, variance):
+    """Evaluate the original normal tail from already-computed core vectors."""
+    score, variance = score.to(torch.float64), variance.to(torch.float64)
+    positive = variance > 0
+    standard_error = torch.sqrt(variance)
+    z = torch.where(positive, score / torch.clamp(
+        standard_error, min=torch.finfo(standard_error.dtype).tiny), 0.)
+    log_probabilities = -math.log(2) - torch.special.log_ndtr(-z.abs())
+    return torch.where(torch.isnan(variance), variance,
+                       torch.where(positive, log_probabilities, 0.))
 
 
 @dataclass(frozen=True)
@@ -123,6 +137,39 @@ class PheWASPipeline:
         self._test_set_cache = OrderedDict()
         self.batch_diagnostics = []
         self.statistics_execution = "serial"
+        self.statistics_tail_optimization = False
+        self.weight_batch_optimization = False
+        self.local_mask_reuse = False
+        self.local_mask_reuse_counters = {"families": 0, "union_score_calls": 0,
+            "reused_masks": 0, "input_variant_columns": 0, "union_variant_columns": 0, "prepared_union_variant_columns": 0,
+            "fallback_memory": 0, "fallback_unsupported": 0, "fallback_mapping": 0,
+            "cache_hits": 0, "duplicate_mask_hits": 0, "single_mask_paths": 0,
+            "fallback_cuda_oom": 0, "fallback_geometry": 0, "fallback_host_reused_masks": 0, "geometry_checks": 0,
+            "geometry_union_covariance_cells": 0, "geometry_mask_covariance_cells": 0}
+        self.statistics_tail_optimization_calls = 0
+        self.profiler = StageProfiler(getattr(self.models[0], "device", "cpu"), enabled=False)
+        self.resident_genotypes = False
+
+    @property
+    def profiler(self):
+        if not hasattr(self, "_profiler"):
+            self._profiler = StageProfiler(enabled=False)
+        return self._profiler
+
+    @profiler.setter
+    def profiler(self, value):
+        self._profiler = value
+
+    def _minor_blocks(self, *args, **kwargs):
+        """Time iterator work, excluding the caller's association computation."""
+        iterator = iter(self.gds.iter_minor_blocks(*args, **kwargs))
+        while True:
+            with self.profiler.measure("gds_sdk_decode_prepare", gpu=bool(kwargs.get("device"))):
+                try:
+                    block = next(iterator)
+                except StopIteration:
+                    return
+            yield block
 
     def _assemble(self, records, *, kind, **kwargs):
         flags=[model.use_spa for model in self.models]
@@ -287,14 +334,228 @@ class PheWASPipeline:
     def annotation_gene_manifest(self, chromosome, **kwargs):
         return self.prepare_annotation_index(chromosome, **kwargs).manifest()
 
-    def _limit(self, model, number_variants):
-        # Dense G, rotated G, weighted G, plus covariance/eigensolver workspace.
-        t=model.n_pheno
-        estimate = 8 * (4 * model.n * number_variants + 6 * (t*number_variants) ** 2 + model.n*t*t)
-        if estimate + getattr(self,"_batch_workspace_reserve",0) > self.options.memory_limit_gib * 2**30:
-            raise MemoryError("variant set exceeds the configured memory budget; increase the budget or analyze smaller genomic sets")
+    def _workspace_estimate(self, model, number_variants, *, individual=False):
+        """Conservative live core buffers; Single has no M-by-M term.
 
-    def _prepare_test_set(self, indices, annotations=None):
+        Native TF32 uses FP32 inputs/outputs and no reconstruction planes.
+        Raw SDK slabs and already resident model tensors are independent.
+        """
+        n, m, t = model.n, int(number_variants), model.n_pheno
+        native = getattr(model, "matmul_mode", "fp64") == "tf32"
+        bytes_per_element = 4 if native else 8
+        genotype_copies, covariance_copies = (4, 6)
+        model_terms = n * t * t
+        if individual:
+            # Covariate projection and per-site scores/variance/tails need
+            # linear storage, independently of a joint or Single model.
+            model_terms += (getattr(getattr(model, "x", None), "shape", (n, 1))[1] + 8 * t) * m
+            covariance_terms = 0
+        else:
+            covariance_terms = covariance_copies * (t * m) ** 2
+        return bytes_per_element * (genotype_copies * n * m + covariance_terms + model_terms)
+
+    def _limit(self, model, number_variants, *, individual=False):
+        estimate = self._workspace_estimate(model, number_variants, individual=individual)
+        mode = getattr(model, "matmul_mode", "fp64")
+        resident_bytes = raw_bytes = 0
+        if mode != "fp64":
+            # Existing model/resident dosage are outside new product buffers.
+            # Reading the allocator counter does not synchronize the stream.
+            if str(getattr(model, "device", "cpu")).startswith("cuda"):
+                resident_bytes = torch.cuda.memory_allocated(model.device)
+            if individual:
+                raw_bytes = int(getattr(getattr(self, "gds", None), "genotype_raw_memory_bytes", 0))
+        required = estimate + resident_bytes + raw_bytes + getattr(self, "_batch_workspace_reserve", 0)
+        self.memory_guard_max_estimated_bytes = max(getattr(self, "memory_guard_max_estimated_bytes", 0), required)
+        if required > self.options.memory_limit_gib * 2**30:
+            raise MemoryError(f"{mode} {'Single' if individual else 'mask'} workspace requires estimated {required} bytes, exceeding configured memory budget; precision and chunks were not changed")
+
+
+    def _mask_union_geometry(self, physical, index_sets, model):
+        """Retain the rare-cell gate; admit only bounded native tile savings."""
+        from .local_mask_reuse import union_covariance_geometry, small_native_union_work
+        geometry = union_covariance_geometry(physical, index_sets, minimum_variants=self.options.rv_num_cutoff)
+        counters = self.local_mask_reuse_counters
+        counters["geometry_checks"] += 1
+        counters["geometry_union_covariance_cells"] += geometry["union_covariance_cells"]
+        counters["geometry_mask_covariance_cells"] += geometry["mask_covariance_cells"]
+        if (not geometry["beneficial"] and 2 <= len(physical) <= 64 and len(self.models) == 1
+                and isinstance(model, GaussianNullModel) and model.n_pheno == 1 and not model.use_spa
+                and model.matmul_mode == "tf32" and not model.spectrum.blocks and model.x.shape[1] >= 1):
+            cost = small_native_union_work(physical, index_sets, minimum_variants=self.options.rv_num_cutoff,
+                                          samples=model.n, covariates=model.x.shape[1])
+            counters["geometry_small_tile_checks"] = counters.get("geometry_small_tile_checks", 0) + 1
+            for name, value in cost["union"].items():
+                for prefix, work in (("union", value["work"]), ("mask", cost["separate"][name])):
+                    key = f"geometry_small_tile_{prefix}_{name}_work"
+                    counters[key] = counters.get(key, 0) + work
+            for prefix, calls in (("union", cost["union_calls"]), ("mask", cost["separate_calls"])):
+                key = f"geometry_small_tile_{prefix}_logical_calls"
+                counters[key] = counters.get(key, 0) + calls
+            geometry["small_tile_work"] = cost
+            if cost["beneficial"]:
+                geometry["beneficial"] = True
+                key = "geometry_small_tile_accepted"
+                counters[key] = counters.get(key, 0) + 1
+                if model.x.shape[1] == 1:
+                    key = "geometry_small_tile_p1_accepted"
+                    counters[key] = counters.get(key, 0) + 1
+                    # Shape-only incremental outer output bytes, not workspace.
+                    key = "geometry_small_tile_outer_extra_output_bytes"
+                    counters[key] = counters.get(key, 0) + cost["outer_extra_output_bytes"]
+        return geometry
+
+    def _resident_gene_reader_options(self, indices):
+        """Choose a bounded IO route before reading; raw count is storage only."""
+        if (not getattr(self, "resident_genotypes", False) or len(self.models) != 1
+                or not isinstance(self.models[0], GaussianNullModel)):
+            return {}
+        model = self.models[0]
+        if (model.n_pheno != 1 or model.use_spa or model.matmul_mode != "tf32"
+                or not str(model.device).startswith("cuda")
+                or getattr(self.gds, "_flat_reader", None) is None):
+            return {}
+        n, b = len(self.union_rows), min(len(indices), self.options.genotype_block_size)
+        storage = n * len(indices) + 64 * len(indices)
+        # uint8 slabs plus int64 decoder operands/codes, masks, sample indexes.
+        # The raw budget may span gaps/layers beyond this block's selected sites.
+        reserve = 256 * 2**20
+        scratch = 96 * n * b + 4 * self.gds.genotype_raw_memory_bytes + 8 * self.gds.n_samples
+        allocated = torch.cuda.memory_allocated(model.device)
+        unused = max(0, torch.cuda.memory_reserved(model.device) - allocated)
+        free, _ = torch.cuda.mem_get_info(model.device)
+        needed = storage + scratch + reserve
+        counters = self.local_mask_reuse_counters
+        key = "resident_gene_storage_reserve_bytes_max"
+        counters[key] = max(counters.get(key, 0), needed)
+        if (allocated + needed > self.options.memory_limit_gib * 2**30
+                or needed > free + unused):
+            key = "resident_gene_cpu_route_budget"
+            counters[key] = counters.get(key, 0) + 1
+            return {}
+        key = "resident_gene_families"
+        counters[key] = counters.get(key, 0) + 1
+        return dict(device=model.device, resident=True)
+
+    def _resident_gene_cmac(self, genotype):
+        """Same imputed-G sum definition, using native FP32 device reduction."""
+        counters = self.local_mask_reuse_counters
+        key = "resident_gene_cmac_device_reductions"
+        counters[key] = counters.get(key, 0) + 1
+        return float(genotype.sum())
+
+    def _materialize_resident_gene(self, prepared, columns=None):
+        """Build only selected rare FP32 columns, never concatenate candidates."""
+        model = self.models[0]
+        mapping = prepared["_resident_mapping"]
+        columns = np.arange(len(mapping)) if columns is None else np.asarray(columns, dtype=np.int64)
+        self._limit(model, len(columns))
+        # Original NumPy rare/column indexing yields sample-by-variant F
+        # layout. Keep those strides for GEMV without allocating a clone.
+        genotype = torch.empty((len(columns), model.n), dtype=model.x.dtype, device=model.device).T
+        selected_mapping = mapping[columns]
+        frequency = {"frequency_mode": "reference"} if self.options.wrapper_semantics == "base" else {}
+        with self.profiler.measure("genotype_trait_prepare", gpu=True):
+            for block_index, block in enumerate(prepared["_resident_blocks"]):
+                destination = np.flatnonzero(selected_mapping[:, 0] == block_index)
+                if not len(destination):
+                    continue
+                block_columns = selected_mapping[destination, 1]
+                selected = block.select_columns(block_columns)
+                dense = selected.trait_dense(self.trait_rows[0], self.options.imputation,
+                                            dtype=model.x.dtype, **frequency)[0]
+                genotype.index_copy_(1, torch.as_tensor(destination, device=model.device), dense)
+                del dense, selected
+        return genotype
+
+    def _prepare_resident_gene(self, indices, annotations, reader_options, local_masks, defer_score):
+        """Filter from small summaries before any floating genotype allocation."""
+        model, rows = self.models[0], self.trait_rows[0]
+        if annotations is None:
+            annotations = self.annotations(indices, metadata="weights")
+        phred, names = annotation_phred_matrix(annotations.annotations, self.annotation_names,
+            variant_type=self.options.variant_type, number_variants=len(indices))
+        prefilter = (self.options.rare_maf_cutoff if self.options.wrapper_semantics == "base" else
+                     .05 if self.options.rare_maf_cutoff <= .01 else 1.)
+        blocks, physical, sources, frequencies, groups, mapping = [], [], [], [], [], []
+        frequency = {"frequency_mode": "reference"} if self.options.wrapper_semantics == "base" else {}
+        for offset, block in enumerate(self._minor_blocks(indices, self.union_rows,
+                block_size=self.options.genotype_block_size, **reader_options)):
+            source_alt = 1 - block.union_ref_af
+            source_maf = np.where(block.union_ref_af >= source_alt, source_alt, block.union_ref_af)
+            keep = np.isfinite(source_maf) & (source_maf > 0) & (source_maf < prefilter)
+            positions = np.flatnonzero(keep)
+            if not len(positions):
+                del block
+                continue
+            group = np.where(source_alt > .5, 2,
+                np.where((source_maf >= .01) | (block.allele_missing_rate() >= .01), 1, 0))
+            selected = block.select_columns(positions)
+            del block
+            with self.profiler.measure("genotype_trait_metadata", gpu=True):
+                maf = selected.trait_summary(rows, self.options.imputation, **frequency)[0]
+            physical.extend((offset * self.options.genotype_block_size + positions).tolist())
+            sources.extend(source_maf[positions]); frequencies.extend(maf); groups.extend(group[positions])
+            mapping.extend((len(blocks), column) for column in range(len(positions)))
+            blocks.append(selected)
+            del selected
+        physical = np.asarray(physical, dtype=np.int64)
+        mask_counts = ([len(physical)] if local_masks is None else
+                       [int(np.isin(indices[physical], mask).sum()) for mask in local_masks])
+        if any(count >= self.options.rv_num_cutoff_max_prefilter for count in mask_counts):
+            raise ValueError("union-prefilter variant count reaches rv_num_cutoff_max_prefilter")
+        maf = np.asarray(frequencies, dtype=np.float64)
+        rare = np.isfinite(maf) & (maf > 0) & (maf < self.options.rare_maf_cutoff)
+        if self.options.wrapper_semantics == "base":
+            source = np.asarray(sources)
+            rare &= np.isfinite(source) & (source > 0) & (source < self.options.rare_maf_cutoff)
+        if local_masks is not None:
+            included = np.zeros(len(rare), dtype=bool)
+            for mask in local_masks:
+                member = np.isin(indices[physical], mask)
+                count = int((rare & member).sum())
+                if count >= self.options.rv_num_cutoff_max:
+                    raise ValueError("rare variant count reaches rv_num_cutoff_max")
+                if count >= self.options.rv_num_cutoff:
+                    included |= member
+            rare &= included
+        count = int(rare.sum())
+        if count < self.options.rv_num_cutoff:
+            return [None]
+        if local_masks is None and count >= self.options.rv_num_cutoff_max:
+            raise ValueError("rare variant count reaches rv_num_cutoff_max")
+        mapping = np.asarray(mapping, dtype=np.int64).reshape(-1, 2)[rare]
+        physical, maf = physical[rare], maf[rare]
+        group = np.asarray(groups, dtype=np.int64)[rare] if self.options.wrapper_semantics == "base" else np.zeros(count, dtype=np.int64)
+        order = np.argsort(group, kind="stable")
+        mapping, physical, maf, group = mapping[order], physical[order], maf[order], group[order]
+        # Compact to actual rare columns before retaining recovery state.
+        for bi, block in enumerate(blocks):
+            positions = np.flatnonzero(mapping[:, 0] == bi)
+            original = mapping[positions, 1]
+            blocks[bi] = block.select_columns(original)
+            mapping[positions, 1] = np.arange(len(positions))
+        del block
+        geometry = None
+        if local_masks is not None:
+            geometry = self._mask_union_geometry(indices[physical], local_masks, model)
+        prepared = dict(maf=maf, mac=np.rint(maf * 2 * model.n), annotations=phred[physical], names=names,
+            acat_calibration="chi2", rare_maf_cutoff=self.options.rare_maf_cutoff,
+            rv_num_cutoff=self.options.rv_num_cutoff, rv_num_cutoff_max=self.options.rv_num_cutoff_max,
+            _variant_indices=indices[physical], _extraction_groups=group, _union_geometry=geometry,
+            _resident_blocks=blocks, _resident_mapping=mapping)
+        counters = self.local_mask_reuse_counters
+        counters["resident_gene_prepared_columns"] = counters.get("resident_gene_prepared_columns", 0) + count
+        if defer_score:
+            return [prepared]
+        genotype = self._materialize_resident_gene(prepared)
+        payload = {key: value for key, value in prepared.items() if not key.startswith("_")}
+        payload["cmac"] = self._resident_gene_cmac(genotype)
+        with self.profiler.measure("score_covariance", gpu=True):
+            payload["score"], payload["covariance"] = model.score_covariance(genotype)
+        return [payload]
+
+    def _prepare_test_set(self, indices, annotations=None, *, _local_masks=None, _defer_score=False):
         """Return one STAAR result per model, None for insufficient rare variants.
 
         Union MAF prefilter (<0.05 when cutoff<=0.01, otherwise <1) precedes
@@ -302,6 +563,9 @@ class PheWASPipeline:
         Exceptions other than insufficient variant count propagate to callers.
         """
         indices = np.asarray(indices, dtype=np.int64)
+        reader_options = self._resident_gene_reader_options(indices)
+        if reader_options:
+            return self._prepare_resident_gene(indices, annotations, reader_options, _local_masks, _defer_score)
         if annotations is None:
             annotations = self.annotations(indices, metadata="weights")
         phred, names = annotation_phred_matrix(annotations.annotations, self.annotation_names,
@@ -311,7 +575,9 @@ class PheWASPipeline:
         columns = []
         prefilter = (self.options.rare_maf_cutoff if self.options.wrapper_semantics == "base" else
                      0.05 if self.options.rare_maf_cutoff <= 0.01 else 1.0)
-        for offset, block in enumerate(self.gds.iter_minor_blocks(indices, self.union_rows, block_size=self.options.genotype_block_size)):
+        # Mask preparation retains bounded host blocks until the final rare
+        # count passes the memory guard. Single scans use resident CUDA dosage.
+        for offset, block in enumerate(self._minor_blocks(indices, self.union_rows, block_size=self.options.genotype_block_size)):
             union_alt_af = 1 - block.union_ref_af
             union_maf = np.where(block.union_ref_af >= union_alt_af, union_alt_af, block.union_ref_af)
             keep = np.isfinite(union_maf) & (union_maf > 0) & (union_maf < prefilter)
@@ -320,14 +586,24 @@ class PheWASPipeline:
             start = offset * self.options.genotype_block_size
             blocks.append((block, keep))
             columns.extend((start + np.flatnonzero(keep)).tolist())
-        if len(columns) >= self.options.rv_num_cutoff_max_prefilter:
+        if _local_masks is None:
+            prefilter_counts = [len(columns)]
+        else:
+            prefilter_indices = indices[np.asarray(columns, dtype=np.int64)]
+            prefilter_counts = [int(np.isin(prefilter_indices, mask).sum()) for mask in _local_masks]
+        if any(count >= self.options.rv_num_cutoff_max_prefilter for count in prefilter_counts):
             raise ValueError("union-prefilter variant count reaches rv_num_cutoff_max_prefilter")
         results = []
         for model, rows in zip(self.models, self.trait_rows):
             pieces, frequencies, extraction_groups, source_frequencies = [], [], [], []
             for block, keep in blocks:
                 frequency = {"frequency_mode": "reference"} if self.options.wrapper_semantics == "base" else {}
-                g, maf, _, missing, _ = block.trait_dense(rows, self.options.imputation, **frequency)
+                if getattr(model, "matmul_mode", "fp64") == "tf32" and isinstance(block, SparseMinorBlock):
+                    frequency["dtype"] = np.float32
+                with self.profiler.measure("genotype_trait_prepare", gpu=True):
+                    g, maf, _, missing, _ = block.trait_dense(rows, self.options.imputation, **frequency)
+                    if getattr(model, "matmul_mode", "fp64") == "tf32":
+                        g = g.to(dtype=torch.float32) if isinstance(g, torch.Tensor) else g.astype(np.float32, copy=False)
                 pieces.append(g[:, keep]); frequencies.append(maf[keep])
                 if self.options.wrapper_semantics == "base":
                     original_alt_af = 1 - block.union_ref_af
@@ -346,35 +622,75 @@ class PheWASPipeline:
             if self.options.wrapper_semantics == "base":
                 source_maf = np.concatenate(source_frequencies)
                 rare &= np.isfinite(source_maf) & (source_maf > 0) & (source_maf < self.options.rare_maf_cutoff)
+            if _local_masks is not None:
+                # Set limits apply to each original mask, never to their union.
+                physical = indices[np.asarray(columns, dtype=np.int64)]
+                included = np.zeros(len(rare), dtype=bool)
+                for mask in _local_masks:
+                    member = np.isin(physical, mask)
+                    mask_count = int((rare & member).sum())
+                    if mask_count >= self.options.rv_num_cutoff_max:
+                        raise ValueError("rare variant count reaches rv_num_cutoff_max")
+                    if mask_count >= self.options.rv_num_cutoff:
+                        included |= member
+                rare &= included
             count = int(rare.sum())
             if count < self.options.rv_num_cutoff:
                 results.append(None); continue
-            if count >= self.options.rv_num_cutoff_max:
+            if _local_masks is None and count >= self.options.rv_num_cutoff_max:
                 raise ValueError("rare variant count reaches rv_num_cutoff_max")
-            self._limit(model, count)
-            g = np.concatenate(pieces, axis=1)[:, rare]
+            if _local_masks is not None:
+                from .local_mask_reuse import UnionGeometryRejected
+                geometry = self._mask_union_geometry(indices[np.asarray(columns, dtype=np.int64)[rare]],
+                                                     _local_masks, model)
+                if not geometry["beneficial"] and not _defer_score:
+                    raise UnionGeometryRejected("actual rare union covariance exceeds separate-mask cells")
+            if not _defer_score:
+                self._limit(model, count)
+            g = (torch.cat(pieces, dim=1) if isinstance(pieces[0], torch.Tensor) else np.concatenate(pieces, axis=1))[:, rare]
             selected_maf = maf[rare]
             annotation = phred[np.asarray(columns)[rare]]
+            physical_indices = indices[np.asarray(columns, dtype=np.int64)[rare]]
+            selected_groups = np.zeros(count, dtype=np.int64)
             if self.options.wrapper_semantics == "base":
-                order = np.argsort(np.concatenate(extraction_groups)[rare], kind="stable")
+                selected_groups = np.concatenate(extraction_groups)[rare]
+                order = np.argsort(selected_groups, kind="stable")
                 g = g[:, order]
                 selected_maf = selected_maf[order]
                 annotation = annotation[order]
+                physical_indices = physical_indices[order]
+                selected_groups = selected_groups[order]
+            cutoffs=dict(rare_maf_cutoff=self.options.rare_maf_cutoff,rv_num_cutoff=self.options.rv_num_cutoff,
+                         rv_num_cutoff_max=self.options.rv_num_cutoff_max)
+            if _defer_score:
+                results.append(dict(maf=selected_maf, mac=np.rint(selected_maf*2*model.n),
+                    annotations=annotation, names=names, acat_calibration="chi2", **cutoffs,
+                    _genotype_host=g, _variant_indices=physical_indices,
+                    _extraction_groups=selected_groups,
+                    _union_geometry=geometry if _local_masks is not None else None))
+                continue
             reduction_options = {}
             if (self.options.wrapper_semantics == "base" and isinstance(model, GaussianNullModel)
-                    and model.has_kinship and not model.spectrum.blocks):
+                    and model.has_kinship and not model.spectrum.blocks
+                    and getattr(model, "matmul_mode", "fp64") == "fp64"):
                 estimate = 8 * (4 * model.n * count + 6 * count**2 + model.n)
                 available = int(self.options.memory_limit_gib * 2**30) - estimate - getattr(self, "_batch_workspace_reserve", 0)
                 workspace = min(256 * 2**20, available)
                 if workspace <= 0:
                     raise MemoryError("no workspace remains for reference sparse score reduction")
                 reduction_options = {"reduction": "reference_sparse", "max_workspace_bytes": workspace}
-            u, v = model.score_covariance(g, **reduction_options)
+            # Preserve the established host summation order for native CMAC.
+            cmac = float(g.sum())
+            if str(getattr(model, "device", "cpu")).startswith("cuda") or getattr(model, "matmul_mode", "fp64") == "tf32":
+                with self.profiler.measure("genotype_h2d", gpu=True):
+                    g = torch.as_tensor(g, dtype=model.x.dtype, device=model.device)
+            with self.profiler.measure("score_covariance", gpu=True):
+                u, v = model.score_covariance(g, **reduction_options)
             cutoffs=dict(rare_maf_cutoff=self.options.rare_maf_cutoff,rv_num_cutoff=self.options.rv_num_cutoff,
                          rv_num_cutoff_max=self.options.rv_num_cutoff_max)
             payload = dict(score=u, covariance=v, maf=selected_maf, mac=np.rint(selected_maf*2*model.n),
                            annotations=annotation, names=names, acat_calibration="chi2",
-                           cmac=float(g.sum()), **cutoffs)
+                           cmac=cmac, **cutoffs)
             if model.use_spa:
                 payload["_genotype"] = g
             results.append(payload)
@@ -390,7 +706,16 @@ class PheWASPipeline:
                 payload["annotations"], payload["names"], spa_p_filter=self.options.spa_p_filter,
                 p_filter_cutoff=self.options.p_filter_cutoff, tol=self.options.spa_tol,
                 max_iter=self.options.spa_max_iter, covariance=payload["covariance"], **cutoffs)
-        return (multi_staar_test if model.n_pheno>1 else staar_test)(**payload)
+        with self.profiler.measure("eigen_tail", gpu=True):
+            if model.n_pheno > 1:
+                return multi_staar_test(**payload)
+            tail_optimization = getattr(self, "statistics_tail_optimization", False)
+            result = staar_test(**payload, matmul_mode=getattr(model, "matmul_mode", "fp64"),
+                               tail_optimization=tail_optimization,
+                               weight_batch_optimization=getattr(self, "weight_batch_optimization", False))
+            if tail_optimization:
+                self.statistics_tail_optimization_calls = getattr(self, "statistics_tail_optimization_calls", 0) + 1
+            return result
 
     def _set_key(self, indices):
         rows=np.asarray(indices,dtype=np.int64)
@@ -479,7 +804,201 @@ class PheWASPipeline:
             return self.test_sets_batch(index_sets)
         if self.statistics_execution != "serial":
             raise ValueError("statistics_execution must be serial or batched")
+        index_sets = list(index_sets)
+        if getattr(self, "local_mask_reuse", False) and len(index_sets) > 1:
+            return self._test_sets_local_union(index_sets)
         return [self.test_set(indices) for indices in index_sets]
+
+    def _test_sets_local_union(self, index_sets):
+        """Resolve existing cache and family aliases before any union work."""
+        counters = self.local_mask_reuse_counters
+        counters["families"] += 1
+        representatives, aliases, pending = {}, {}, []
+        output = [None] * len(index_sets)
+        def copy_results(results):
+            return [None if result is None else dict(result) for result in results]
+        for position, indices in enumerate(index_sets):
+            key = self._set_key(indices)
+            if key in representatives:
+                aliases[position] = representatives[key]
+                counters["duplicate_mask_hits"] += 1
+                continue
+            representatives[key] = position
+            if key in self._test_set_cache:
+                self._test_set_cache.move_to_end(key)
+                output[position] = copy_results(self._test_set_cache[key])
+                counters["cache_hits"] += 1
+            else:
+                pending.append((position, key, indices))
+        if len(pending) == 1:
+            counters["single_mask_paths"] += 1
+            position, _, indices = pending[0]
+            output[position] = self.test_set(indices)
+        elif pending:
+            results = self._test_sets_uncached_union([indices for _, _, indices in pending])
+            for (position, key, _), result in zip(pending, results):
+                output[position] = result
+                # Include insufficient/NULL sets in the existing bounded LRU.
+                # Same-mode fallback test_set may already have cached them.
+                if key not in self._test_set_cache:
+                    self._cache_set(key, result)
+        for position, representative in aliases.items():
+            output[position] = copy_results(output[representative])
+        # Match the original per-mask access order, including alias accesses.
+        for indices in index_sets:
+            key = self._set_key(indices)
+            if key in self._test_set_cache:
+                self._test_set_cache.move_to_end(key)
+        return output
+
+    def _test_sets_uncached_union(self, index_sets):
+        """Reuse one local family UV; evaluate each unique mask separately.
+
+        This experimental path only supports one Gaussian trait/model. A union
+        changes output tiles, not the contraction/sample order or per-variant
+        matrix semantics. Native comparisons must still validate every family.
+        """
+        from .local_mask_reuse import attempt_union, valid_index_sets
+        counters = self.local_mask_reuse_counters
+        def fallback(reason):
+            counters[reason] += 1
+            # This preserves the configured model mode, including TF32 audit.
+            return [self.test_set(indices) for indices in index_sets]
+        if (len(self.models) != 1 or not isinstance(self.models[0], GaussianNullModel)
+                or self.models[0].n_pheno != 1 or self.models[0].use_spa
+                or getattr(self.models[0], "matmul_mode", "fp64") == "fp64"):
+            return fallback("fallback_unsupported")
+        if not valid_index_sets(index_sets):
+            return fallback("fallback_mapping")
+        self._local_union_host_prepared = None
+        self._local_union_device_prepared = None
+        try:
+            union_indices = np.unique(np.concatenate(index_sets))
+            counters["input_variant_columns"] += sum(len(indices) for indices in index_sets)
+            counters["union_variant_columns"] += len(union_indices)
+            prepared = self._prepare_test_set(union_indices, _local_masks=index_sets, _defer_score=True)[0]
+            if prepared is None:
+                return [[None] for _ in index_sets]
+            if "_resident_blocks" in prepared:
+                self._local_union_device_prepared = prepared
+            else:
+                self._local_union_host_prepared = prepared
+            result, reason = attempt_union(lambda: self._calculate_local_union(index_sets, prepared),
+                                           device=self.models[0].device)
+            if reason is not None:
+                # Only NumPy host state survives the unwound GPU frame.
+                # Reuse its exact filtering/imputation instead of decoding
+                # the same physical variants again for each mask.
+                device_prepared = self._local_union_device_prepared
+                if device_prepared is not None:
+                    counters[reason] += 1
+                    return self._test_masks_from_union_device(device_prepared, index_sets)
+                prepared = self._local_union_host_prepared
+                if prepared is not None:
+                    counters[reason] += 1
+                    return self._test_masks_from_union_host(prepared, index_sets)
+                return fallback(reason)
+            return result
+        finally:
+            self._local_union_host_prepared = None
+            self._local_union_device_prepared = None
+
+    def _test_masks_from_union_device(self, prepared, index_sets):
+        from .local_mask_reuse import ordered_mask_columns
+        model, output = self.models[0], []
+        for indices in index_sets:
+            columns = ordered_mask_columns(prepared["_variant_indices"], prepared["_extraction_groups"],
+                indices, grouped=self.options.wrapper_semantics == "base")
+            if len(columns) < self.options.rv_num_cutoff:
+                output.append([None]); continue
+            genotype = self._materialize_resident_gene(prepared, columns)
+            payload = {key: value for key, value in prepared.items() if not key.startswith("_")}
+            for key in ("maf", "mac", "annotations"):
+                payload[key] = prepared[key][columns]
+            payload["cmac"] = self._resident_gene_cmac(genotype)
+            with self.profiler.measure("score_covariance", gpu=True):
+                payload["score"], payload["covariance"] = model.score_covariance(genotype)
+            del genotype
+            output.append([self._evaluate_prepared(payload, model)])
+            counters = self.local_mask_reuse_counters
+            counters["fallback_device_reused_masks"] = counters.get("fallback_device_reused_masks", 0) + 1
+        return output
+
+    def _test_masks_from_union_host(self, prepared, index_sets):
+        """Same-mode per-mask products from already prepared host columns."""
+        from .local_mask_reuse import ordered_mask_columns
+        model = self.models[0]
+        physical = prepared["_variant_indices"]
+        output = []
+        for indices in index_sets:
+            columns = ordered_mask_columns(physical, prepared["_extraction_groups"], indices,
+                                           grouped=self.options.wrapper_semantics == "base")
+            if len(columns) < self.options.rv_num_cutoff:
+                output.append([None]); continue
+            self._limit(model, len(columns))
+            host = prepared["_genotype_host"][:, columns]
+            payload = {key: value for key, value in prepared.items() if not key.startswith("_")}
+            for key in ("maf", "mac", "annotations"):
+                payload[key] = prepared[key][columns]
+            payload["cmac"] = float(host.sum())
+            with self.profiler.measure("genotype_h2d", gpu=True):
+                genotype = torch.as_tensor(host, dtype=model.x.dtype, device=model.device)
+            with self.profiler.measure("score_covariance", gpu=True):
+                payload["score"], payload["covariance"] = model.score_covariance(genotype)
+            del genotype
+            output.append([self._evaluate_prepared(payload, model)])
+            counter = "fallback_host_reused_masks"
+            self.local_mask_reuse_counters[counter] = self.local_mask_reuse_counters.get(counter, 0) + 1
+        return output
+
+    def _calculate_local_union(self, index_sets, prepared):
+        """All floating union temporaries die before same-mode recovery."""
+        from .local_mask_reuse import ordered_mask_columns
+        counters, model = self.local_mask_reuse_counters, self.models[0]
+        prepared = dict(prepared)
+        resident = "_resident_blocks" in prepared
+        host_genotype = None if resident else prepared.pop("_genotype_host")
+        physical_indices = prepared.pop("_variant_indices")
+        counters["prepared_union_variant_columns"] += len(physical_indices)
+        groups = prepared.pop("_extraction_groups")
+        geometry = prepared.pop("_union_geometry")
+        if geometry is not None and not geometry["beneficial"]:
+            from .local_mask_reuse import UnionGeometryRejected
+            raise UnionGeometryRejected("actual rare union covariance exceeds separate-mask cells")
+        self._limit(model, len(physical_indices))
+        if resident:
+            genotype = self._materialize_resident_gene(self._local_union_device_prepared)
+            prepared.pop("_resident_blocks"); prepared.pop("_resident_mapping")
+        else:
+            with self.profiler.measure("genotype_h2d", gpu=True):
+                genotype = torch.as_tensor(host_genotype, dtype=model.x.dtype, device=model.device)
+        with self.profiler.measure("score_covariance", gpu=True):
+            union_score, union_covariance = model.score_covariance(genotype)
+        counters["union_score_calls"] += 1
+        if not resident:
+            del genotype  # Resident G supplies the original imputed-mask sum.
+        output = []
+        evaluated_masks = 0
+        for indices in index_sets:
+            columns = ordered_mask_columns(physical_indices, groups, indices,
+                                           grouped=self.options.wrapper_semantics == "base")
+            if len(columns) < self.options.rv_num_cutoff:
+                result = None
+            else:
+                device_columns = torch.as_tensor(columns, dtype=torch.int64, device=model.device)
+                payload = dict(prepared)
+                payload.update(score=union_score.index_select(0, device_columns),
+                    covariance=union_covariance.index_select(0, device_columns).index_select(1, device_columns),
+                    maf=prepared["maf"][columns], mac=prepared["mac"][columns],
+                    annotations=prepared["annotations"][columns],
+                    # Advanced column indexing reproduces the original host
+                    # mask layout and sum order, not a sum of rounded MACs.
+                    cmac=self._resident_gene_cmac(genotype[:, device_columns]) if resident else float(host_genotype[:, columns].sum()))
+                result = self._evaluate_prepared(payload, model)
+                evaluated_masks += 1
+            output.append([result])
+        counters["reused_masks"] += evaluated_masks
+        return output
 
     def coding(self, chromosome, gene_name, start, end, *, category="all_categories", include_ptv=False):
         if category == "all_categories_incl_ptv":
@@ -543,29 +1062,6 @@ class PheWASPipeline:
         return [[coding_record(chromosome,gene_name,"ncRNA",stats)] if stats is not None else []
                 for stats in self._run_mask_sets([selected])[0]]
 
-    def sliding(self, chromosome, start, end, *, window_length=None):
-        """One inclusive region, or half-overlapping fixed-length windows."""
-        if window_length is None:
-            windows = [(start, end)]
-        else:
-            if window_length < 2 or window_length % 2 or end-start+1 < window_length:
-                raise ValueError("window length must be positive/even and fit the region")
-            step = window_length // 2
-            number = (end-start+1) // step - 1
-            windows = [(start+k*step, start+k*step+window_length-1) for k in range(number)]
-        records = [[] for _ in self.models]
-        selected_windows=[]
-        for left, right in windows:
-            indices = self.region_indices(left, right)
-            a = self.annotations(indices,include_weights=False,metadata="mask")
-            local = np.flatnonzero(variant_filter(a, self.options.variant_type))
-            selected_windows.append(indices[local])
-        for (left,right),results in zip(windows,self._run_mask_sets(selected_windows)):
-            for trait, stats in enumerate(results):
-                if stats is not None:
-                    records[trait].append(window_record(chromosome, left, right, stats))
-        return self._assemble(records, kind="sliding")
-
     def iter_individual_records(self, chromosome, start=None, end=None, *, mac_cutoff=20,
                                 variant_type="variant", subset_variants_num=5000):
         """Yield (model index, bounded record block) in GDS variant order.
@@ -578,20 +1074,20 @@ class PheWASPipeline:
             raise ValueError("provide both region endpoints or omit both")
         genotype_device = next((model.device for model in self.models
                                 if str(getattr(model, "device", "cpu")).startswith("cuda")), None)
-        reader_options = {"device": genotype_device, "minimum_mac": mac_cutoff} if genotype_device is not None else {}
+        reader_options = {"device": genotype_device, "minimum_mac": mac_cutoff, "resident": self.resident_genotypes} if genotype_device is not None else {}
         if start is None:
             base=self._base_mask(chromosome,variant_type)
             def blocks():
                 for offset in range(0,self.gds.n_variants,self.options.annotation_block_size):
                     stop=min(offset+self.options.annotation_block_size,self.gds.n_variants)
                     indices=offset+np.flatnonzero(base[offset:stop])
-                    yield from self.gds.iter_minor_blocks(indices,self.union_rows,block_size=self.options.genotype_block_size, **reader_options)
+                    yield from self._minor_blocks(indices,self.union_rows,block_size=self.options.genotype_block_size, **reader_options)
             genotype_blocks=blocks()
         else:
             indices = self.region_indices(start, end)
             a = self.annotations(indices,include_weights=False,metadata="mask")
             indices = indices[np.flatnonzero(variant_filter(a, variant_type))]
-            genotype_blocks=self.gds.iter_minor_blocks(indices,self.union_rows,block_size=self.options.genotype_block_size, **reader_options)
+            genotype_blocks=self._minor_blocks(indices,self.union_rows,block_size=self.options.genotype_block_size, **reader_options)
         if subset_variants_num < 1:
             raise ValueError("subset_variants_num must be positive")
         union_ordinal = 0
@@ -602,7 +1098,8 @@ class PheWASPipeline:
             union_columns = np.flatnonzero(keep_union)
             if len(union_columns) == 0:
                 continue
-            block = block.select_columns(union_columns)
+            if len(union_columns) != len(block.variant_indices):
+                block = block.select_columns(union_columns)
             ordinals = ordinals[union_columns]
             source_alt_af = 1 - block.union_ref_af
             source_maf = np.where(block.union_ref_af >= source_alt_af, source_alt_af, block.union_ref_af)
@@ -615,50 +1112,58 @@ class PheWASPipeline:
                 trait_columns = np.flatnonzero(eligible)
                 if len(trait_columns) == 0:
                     continue
-                trait_block = block.select_columns(trait_columns)
+                self._limit(model, len(trait_columns), individual=True)
+                trait_block = block if len(trait_columns) == len(block.variant_indices) else block.select_columns(trait_columns)
                 trait_ordinals = ordinals[trait_columns]
                 frequency = {"frequency_mode": "reference"} if base_mode else {}
-                g, maf, mac, missing, is_alt = trait_block.trait_dense(rows, self.options.imputation, **frequency)
+                if isinstance(trait_block, DeviceMinorBlock):
+                    frequency["dtype"] = model.x.dtype
+                with self.profiler.measure("genotype_trait_prepare", gpu=True):
+                    g, maf, mac, missing, is_alt = trait_block.trait_dense(rows, self.options.imputation, **frequency)
                 if base_mode:
                     original_alt_af = 1 - trait_block.union_ref_af
                     original_maf = np.where(trait_block.union_ref_af >= original_alt_af, original_alt_af, trait_block.union_ref_af)
                     allele_missing = trait_block.allele_missing_rate()
                     base_group = np.where(original_alt_af > 0.5, 2,
                         np.where((original_maf >= 0.01) | (allele_missing >= 0.01), 1, 0))
-                # Retain the existing F-contiguous boolean-column copy before
-                # invoking the unchanged association kernel.
+                # Retain the reference host layout only for FP64 controls;
+                # forced TF32 can pass the already selected CUDA tensor.
                 keep = np.ones(len(trait_columns), dtype=bool)
                 columns = np.arange(len(trait_columns))
                 selected = trait_block.variant_indices
                 trait_records=[]
-                if model.n_pheno==1 and hasattr(model,"individual_score_variance"):
-                    u,variance=model.individual_score_variance(g[:,keep])
-                else:
-                    u,v=model.score_covariance(g[:,keep])
-                    if model.n_pheno==1:variance=v.diagonal()
-                if model.n_pheno>1:
-                    scores=u.reshape(model.n_pheno,len(columns))
-                    cov4=v.reshape(model.n_pheno,len(columns),model.n_pheno,len(columns))
-                    log_probabilities=torch.stack([joint_individual_logp(scores[:,j],cov4[:,j,:,j]) for j in range(len(columns))])
-                else:
-                    positive=variance>0
-                    standard_error=torch.sqrt(variance)
-                    z=torch.where(positive,u/torch.clamp(standard_error,min=1e-300),0.)
-                    log_probabilities=-math.log(2)-torch.special.log_ndtr(-z.abs())
-                    log_probabilities=torch.where(torch.isnan(variance),variance,torch.where(positive,log_probabilities,0.))
-                    if model.use_spa:
-                        probabilities=individual_score_test_spa(torch.as_tensor(g[:,keep],dtype=torch.float64,device=model.device),
-                            model.scaled_residuals,model.fitted_probability,model.xw,model.projection_left,
-                            normal_pvalues=torch.exp(-log_probabilities) if self.options.spa_p_filter else None,
-                            p_filter_cutoff=self.options.p_filter_cutoff,tol=self.options.spa_tol,max_iter=self.options.spa_max_iter)
+                analysis_g = (g[:, keep] if getattr(model, "matmul_mode", "fp64") == "fp64" else
+                              torch.as_tensor(g, dtype=torch.float32, device=model.device))
+                with self.profiler.measure("score_covariance", gpu=True):
+                    if model.n_pheno==1 and hasattr(model,"individual_score_variance"):
+                        u,variance=model.individual_score_variance(analysis_g)
+                    else:
+                        u,v=model.score_covariance(analysis_g)
+                        if model.n_pheno==1:variance=v.diagonal()
+                with self.profiler.measure("individual_tail", gpu=True):
+                    if model.n_pheno>1:
+                        scores=u.reshape(model.n_pheno,len(columns))
+                        cov4=v.reshape(model.n_pheno,len(columns),model.n_pheno,len(columns))
+                        log_probabilities=torch.stack([joint_individual_logp(scores[:,j],cov4[:,j,:,j]) for j in range(len(columns))])
+                    else:
+                        # Preserve sqrt's IEEE values for native R output; only
+                        # the probability helper protects its division.
+                        standard_error=torch.sqrt(variance.to(torch.float64))
+                        log_probabilities=_individual_log_probabilities(u, variance)
+                        if model.use_spa:
+                            probabilities=individual_score_test_spa(torch.as_tensor(g[:,keep],dtype=torch.float64,device=model.device),
+                                model.scaled_residuals,model.fitted_probability,model.xw,model.projection_left,
+                                normal_pvalues=torch.exp(-log_probabilities) if self.options.spa_p_filter else None,
+                                p_filter_cutoff=self.options.p_filter_cutoff,tol=self.options.spa_tol,max_iter=self.options.spa_max_iter)
                 # Transfer one result block, avoiding four CUDA synchronizations
-                # per variant. float64 values and row assembly are unchanged.
-                if model.n_pheno>1:
-                    values_cpu=torch.cat((scores,log_probabilities[None,:]),dim=0).detach().cpu().numpy()
-                elif model.use_spa:
-                    values_cpu=probabilities.detach().cpu().numpy()
-                else:
-                    values_cpu=torch.stack((variance,u,standard_error,log_probabilities),dim=1).detach().cpu().numpy()
+                # per variant. Computed values are serialized as R doubles with original row metadata.
+                with self.profiler.measure("result_d2h", gpu=True):
+                    if model.n_pheno>1:
+                        values_cpu=torch.cat((scores,log_probabilities[None,:]),dim=0).detach().cpu().numpy()
+                    elif model.use_spa:
+                        values_cpu=probabilities.detach().cpu().numpy()
+                    else:
+                        values_cpu=torch.stack((variance,u,standard_error,log_probabilities),dim=1).detach().cpu().numpy()
                 chrom = self.gds.read_field("chromosome", selected)
                 ref,alt=self.gds.read_ref_alt(selected)
                 for j, column in enumerate(columns):

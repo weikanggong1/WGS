@@ -64,3 +64,18 @@ def test_univariate_continuous_scope_is_explicit(settings):
     config['phenotypes'][0].update(settings)
     with pytest.raises(ValueError, match='one continuous phenotype'):
         chromosome_configuration(config, manifest())
+
+
+def test_current_chromosome_plan_uses_native_unsplit_tf32():
+    expanded=chromosome_configuration(configuration(),manifest())
+    assert expanded['matmul_mode']=='tf32' and expanded['tf32_split_k']==0
+    assert expanded['statistics_execution']=='serial'
+    assert 'tf32_binned_tile_shape' not in expanded and 'tf32_binned_fused_small' not in expanded
+
+
+@pytest.mark.parametrize('obsolete', [ {'matmul_mode':'tf32_binned'}, {'matmul_mode':'tf32x3'},
+    {'tf32_split_k':1024}, {'tf32_binned_fused_small':True}, {'tf32_binned_tile_shape':[32,64]} ])
+def test_chromosome_plan_rejects_removed_reconstruction_controls(obsolete):
+    cfg=configuration();cfg.update(obsolete)
+    with pytest.raises((ValueError,TypeError)):
+        chromosome_configuration(cfg,manifest())

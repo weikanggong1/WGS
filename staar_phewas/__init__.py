@@ -1,5 +1,5 @@
 """PyTorch STAAR PheWAS; native GDS and explicit sample alignment."""
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 from .null_model import fit_gaussian_null, rank_inverse_normal, GaussianNullModel
 from .pipeline import PheWASPipeline, AnalysisOptions
 from .gds import SeqArrayGDS

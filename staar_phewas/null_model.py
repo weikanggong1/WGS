@@ -1,4 +1,4 @@
-"""Gaussian STAAR null models with float64 PyTorch block-sparse REML.
+"""Gaussian STAAR block-sparse REML: native FP32 or explicit FP64 controls.
 
 SPDX-License-Identifier: GPL-3.0-only
 AI initialization, steps, boundary refits and stopping rule follow GMMAT
@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 import torch
+from .tf32 import matmul, validate_mode
 from .rint import rank_inverse_normal_tensor
 from .numerics import reference_crossprod, extended_variance, _extended_sum_pair
 
@@ -43,7 +44,7 @@ class KinshipSpectrum:
     blocks: list[tuple[torch.Tensor, torch.Tensor]]
 
     @classmethod
-    def from_sparse(cls, diagonal, edge_rows=(), edge_cols=(), edge_values=(), *, device="cpu", max_block_size=2048):
+    def from_sparse(cls, diagonal, edge_rows=(), edge_cols=(), edge_values=(), *, device="cpu", max_block_size=2048, dtype=torch.float64):
         d = np.asarray(diagonal, dtype=np.float64)
         if d.ndim != 1 or not len(d) or not np.isfinite(d).all() or (d < 0).any():
             raise ValueError("kinship diagonal must be a finite nonnegative vector")
@@ -75,7 +76,7 @@ class KinshipSpectrum:
         groups = {}
         for i in parent:
             groups.setdefault(find(i), []).append(i)
-        eigenvalues = torch.as_tensor(d.copy(), dtype=torch.float64, device=device)
+        eigenvalues = torch.as_tensor(d.copy(), dtype=dtype, device=device)
         blocks = []
         grouped_edges = {}
         for (r, c), value in edges.items():
@@ -88,7 +89,7 @@ class KinshipSpectrum:
             block = np.diag(d[group])
             for r, c, value in grouped_edges[root]:
                 block[loc[r], loc[c]] = block[loc[c], loc[r]] = value
-            tensor = torch.as_tensor(block, dtype=torch.float64, device=device)
+            tensor = torch.as_tensor(block, dtype=dtype, device=device)
             eigen, rotation = torch.linalg.eigh(tensor)
             if float(eigen.min()) < -1e-10:
                 raise ValueError("kinship matrix is not positive semidefinite")
@@ -97,13 +98,17 @@ class KinshipSpectrum:
             blocks.append((idx, rotation))
         return cls(eigenvalues, blocks)
 
-    def rotate(self, values, *, inverse=False):
-        value = torch.as_tensor(values, dtype=torch.float64, device=self.eigenvalues.device)
+    def rotate(self, values, *, inverse=False, matmul_mode="fp64"):
+        dtype = torch.float32 if validate_mode(matmul_mode) == "tf32" else torch.float64
+        value = torch.as_tensor(values, dtype=dtype, device=self.eigenvalues.device)
         if value.shape[0] != len(self.eigenvalues):
             raise ValueError("value rows do not match kinship samples")
+        # Rotation callers consume this tensor without mutating it.
+        if not self.blocks:
+            return value
         result = value.clone()
         for idx, rotation in self.blocks:
-            result[idx] = (rotation if inverse else rotation.T) @ value[idx]
+            result[idx] = matmul((rotation if inverse else rotation.T).to(dtype=dtype), value[idx], mode=matmul_mode)
         return result
 
 
@@ -130,6 +135,7 @@ class GaussianNullModel:
     has_kinship: bool = True
     fitted_values: torch.Tensor | None = None
     working_phenotype: torch.Tensor | None = None
+    matmul_mode: str = "fp64"
 
     @property
     def n(self):
@@ -139,7 +145,26 @@ class GaussianNullModel:
     def device(self):
         return self.x.device
 
-    def score_covariance(self, genotype, *, reduction="blas", max_workspace_bytes=256 * 1024**2):
+    def set_matmul_mode(self, mode):
+        """Convert the complete floating fitted state without refitting it.
+
+        Legacy FP64 caches become FP32 for native execution; no precision
+        control or arithmetic fallback is inferred from a cache's metadata.
+        """
+        mode = validate_mode(mode)
+        dtype = torch.float32 if mode == "tf32" else torch.float64
+        for name in ("x", "scaled_residuals", "coefficients", "theta", "precision_theta",
+                     "fixed_effect_covariance", "inverse_variance", "precision_x",
+                     "phenotype", "fitted_values", "working_phenotype"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, value.to(dtype=dtype))
+        self.spectrum.eigenvalues = self.spectrum.eigenvalues.to(dtype=dtype)
+        self.spectrum.blocks = [(rows, rotation.to(dtype=dtype)) for rows, rotation in self.spectrum.blocks]
+        self.matmul_mode = mode
+        return self
+
+    def score_covariance(self, genotype, *, reduction="blas", max_workspace_bytes=256 * 1024**2, matmul_mode=None):
         """U=G' scaled.residuals, V=G' Sigma_i G-X projection.
 
         The block eigensystem avoids materializing an N by N projector.
@@ -149,9 +174,13 @@ class GaussianNullModel:
         diagonal precision, with bounded temporary covariance pair blocks.
         Off-diagonal relatedness blocks require reduction='blas'.
         """
-        g = torch.as_tensor(genotype, dtype=torch.float64, device=self.device)
+        mode = validate_mode(self.matmul_mode if matmul_mode is None else matmul_mode)
+        dtype = torch.float32 if mode == "tf32" else torch.float64
+        g = torch.as_tensor(genotype, dtype=dtype, device=self.device)
         if g.ndim != 2 or g.shape[0] != self.n or not bool(torch.isfinite(g).all()):
             raise ValueError("genotype must be a finite samples-by-variants matrix")
+        if mode != "fp64" and reduction == "reference_sparse":
+            raise ValueError("reference_sparse is an FP64 control; forced TF32 requires reduction=blas")
         if reduction == "reference_sparse":
             if self.spectrum.blocks:
                 raise NotImplementedError("ordered sparse reduction requires diagonal precision")
@@ -161,33 +190,35 @@ class GaussianNullModel:
                 self.fixed_effect_covariance, max_workspace_bytes=max_workspace_bytes)
         if reduction != "blas":
             raise ValueError("reduction must be 'blas' or 'reference_sparse'")
-        rotated = self.spectrum.rotate(g)
-        cross = self.precision_x.T @ g
-        covariance = rotated.T @ (self.inverse_variance[:, None] * rotated) - cross.T @ self.fixed_effect_covariance @ cross
-        return g.T @ self.scaled_residuals, (covariance + covariance.T) / 2
+        rotated = self.spectrum.rotate(g, matmul_mode=mode)
+        cross = matmul(self.precision_x.to(dtype=dtype).T, g, mode=mode)
+        covariance = matmul(rotated.T, self.inverse_variance.to(dtype=dtype)[:, None] * rotated, mode=mode) - matmul(matmul(cross.T, self.fixed_effect_covariance.to(dtype=dtype), mode=mode), cross, mode=mode)
+        return matmul(g.T, self.scaled_residuals, mode=mode), (covariance + covariance.T) / 2
 
 
-    def individual_score_variance(self, genotype):
+    def individual_score_variance(self, genotype, *, matmul_mode=None):
         """Single-variant scores and variances without an M by M matrix.
 
         Genotypes have the same oriented, imputed [samples, variants] layout
-        as score_covariance. All computations remain float64 on this model's
-        device; the block eigensystem applies the same precision operator.
+        as score_covariance. Storage and elementwise reductions follow the selected FP32/FP64 mode;
+        matmul_mode selects explicit TF32 products or the FP64 control.
         """
-        g = torch.as_tensor(genotype, dtype=torch.float64, device=self.device)
+        mode = validate_mode(self.matmul_mode if matmul_mode is None else matmul_mode)
+        dtype = torch.float32 if mode == "tf32" else torch.float64
+        g = torch.as_tensor(genotype, dtype=dtype, device=self.device)
         if g.ndim != 2 or g.shape[0] != self.n or not bool(torch.isfinite(g).all()):
             raise ValueError("genotype must be a finite samples-by-variants matrix")
-        rotated = self.spectrum.rotate(g)
-        weighted = self.inverse_variance[:, None] * rotated
-        cross = self.precision_x.T @ g
-        projected = cross.T @ self.fixed_effect_covariance
+        rotated = self.spectrum.rotate(g, matmul_mode=mode)
+        weighted = self.inverse_variance.to(dtype=dtype)[:, None] * rotated
+        cross = matmul(self.precision_x.to(dtype=dtype).T, g, mode=mode)
+        projected = matmul(cross.T, self.fixed_effect_covariance.to(dtype=dtype), mode=mode)
         variance = (rotated * weighted).sum(dim=0) - (projected * cross.T).sum(dim=1)
-        return g.T @ self.scaled_residuals, variance
+        return matmul(g.T, self.scaled_residuals, mode=mode), variance
 
 
 def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_diagonal=None,
                       edge_rows=(), edge_cols=(), edge_values=(), device="cpu", tol=1e-5,
-                      maxiter=500, max_block_size=2048, trace_callback=None):
+                      maxiter=500, max_block_size=2048, trace_callback=None, matmul_mode="fp64"):
     """Fit intercept/covariate Gaussian null model using GMMAT AI REML.
 
     covariates must explicitly contain an intercept if one is wanted. None
@@ -196,7 +227,14 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
     With no kinship, reproduces fit_nullmodel(kins=NULL)'s sparse Gaussian
     object and chi-square association calibration.
     """
-    y = torch.as_tensor(phenotype, dtype=torch.float64, device=device)
+    validate_mode(matmul_mode)
+    def mm(a, b):
+        return matmul(a, b, mode=matmul_mode)
+    def cp(a, b):
+        return reference_crossprod(a, b) if matmul_mode == "fp64" else mm(a.T, b)
+    dtype = torch.float32 if matmul_mode == "tf32" else torch.float64
+    rsum = _r_sum if matmul_mode == "fp64" else lambda values: values.sum()
+    y = torch.as_tensor(phenotype, dtype=dtype, device=device)
     if y.ndim != 1 or not bool(torch.isfinite(y).all()):
         raise ValueError("phenotype must be a finite vector")
     n = len(y)
@@ -210,24 +248,24 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
         raise ValueError("sample_ids must be unique and match phenotype rows")
     if tol <= 0 or maxiter < 2:
         raise ValueError("tol must be positive and maxiter at least 2")
-    alpha0 = torch.linalg.solve(x.T @ x, x.T @ y)
+    alpha0 = torch.linalg.solve(mm(x.T, x), mm(x.T, y))
     if kinship_diagonal is None:
-        residual = y - x @ alpha0
+        residual = y - mm(x, alpha0)
         dispersion = residual.square().sum() / (n - x.shape[1])
         if float(dispersion) <= 0:
             raise ValueError("phenotype has zero residual variance")
-        kin = KinshipSpectrum.from_sparse(np.zeros(n), device=device)
+        kin = KinshipSpectrum.from_sparse(np.zeros(n), device=device, dtype=dtype)
         inv = torch.ones_like(y) / dispersion
-        cov = torch.cholesky_inverse(torch.linalg.cholesky(x.T @ (inv[:, None] * x)))
+        cov = torch.cholesky_inverse(torch.linalg.cholesky(mm(x.T, inv[:, None] * x)))
         return GaussianNullModel(ids, x, residual / dispersion, alpha0, torch.stack((dispersion, dispersion * 0)),
-                                 torch.stack((dispersion, dispersion * 0)), cov, kin, inv, inv[:, None] * x, 0, True, phenotype=y, has_kinship=False, fitted_values=x @ alpha0, working_phenotype=y)
+                                 torch.stack((dispersion, dispersion * 0)), cov, kin, inv, inv[:, None] * x, 0, True, phenotype=y, has_kinship=False, fitted_values=mm(x, alpha0), working_phenotype=y, matmul_mode=matmul_mode)
     if len(kinship_diagonal) != n:
         raise ValueError("kinship diagonal does not match phenotype")
-    kin = KinshipSpectrum.from_sparse(kinship_diagonal, edge_rows, edge_cols, edge_values, device=device, max_block_size=max_block_size)
+    kin = KinshipSpectrum.from_sparse(kinship_diagonal, edge_rows, edge_cols, edge_values, device=device, max_block_size=max_block_size, dtype=dtype)
     eigen = kin.eigenvalues
-    yr = kin.rotate(y)
-    xr = kin.rotate(x)
-    mean_diag = _r_sum(eigen) / n
+    yr = kin.rotate(y, matmul_mode=matmul_mode)
+    xr = kin.rotate(x, matmul_mode=matmul_mode)
+    mean_diag = rsum(eigen) / n
     if mean_diag <= 0:
         raise ValueError("kinship has zero mean diagonal; omit it for an ordinary model")
 
@@ -237,10 +275,10 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
             raise ValueError("mixed-model covariance is singular")
         inv = torch.reciprocal(torch.sqrt(variance)).square()
         sx = inv[:, None] * xr
-        cov = torch.cholesky_inverse(torch.linalg.cholesky(reference_crossprod(xr, sx)))
-        alpha = cov @ reference_crossprod(sx, yr)
-        sx_cov = sx @ cov
-        py = inv * yr - sx @ reference_crossprod(sx_cov, yr)
+        cov = torch.cholesky_inverse(torch.linalg.cholesky(cp(xr, sx)))
+        alpha = mm(cov, cp(sx, yr))
+        sx_cov = mm(sx, cov)
+        py = inv * yr - mm(sx, cp(sx_cov, yr))
         return inv, sx, cov, alpha, py
 
     total_iterations = 0
@@ -251,18 +289,18 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
         tau = torch.zeros(2, dtype=y.dtype, device=device)
         # R cov.c keeps centered products and the final division in extended
         # precision; rounding the squares before summation shifts the AI seed.
-        variance_y = extended_variance(y)
+        variance_y = extended_variance(y) if matmul_mode == "fp64" else y.var(correction=1)
         tau[free] = variance_y / 2
         tau[1] /= mean_diag
         inv, sx, cov, alpha, py = state(tau)
         # GMMAT's single EM initialization, then average-information steps.
-        diag_p = inv - torch.sum(sx * (sx @ cov), dim=1)
+        diag_p = inv - torch.sum(sx * (mm(sx, cov)), dim=1)
         derivative = torch.stack((torch.ones_like(eigen), eigen))
-        sx_cov = sx @ cov
+        sx_cov = mm(sx, cov)
         apy_k = eigen * py
-        papy_k = inv * apy_k - sx @ reference_crossprod(sx_cov, apy_k)
-        scores = torch.stack((_r_sum(py.square()) - _r_sum(diag_p),
-            _r_sum(yr * papy_k) - (_r_sum(inv * eigen) - _r_sum(sx * (eigen[:, None] * sx_cov)))))
+        papy_k = inv * apy_k - mm(sx, cp(sx_cov, apy_k))
+        scores = torch.stack((rsum(py.square()) - rsum(diag_p),
+            rsum(yr * papy_k) - (rsum(inv * eigen) - rsum(sx * (eigen[:, None] * sx_cov)))))
         tau[free] = torch.maximum(tau[free] + tau[free].square() * scores[free] / n, torch.zeros_like(tau[free]))
         alpha_prev = alpha0.clone()
         for iteration in range(1, maxiter + 1):
@@ -271,15 +309,15 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
             old_y = yr.clone()
             inv, sx, cov, alpha, py = state(old)
             if len(free):
-                sx_cov = sx @ cov
+                sx_cov = mm(sx, cov)
                 apy = derivative.T * py[:, None]
-                papy = inv[:, None] * apy - sx @ reference_crossprod(sx_cov, apy)
+                papy = inv[:, None] * apy - mm(sx, cp(sx_cov, apy))
                 diag_p = inv - torch.sum(sx * sx_cov, dim=1)
-                all_scores = torch.stack((_r_sum(py.square()-diag_p),
-                    _r_sum(yr*papy[:, 1]) - (_r_sum(inv*eigen)-_r_sum(sx*(eigen[:,None]*sx_cov)))))
-                ai00 = _r_sum(py*(inv*py)) - _r_sum(reference_crossprod(sx_cov, py)*reference_crossprod(sx, py))
-                ai01 = _r_sum(py*papy[:, 1])
-                ai11 = _r_sum(py*(eigen*papy[:, 1]))
+                all_scores = torch.stack((rsum(py.square()-diag_p),
+                    rsum(yr*papy[:, 1]) - (rsum(inv*eigen)-rsum(sx*(eigen[:,None]*sx_cov)))))
+                ai00 = rsum(py*(inv*py)) - rsum(cp(sx_cov, py)*cp(sx, py))
+                ai01 = rsum(py*papy[:, 1])
+                ai11 = rsum(py*(eigen*papy[:, 1]))
                 all_ai = torch.stack((torch.stack((ai00, ai01)), torch.stack((ai01, ai11))))
                 # R passes a column-major AI matrix to DGESV. cuSOLVER uses
                 # a different transpose route for row-major input; preserving
@@ -295,10 +333,10 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
                 else:
                     raise ArithmeticError("AI step could not remain in the parameter space")
                 tau[tau < tol] = 0
-            eta_spectral = old_y - old[0] * (inv * old_y - sx @ alpha)
-            eta = kin.rotate(eta_spectral, inverse=True)
+            eta_spectral = old_y - old[0] * (inv * old_y - mm(sx, alpha))
+            eta = kin.rotate(eta_spectral, inverse=True, matmul_mode=matmul_mode)
             working_y = eta + (y - eta)
-            yr = kin.rotate(working_y)
+            yr = kin.rotate(working_y, matmul_mode=matmul_mode)
             if trace_callback is not None:
                 trace_callback({"refit": _refit, "iteration": iteration, "tau_old": old,
                     "tau": tau.clone(), "Y_old": old_y, "Y": yr, "PY": py,
@@ -325,5 +363,5 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
         raise ValueError("zero residual dispersion cannot produce GMMAT scaled residuals")
     # eta=y-old_dispersion*P_old*y; returned residual divides by final tau.
     scaled = (y - eta) / tau[0]
-    precision_x = kin.rotate(sx, inverse=True)
-    return GaussianNullModel(ids, x, scaled, alpha, tau, old, cov, kin, inv, precision_x, total_iterations, converged, phenotype=y, fitted_values=eta, working_phenotype=working_y)
+    precision_x = kin.rotate(sx, inverse=True, matmul_mode=matmul_mode)
+    return GaussianNullModel(ids, x, scaled, alpha, tau, old, cov, kin, inv, precision_x, total_iterations, converged, phenotype=y, fitted_values=eta, working_phenotype=working_y, matmul_mode=matmul_mode)
