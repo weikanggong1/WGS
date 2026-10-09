@@ -73,6 +73,28 @@ def test_current_chromosome_plan_uses_native_unsplit_tf32():
     assert 'tf32_binned_tile_shape' not in expanded and 'tf32_binned_fused_small' not in expanded
 
 
+@pytest.mark.parametrize('enabled,width', [(False, 512), (True, 1024)])
+def test_single_batch_controls_reach_chromosome_execution(enabled, width, monkeypatch):
+    from staar_phewas import cli
+    from staar_phewas.chromosome import run_chromosome
+    config = configuration()
+    config.update(manifest=manifest(), single_batch_optimization=enabled,
+                  individual_effective_block_size=width)
+    baseline = chromosome_configuration(configuration(), manifest())
+    planned = chromosome_configuration(config, config['manifest'])
+    assert planned['single_batch_optimization'] is enabled
+    assert planned['individual_effective_block_size'] == width
+    assert planned['chromosomes'] == baseline['chromosomes']
+    called = []
+    def execute(settings, **kwargs):
+        called.append(settings)
+        return {}
+    monkeypatch.setattr(cli, 'run_configuration', execute)
+    run_chromosome(config, device='cuda:0')
+    assert called[0]['single_batch_optimization'] is enabled
+    assert called[0]['individual_effective_block_size'] == width
+
+
 @pytest.mark.parametrize('obsolete', [ {'matmul_mode':'tf32_binned'}, {'matmul_mode':'tf32x3'},
     {'tf32_split_k':1024}, {'tf32_binned_fused_small':True}, {'tf32_binned_tile_shape':[32,64]} ])
 def test_chromosome_plan_rejects_removed_reconstruction_controls(obsolete):

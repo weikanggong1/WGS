@@ -31,8 +31,9 @@ def _make_solver(memory_limit):
 def eigensolver_context(mode='torch',*,memory_limit=20*2**30):
     """Own one serialized weighted-spectrum solver for one pipeline run.
 
-    This module's context never replaces Torch functions or preferences. The
-    caller resolves auto/control/CPU policy before choosing either API here.
+    This module never replaces Torch functions. Its selector may temporarily
+    prefer MAGMA only after an eligible Torch FP32 convergence error, restoring
+    the preference before return. The caller resolves auto/control/CPU policy.
     """
     global _SOLVER_CONTEXT_ACTIVE,_SOLVER,_LAST_SOLVER_CONTEXT
     if mode not in ('torch','cusolver_batched'):
@@ -75,7 +76,8 @@ def _complete_eigvalsh(matrices):
         else:
             spectra=_SOLVER.eigvalsh(matrices,UPLO='U')
             backend=_SOLVER.last_execution_backend
-            if backend not in ('torch.linalg.eigvalsh','cusolverDnSsyevjBatched'):
+            if backend not in ('torch.linalg.eigvalsh','torch.linalg.eigvalsh:magma_retry',
+                               'cusolverDnSsyevjBatched'):
                 raise RuntimeError('successful weighted solve lacks its actual API route')
         _METRICS['actual_backend_calls'][backend]=_METRICS['actual_backend_calls'].get(backend,0)+1
         count=1 if matrices.ndim==2 else matrices.shape[0]
@@ -114,7 +116,7 @@ def _batch_capacity(covariance,remaining):
         _METRICS['workspace_query_host_seconds']+=time.perf_counter()-start
         _METRICS['live_workspace_queries']+=1
         available=tf32._product_workspace_availability(allocated=allocated,reserved=reserved,free=free,
-            limit=min(20*2**30,tf32._memory_limit_bytes),reserve=tf32._memory_reserve_bytes)['available_bytes']
+            limit=tf32._memory_limit_bytes,reserve=tf32._memory_reserve_bytes)['available_bytes']
         budget=min(budget,available)
     unit=workspace_unit_bytes(covariance)
     capacity=min(remaining,budget//max(unit,1))
@@ -175,7 +177,8 @@ def native_weighted_spectra(covariance, weights):
             matrices = covariance[None, :, :] * w[:, :, None] * w[:, None, :]
         with _profile('eigvalsh'):
             spectra,backend = _complete_eigvalsh(matrices)
-        if backend=='torch.linalg.eigvalsh':record_gpu_eigen_route(matrices)
+        if backend in ('torch.linalg.eigvalsh','torch.linalg.eigvalsh:magma_retry'):
+            record_gpu_eigen_route(matrices)
         _METRICS['batch_sizes'].append(len(indices))
         _METRICS['eigen_api_calls']+=1
         for index, spectrum in zip(indices, spectra):

@@ -121,17 +121,18 @@ class Container:
   self.path=Path(path);b=(self.path/'manifest.json').read_bytes()
   if (self.path/'COMPLETE').read_text()!=sha(b):raise ValueError('Missing/invalid completed marker')
   self.manifest=json.loads(b);s=self.manifest
-  if s['format']!=FORMAT or s['state_encoding']!=codec.STATE_ENCODING or s['chunk']!=CHUNK:raise ValueError('Container semantic mismatch')
+  if s['format']!=FORMAT or s['state_encoding']!=codec.STATE_ENCODING or type(s['chunk']) is not int or not 1<=s['chunk']<=CHUNK:raise ValueError('Container semantic mismatch')
+  chunk=s['chunk']  # Readers accept committed smaller frames; Writer stays at CHUNK.
   if expected_source_binding is not None and s['binding']!=expected_source_binding:raise ValueError('Source binding mismatch')
   self.samples=np.load(self.path/'samples.npy',allow_pickle=False);self.index=np.load(self.path/'index.npy',allow_pickle=False)
   if self.samples.dtype!=np.int64 or self.samples.shape!=(s['n'],) or sha(self.samples.astype('<i8').tobytes())!=s['sample_sha256']:raise ValueError('Sample binding mismatch')
   if expected_samples is not None and not np.array_equal(self.samples,expected_samples):raise ValueError('Requested sample axis differs')
-  if self.index.dtype!=INDEX or len(self.index)!=s['frames'] or len(self.index)!=(s['m']+CHUNK-1)//CHUNK:raise ValueError('Invalid frame index')
+  if self.index.dtype!=INDEX or len(self.index)!=s['frames'] or len(self.index)!=(s['m']+chunk-1)//chunk:raise ValueError('Invalid frame index')
   for name in ('samples.npy','index.npy'):
    if file_sha(self.path/name)!=s['files_sha256'][name]:raise ValueError('Index/sample file checksum mismatch')
   start=0;ends=[0,0,0]
   for row in self.index:
-   if int(row['start'])!=start or int(row['m'])!=min(CHUNK,s['m']-start):raise ValueError('Index physical order mismatch')
+   if int(row['start'])!=start or int(row['m'])!=min(chunk,s['m']-start):raise ValueError('Index physical order mismatch')
    for j,(offset,size) in enumerate([('offset','size'),('header_offset','header_size'),('counts_offset','counts_size')]):
     if int(row[offset])!=ends[j]:raise ValueError('Index stream gap')
     ends[j]+=int(row[size])

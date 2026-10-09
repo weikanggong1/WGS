@@ -176,6 +176,12 @@ def run_configuration(config, *, device="cuda"):
     obsolete = {"tf32_binned_tile_shape", "tf32_binned_fused_small"} & config.keys()
     if obsolete:
         raise ValueError("Removed TF32 reconstruction parameters: " + ", ".join(sorted(obsolete)))
+    single_batches = config.get('single_batch_optimization', True)
+    effective_block = config.get('individual_effective_block_size', 1024)
+    if type(single_batches) is not bool:
+        raise ValueError('single_batch_optimization must be a JSON boolean')
+    if type(effective_block) is not int or effective_block < 1:
+        raise ValueError('individual_effective_block_size must be a positive integer')
     requested_split_k = config.get("tf32_split_k", 0)
     tf32_configuration = configure_tf32(split_k=requested_split_k,
         memory_limit_gib=config.get("analysis_options", {}).get("memory_limit_gib", 20))
@@ -198,6 +204,17 @@ def run_configuration(config, *, device="cuda"):
     if 'total_seconds' in report:
         report['total_seconds']+=solver_state['context_setup_seconds']+solver_state['context_cleanup_seconds']
     report["tf32_configuration"] = tf32_configuration
+    caches = [reader.get('analysis_cache', {})
+              for reader in report.get('genotype_readers', [])]
+    blocks = sum(cache.get('single_effective_blocks', 0) for cache in caches)
+    report['single_optimization_configuration'] = dict(
+        requested_batch_optimization=single_batches,
+        configured_tf32_batch_optimization=single_batches and mode == 'tf32',
+        activated=blocks > 0,
+        actual_effective_blocks=blocks,
+        actual_effective_columns=sum(cache.get('single_effective_columns', 0) for cache in caches),
+        individual_effective_block_size=effective_block,
+        reduction_order='original TF32 K order')
     return report
 
 
@@ -324,6 +341,8 @@ def _run_configuration(config, *, device="cuda"):
             pipeline.local_mask_reuse = config.get("local_mask_reuse", True)
             pipeline.weight_batch_optimization = config.get("weight_batch_optimization", True)
             pipeline.resident_genotypes = bool(config.get("resident_genotypes", device.startswith("cuda")))
+            pipeline.single_batch_optimization = config.get('single_batch_optimization', True)
+            pipeline.individual_effective_block_size = config.get('individual_effective_block_size', 1024)
             pipeline.profiler = StageProfiler(device, enabled=config.get("stage_profile", False))
             gds._stage_profiler = pipeline.profiler if pipeline.profiler.enabled else None
             setup_seconds += time.perf_counter() - before_setup

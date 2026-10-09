@@ -5,6 +5,7 @@ encoding is ref-homo-first-six-v1; nonzero exceptions are CSR by variant.
 """
 import numpy as np
 from .device_decode import STATE_MAPPING, check_budget
+from .sparse_codec_fast import _sample_dtype
 
 _KERNELS = None
 
@@ -13,17 +14,18 @@ def prepare(offsets, sample_index, state, ref_ac, called_alleles, n,
             columns=None, samples=None, *, minimum_mac=None, mapping=STATE_MAPPING):
     """CPU compact preparation; summaries recomputed for a sample subset.
 
-    Contract: offsets uint32[m+1], sample_index uint16[E] (n<=65536), state
+    Contract: offsets uint32[m+1], sample_index uint16[E] for n<65536 and
+    uint32[E] for larger axes, matching the verified CSR codec; state
     uint8[E] in1..5; strictly increasing sample indices within each variant.
     ref_ac/called_alleles int64[m] refer to the complete cache sample union.
     These must come from the codec's verified header/payload binding.
     """
     from ..gds import _allele_frequency_summary
     from .device_decode import _indices
-    if mapping != STATE_MAPPING or type(n) is not int or not 0 <= n < 65536:
+    if mapping != STATE_MAPPING or type(n) is not int or not 0 <= n <= 2**32:
         raise ValueError('unsupported sparse cache encoding/sample count')
     off, idx, st, R, A = map(np.asarray,(offsets,sample_index,state,ref_ac,called_alleles))
-    if (off.ndim!=1 or len(off)<1 or off.dtype!=np.uint32 or idx.ndim!=1 or idx.dtype!=np.uint16
+    if (off.ndim!=1 or len(off)<1 or off.dtype!=np.uint32 or idx.ndim!=1 or idx.dtype!=_sample_dtype(n)
         or st.ndim!=1 or st.dtype!=np.uint8 or R.dtype!=np.int64 or A.dtype!=np.int64):
         raise ValueError('incorrect CSR dtype/shape')
     m=len(off)-1

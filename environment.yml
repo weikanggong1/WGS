@@ -1,4 +1,4 @@
-name: torchwgs
+name: torchstaar
 channels:
   - pytorch
   - nvidia
@@ -15,6 +15,13 @@ dependencies:
   - matplotlib>=3.7
   - zstandard>=0.22
   - pip
+  - setuptools
+  - wheel
+  - git
+  - cxx-compiler
+  - zlib
+  - xz
+  - pytest
   - pip:
       - rdata==1.1.0
       - -e .

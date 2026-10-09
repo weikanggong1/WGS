@@ -23,7 +23,7 @@ from torchstaar.pipeline import PheWASPipeline
 
 # 所有个体数据和产物存放在私有目录。
 annotation_catalog = json.loads(Path("annotation_catalog.json").read_text())
-gene_start, gene_end = 200000, 230000  # 对照版本的 GENE_B 一基 inclusive 坐标
+gene_start, gene_end = 200000, 230000  # 示例一基闭区间；实际区域来自私有完整目录
 model_one, rows_one = fit_prepared_input("trait_one.npz", device="cuda", transform="rint")
 model_two, rows_two = fit_prepared_input("trait_two.npz", device="cuda", transform="rint")
 with SeqArrayGDS("chromosome.gds") as gds:
@@ -64,8 +64,8 @@ with SeqArrayGDS("chromosome.gds") as gds:
 
 原版 R 对应调用为 `Gene_Centric_Coding_PheWAS(..., obj_nullmodel_list=list(null_one, null_two))` 和 `Individual_Analysis_PheWAS`。原模型分别由 `STAARpipeline::fit_nullmodel(y~1, data=..., kins=..., id="id")` 拟合。
 
-## 当前验证范围
+## 当前范围
 
-多模型样本并集与各模型独立频率/插补通过CPU接口合同；既有真实两模型的coding与Single原R对照保留其低级FP64范围，不能推导当前单表型TF32或完整多模型染色体的精度/速度。完整当前benchmark、测量范围与近期版本统一见 [Torchstaar指南](torchstaar.md#5-最新真实精度与耗时)。
+多个独立模型各自保留可用观测；缺失位置不同不取全体表型共同交集，不插补 NaN。并集方向与各模型频率仍按原提取规则计算。完整染色体强制 TF32 入口目前限单个连续 Gaussian 模型；本文为独立模型 API/显式 FP64 对照用法，不属于本版 Single 优化与完整 benchmark。当前精度和计时只见 [主指南](torchstaar.md#真实验证与计时范围)，不从单模型结果推导多表型速度。
 
-参考：[STAARpipelinePheWAS 原代码](https://github.com/li-lab-genetics/STAARpipelinePheWAS)、[STAARpipeline 论文](https://doi.org/10.1038/s41592-022-01640-x)、[STAAR](https://doi.org/10.1038/s41588-020-0676-4)。
+参考：[STAARpipelinePheWAS](https://github.com/li-lab-genetics/STAARpipelinePheWAS)、[原 STAARpipeline](https://github.com/li-lab-genetics/STAARpipeline)。

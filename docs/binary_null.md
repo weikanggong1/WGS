@@ -34,8 +34,6 @@ reloaded_model = load_null_model("binary_null.npz", device="cuda")
 
 原软件的普通拟合对照命令是 `glm.fit(X, y, family=binomial())`；关联统计参考 [STAAR 二项 SPA 源码](https://github.com/yuxinyuanqt/STAAR/tree/4bbf77ba8a90894a434f5eb4473d540e172dad05) 和 [二项 SPA 文档](binary.md)。R 仅用于开发时对照，生产代码不调用 R。
 
-2026-10-04 用真实 288,554 名样本、41 列固定效应设计比较原 R `glm.fit` 与 GPU IRLS。两者均在 7 次迭代收敛；系数最大绝对差 `2.22e-13`，预测概率/残差 `4.87e-15`，固定效应协方差 `4.78e-12`。R 拟合墙钟 7.581 秒，不含文件加载；GPU 5.913 秒包含输入状态传输。该记录是普通模型拟合对照，不验证二项混合零模型。
-
-另用真正原包生成的二项混合状态验证生产 CLI 的 pLoF 和单变异 SPA 路由：288,554 人，三个真实 job 共 93.318 秒，GPU 峰值分配 0.965 GiB。原版 PheWAS wrapper 对照 GENE_A、GENE_B 的完整 pLoF 集合分别为 11 和 19 个 RV；正式 Rdata 的 schema 均无差异，P 值最大绝对差分别为 `1.33e-15`、`4.44e-16`。此项验证模型读写和关联执行，不属于 PyTorch 混合 null 拟合验收；一个单变异 SPA 达到原版 Newton 迭代上限，保留了告警。
+本版新 benchmark 为连续单表型 Single，不覆盖二项零模型或 SPA。本文保留已有独立 API 的参数与输出约定；其完整二项流程需另行真实对照。
 
 参考：[R stats::glm 官方源码](https://github.com/wch/r-source/blob/trunk/src/library/stats/R/glm.R)、[R binomial family](https://github.com/wch/r-source/blob/trunk/src/library/stats/R/family.R)、[Dey et al. SPA](https://doi.org/10.1016/j.ajhg.2017.05.014)。

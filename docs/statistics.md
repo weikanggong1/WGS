@@ -89,9 +89,9 @@ spectrum_execution = spectrum_solver.report()  # 关闭后记录cleanup/info/lib
 
 | API/参数 | 输入和输出 |
 |---|---|
-| `FP32SmallSpectrumSolver(memory_limit=20*2**30)` | 正整数byte≤20GiB，拥有一个串行selector；首个selected CUDA调用才加载官方CUDA库。 |
+| `FP32SmallSpectrumSolver(memory_limit=20*2**30)` | 正整数字节预算，默认20GiB，拥有一个串行selector；首个selected CUDA调用才加载官方CUDA库。 |
 | `expected_solver_sha256` / `expected_runtime_sha256` | 可选既有cuSOLVER/runtime SHA字符串；提供则精确匹配。实际SHA总是记录，package hash存在时核对。 |
-| `eigvalsh(matrix,UPLO='U')` | selected为strided CUDA FP32、requires_grad=False的 `[M,M]`/`[B,M,M]`，33≤M≤512；返回升序全谱 `[M]`/`[B,M]` FP32。范围外由原Torch处理，selected失败不fallback。 |
+| `eigvalsh(matrix,UPLO='U')` | selected为strided CUDA FP32、requires_grad=False的 `[M,M]`/`[B,M,M]`，33≤M≤512；返回升序全谱 `[M]`/`[B,M]` FP32。范围外由原Torch处理；实际失败及后端由执行报告记录。 |
 | `report()` | 实际selected/outside calls、矩阵/维度、API/library/status与cleanup；不隐含科学验收。 |
 | `close()` / context退出 | 在创建线程释放ownedhandle，失败抛错；closed后禁止重用，不改global Torch/preference。 |
 
@@ -99,10 +99,10 @@ spectrum_execution = spectrum_solver.report()  # 关闭后记录cleanup/info/lib
 
 本页低级函数没有独立数据读取CLI。完整任务使用 `torchstaar expanded_configuration.json --device cuda:0 --weighted-eigensolver auto --report private/report.json`；配置与全部CLI参数见主指南。原R对应 `STAAR::STAAR`/`STAAR_sp`、`CCT`及 `Saddle`，锁定实现见下方。
 
-当前公开全chr21的795项/19文件、严格null和显著联合P验收全部通过，墙钟296.196098秒。最近完整F/G/H2/H3观测和阶段边界统一见 [真实精度与耗时](torchstaar.md#5-最新真实精度与耗时)。`eigen_tail`覆盖整个staar_test，不能称纯large eig；nested timer不相加。CPU模拟与mock接口检查不替代真实科学benchmark。
+本版真实测量只覆盖完整 Single 与有界原 R Single。低级集合统计、完整谱或 mock 检查不能代替当前 gene-based 端到端对照；范围见 [主指南](torchstaar.md#真实验证与计时范围)。`eigen_tail` 包含整个 staar_test，内部计时不可相加或称纯 eig 时间。
 
 ## 更新、原实现与文献
 
 当前版提供完整FP32小谱API、实际后端报告和ownedcontext；原权重、完整谱与尾概率规则保留。近期完整版本表见主指南，不另重复过期实验过程。
 
-[STAAR固定实现](https://github.com/yuxinyuanqt/STAAR/tree/4bbf77ba8a90894a434f5eb4473d540e172dad05)，[原Score](https://github.com/li-lab-genetics/STAAR/blob/master/src/Indiv_Score_Test_SMMAT_sparse.cpp)、[Saddle](https://github.com/li-lab-genetics/STAAR/blob/master/src/Saddle.cpp)、[CCT](https://github.com/li-lab-genetics/STAAR/blob/master/src/CCT_pval.cpp)。参考文献见 [Torchstaar参考](torchstaar.md#7-原实现许可与参考文献)。
+[STAAR固定实现](https://github.com/yuxinyuanqt/STAAR/tree/4bbf77ba8a90894a434f5eb4473d540e172dad05)，[原Score](https://github.com/li-lab-genetics/STAAR/blob/master/src/Indiv_Score_Test_SMMAT_sparse.cpp)、[Saddle](https://github.com/li-lab-genetics/STAAR/blob/master/src/Saddle.cpp)、[CCT](https://github.com/li-lab-genetics/STAAR/blob/master/src/CCT_pval.cpp)。参考文献见 [Torchstaar参考](torchstaar.md#参考)。

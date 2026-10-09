@@ -1,6 +1,6 @@
 # 可选 packed Bit2 读取
 
-本页介绍从原 GDS 解压流读取的可选 SDK packed 入口。本版完整性能测量采用预先生成的无损缓存；这两种读取入口的准备成本分别记录，见 [完整 benchmark](torchstaar.md)。
+本页介绍从原 GDS 解压流读取的可选 SDK packed 入口。本版完整 Single 性能测量采用预先生成的无损缓存；这两种读取入口的准备成本分别记录，见[真实验证](torchstaar.md#真实验证与计时范围)。
 该入口从 GDS 的逻辑解压流读取 packed Bit2 字节，在 GPU 直接选取样本并解包。后续层合并、等位基因方向、缺失处理、频率、MAC、筛选及原生输出沿用现有实现。它减少 SDK 在 CPU 展开全部样本及扫描样本 mask 的工作；选定样本较少时，传输的字节数可能增加。
 
 默认使用现有读取路径。启用 packed 必须显式构建适配器，使用与已安装 PyGDS 二进制完全对应的源码构建。CoreArray allocator 是内部 C++ 接口；当前支持经验证的 64 位小端 Linux，加载时核对二进制、源码、headers、Python SOABI 和布局。配置不匹配或读取失败会报错。
@@ -55,8 +55,8 @@ with SeqArrayGDS("private/input.gds",
 
 ## 当前验证与测量
 
-packed入口用于原GDS逻辑流读取/解包，绑定当前SDK源码、headers、编译binary及SOABI；零长度、奇数偏移、跨块/末尾短读与损坏拒绝由接口合同检查。完整关联性能当前采用已经生成的六状态缓存，首次转存与分析分开计时，实际P/结构验收见 [主指南](torchstaar.md#5-最新真实精度与耗时)。不将packed读字节数解释为磁盘物理吞吐，也不以局部读出证明完整pipeline速度。
+packed入口用于原GDS逻辑流读取/解包，绑定当前SDK源码、headers、编译binary及SOABI；零长度、奇数偏移、跨块/末尾短读与损坏拒绝由接口合同检查。完整关联性能当前采用已经生成的六状态缓存，首次转存与分析分开计时，实际P/结构验收见 [主指南](torchstaar.md#真实验证与计时范围)。不将packed读字节数解释为磁盘物理吞吐，也不以局部读出证明完整pipeline速度。
 
 ## 更新、原实现与文献
 
-当前packed构建显式执行，分析沿用同一原状态/剂量规则，无自动安装/编译。原SDK与许可见 [CoreArray PyGDS](https://github.com/CoreArray/pygds)、[SeqArray](https://github.com/zhengxwen/SeqArray)、[NOTICE](../NOTICE.md)；方法文献见 [主指南](torchstaar.md#7-原实现许可与参考文献)。
+当前packed构建显式执行，分析沿用同一原状态/剂量规则，无自动安装/编译。原SDK与许可见 [CoreArray PyGDS](https://github.com/CoreArray/pygds)、[SeqArray](https://github.com/zhengxwen/SeqArray)、[NOTICE](../NOTICE.md)；方法文献见 [主指南](torchstaar.md#参考)。

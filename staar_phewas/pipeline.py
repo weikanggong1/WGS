@@ -149,6 +149,8 @@ class PheWASPipeline:
         self.statistics_tail_optimization_calls = 0
         self.profiler = StageProfiler(getattr(self.models[0], "device", "cpu"), enabled=False)
         self.resident_genotypes = False
+        self.single_batch_optimization = True
+        self.individual_effective_block_size = 1024
 
     @property
     def profiler(self):
@@ -1075,19 +1077,39 @@ class PheWASPipeline:
         genotype_device = next((model.device for model in self.models
                                 if str(getattr(model, "device", "cpu")).startswith("cuda")), None)
         reader_options = {"device": genotype_device, "minimum_mac": mac_cutoff, "resident": self.resident_genotypes} if genotype_device is not None else {}
+        def minor_blocks(indices):
+            compatible = (getattr(self, 'single_batch_optimization', False) and self.resident_genotypes
+                          and genotype_device is not None and len(self.models) == 1
+                          and isinstance(self.models[0], GaussianNullModel)
+                          and self.models[0].n_pheno == 1 and not self.models[0].use_spa
+                          and getattr(self.models[0], 'matmul_mode', 'fp64') == 'tf32'
+                          and hasattr(self.gds, 'iter_effective_minor_blocks'))
+            if not compatible:
+                yield from self._minor_blocks(indices, self.union_rows,
+                    block_size=self.options.genotype_block_size, **reader_options)
+                return
+            iterator = iter(self.gds.iter_effective_minor_blocks(indices, self.union_rows,
+                block_size=self.options.genotype_block_size,
+                effective_block_size=getattr(self, 'individual_effective_block_size', 1024), **reader_options))
+            while True:
+                with self.profiler.measure('gds_sdk_decode_prepare', gpu=True):
+                    block = next(iterator, None)
+                if block is None:
+                    break
+                yield block
         if start is None:
             base=self._base_mask(chromosome,variant_type)
             def blocks():
                 for offset in range(0,self.gds.n_variants,self.options.annotation_block_size):
                     stop=min(offset+self.options.annotation_block_size,self.gds.n_variants)
                     indices=offset+np.flatnonzero(base[offset:stop])
-                    yield from self._minor_blocks(indices,self.union_rows,block_size=self.options.genotype_block_size, **reader_options)
+                    yield from minor_blocks(indices)
             genotype_blocks=blocks()
         else:
             indices = self.region_indices(start, end)
             a = self.annotations(indices,include_weights=False,metadata="mask")
             indices = indices[np.flatnonzero(variant_filter(a, variant_type))]
-            genotype_blocks=self._minor_blocks(indices,self.union_rows,block_size=self.options.genotype_block_size, **reader_options)
+            genotype_blocks=minor_blocks(indices)
         if subset_variants_num < 1:
             raise ValueError("subset_variants_num must be positive")
         union_ordinal = 0

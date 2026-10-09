@@ -26,7 +26,7 @@ def library_sha(path):
 def available_bytes(allocated, reserved, free, *, limit=PROCESS_LIMIT, reserve=RESERVE_BYTES):
     if any(type(x) is not int or x < 0 for x in (allocated, reserved, free, limit, reserve)):
         raise ValueError('memory snapshot must contain nonnegative integer bytes')
-    if limit > PROCESS_LIMIT or limit == 0: raise ValueError('process limit must be in (0,20 GiB]')
+    if limit == 0: raise ValueError('process limit must be positive integer bytes')
     return max(0, min(limit - allocated, free + max(0, reserved - allocated) - reserve))
 
 

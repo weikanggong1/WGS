@@ -4,7 +4,7 @@
 
 验证工具递归读取原R与Torchstaar同任务的Rdata/RDS，比较原生结构、全部P有效性/覆盖、native log一致性，以及显著联合范围的 `-log10(P)` 误差；不重新分析数据、不运行GPU。
 
-主范围 `S={i:P_R,i<0.05 或 P_Torch,i<0.05}`，要求每项 `|-log10(P_R,i)+log10(P_Torch,i)|<=0.001`。任一侧跨0.05的值仍参加误差检查，boundary crossing另计；不因跨界本身更改门槛。全部P必须有效且可比较，不能只验证显著项；19份原结构与strict null同为必过条件。
+主范围 `S={i:P_reference,i<0.05 或 P_candidate,i<0.05}`，要求每项 `|-log10(P_reference,i)+log10(P_candidate,i)|<=0.001`。任一侧跨0.05的值仍参加误差检查，boundary crossing另计；不因跨界本身更改门槛。全部P必须有效且可比较，原生结构与固定模型身份单独核对；reference 是官方 R 还是上一接受版本须明确记录。
 
 ## 输入、识别和输出
 
@@ -57,11 +57,11 @@ Rscript validation/compare_nonp.R \
 
 输出保留原全部P诊断，并增加 `all_P_contract_passed`、`significant_logp`、`significant_stored_pvalue_log10`、`significant_logp_passed`。CLI退出码按显著联合gate决定；原 `logp_passed` 仍是全部P诊断，可为false。两侧均非显著的差异也完整保留，不更改原报告来声称所有FP64值相等。
 
-## 完整文件与strict null
+## 完整范围与固定零模型
 
-完整验收必须绑定同一科学源码、原目录/顺序、795任务、全部15mask、18关联+1null文件、原reference与candidate SHA及输入前后证明。15文件包含478,082 P，3文件原本无P；只有独立原预检绑定双方均0P，并且结构与非P严格比较通过时，空文件P门槛才记not applicable。未知缺失不能当合法空文件；保留原空P validator raw false。
+完整验收绑定同一模型、样本/变异轴、QC、注释、原目录/顺序、实际作业计划、reference/candidate SHA 及输入前后证明。当前完整 Single 计划包含 4 个区间、4 份文件；gene-based 的完整验证需另核对全部 mask 槽及其 NULL。双方均无 P 且结构与非 P 状态通过时，空文件 P 门槛记不适用，保留原空 P validator 的 raw false。未知缺失不能当合法空文件。
 
-null没有关联P，必须通过结构和原strict nonP数值阈值 `absdiff<=1e-10+1e-7*abs(reference)`；关联非P的严格误差只作诊断。下列CPU schema/特殊值合同不替代真实benchmark：
+零模型没有关联 P，仍检查结构、样本/设计与严格非 P 数值，默认阈值 `absdiff<=1e-10+1e-7*abs(reference)`；关联非 P 的严格误差只作诊断。复用已有模型时记录身份，不将新拟合加入对照。下列 CPU schema/特殊值契约不替代真实 benchmark：
 
 ```bash
 Rscript tests/test_structure_validation.R
@@ -70,8 +70,8 @@ Rscript tests/test_logp_validation.R
 
 ## 当前真实结果、计时与来源
 
-当前Torchstaar公开科学运行完成795项/19文件：全478,082 P有效/可比较；显著联合24,713、0超限、最大logP差0.000357971421594216、boundary crossing0。strict null341,221数值单元格/0超限，最大绝对/相对差1.47138834449834e-7 / 5.95656454671069e-8。全部P仍有49个诊断超限，最大0.0708922025240736，关联strict nonP诊断false；它们不替代主科学验收。
+0.4.0 的完整 Single 输出包含 1,065,735 个有效、可比较 P。相对上一接受 TF32 输出，显著联合 55,377 项，最大 log 误差 `7.0916163e-6`，0 项跨越 0.05；4 份原生文件的键/顺序、类型、factor/row.names 与 AF/MAF/N 均一致。官方 R 的同模型有界对照另包含 28 个 P、2 个显著项，最大显著误差 `2.3897789e-6`。这两个参考范围分开报告。
 
-关联进程墙钟296.196098秒，独立R比较127.953秒在外。共享节点没有独占证明，原组合速度/精度字段false保留；本轮观测wall<300与主科学门槛通过。已有cache/固定null、暖缓存与首次转存范围、近期F/G/H2/H3对照统一见 [主指南](../docs/torchstaar.md#5-最新真实精度与耗时)和 [匿名汇总](../benchmarks/torchstaar_chr21_2026-10-06.json)。
+本版 Single 作业墙钟 1125.923 秒，启动至文件输出 1183.551 秒；首次转存、新拟合与独立 R 验证另计。两次运行的启动/I/O 状态不同，阶段 host/stream 指标不能相加。细节见[主指南](../docs/torchstaar.md#真实验证与计时范围)和[匿名汇总](../benchmarks/torchstaar_single_chr21_2026-10-09.json)。
 
-原R调用、固定版本与文献见 [主指南](../docs/torchstaar.md#4-原r对应调用)、[参考](../docs/torchstaar.md#7-原实现许可与参考文献)。R/Matrix/jsonlite仅用于独立验证，Python生产运行不调用它们。
+原 R 调用与文献见[命令行与原 R](../docs/torchstaar.md#命令行与原-r)、[参考](../docs/torchstaar.md#参考)。R/Matrix/jsonlite 仅用于独立验证，Python生产运行不调用它们。

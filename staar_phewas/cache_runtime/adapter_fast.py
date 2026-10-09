@@ -1,7 +1,7 @@
-"""Private CSR facade with bounded immutable exact-value sample-axis binding cache.
+"""Private CSR facade with immutable sample-map reuse and safe MAC prefilter.
 
-All decoder, MAC, variant ordering, sparse materialization and SDK forwarding
-behavior is copied unchanged from the frozen full-cache adapter.
+Final cohort MAC, ordering, six-state decoding and materialization remain the
+original paths; prefiltering uses a conservative integer upper bound only.
 """
 from collections import OrderedDict
 from pathlib import Path
@@ -19,6 +19,7 @@ class CachedGDSAdapter:
         if type(compact_cache_bytes) is not int or compact_cache_bytes<1:raise ValueError('invalid compact cache budget')
         self._capacity=compact_cache_bytes
         self._sample_binding=None  # One axis only; immutable bytes-backed snapshots.
+        self._decoder_binding=None
         if not getattr(container,'complete',False):raise RuntimeError('complete verified cache container required')
         self._index=container.index
         starts=np.asarray(self._index['start'],dtype=np.int64);sizes=np.asarray(self._index['m'],dtype=np.int64)
@@ -35,7 +36,11 @@ class CachedGDSAdapter:
             minor_block_wall_seconds=0.,cpu_sparse_calls=0,cuda_resident_calls=0,
             requested_variants=0,returned_variants=0,cache_bytes_highwater=0,
             sample_bind_calls=0,sample_bind_cache_hits=0,sample_bind_validations=0,
-            sample_bind_seconds=0.,sample_validate_seconds=0.,sample_bind_cache_bytes=0)
+            sample_bind_seconds=0.,sample_validate_seconds=0.,sample_bind_cache_bytes=0,
+            decoder_sample_axis_validations=0,decoder_sample_axis_cache_hits=0,
+            decoder_sample_map_builds=0,decoder_sample_map_cache_bytes=0,
+            safe_mac_prescreen_calls=0,safe_mac_prescreen_input_variants=0,
+            safe_mac_prescreen_rejected_variants=0,safe_mac_prescreen_candidate_variants=0)
 
     def __getattr__(self,name):
         return getattr(self._reader,name)
@@ -48,6 +53,7 @@ class CachedGDSAdapter:
         if self._closed:return
         self._closed=True;self._lru.clear();self._lru_bytes=0
         self._sample_binding=None;self._metrics['sample_bind_cache_bytes']=0
+        self._decoder_binding=None;self._metrics['decoder_sample_map_cache_bytes']=0
         try:
             if hasattr(self._container,'close'):self._container.close()
         finally:
@@ -115,9 +121,11 @@ class CachedGDSAdapter:
                 self._metrics['sample_validate_seconds']+=time.perf_counter()-validate_start
             snapshot=self._immutable_axis(candidate)
             validated=self._immutable_axis(ss)
-            rows=self._immutable_axis(cache_rows)
-            full_identity=np.array_equal(rows,np.arange(len(self._samples),dtype=np.int64))
+            decoder_binding=self._fast.bind_samples(cache_rows,len(self._samples),metrics=self._metrics)
+            rows=decoder_binding.rows
+            full_identity=decoder_binding.identity
             self._sample_binding=(snapshot,validated,rows,self.n_samples,full_identity)
+            self._decoder_binding=decoder_binding
             self._metrics['sample_bind_cache_bytes']=snapshot.nbytes+validated.nbytes+rows.nbytes
             return validated,rows
         finally:
@@ -127,9 +135,9 @@ class CachedGDSAdapter:
         from ..gds import _indices
         vv=_indices(variants,self.n_variants,'variant_indices')
         ss,cache_rows=self._bind_samples(samples)
-        # None is the unchanged decoder's validated full identity-axis route.
-        # Only the immutable rows produced by this binding may use it; full
-        # permutations and subsets retain the decoder's original validation.
+        # Only this immutable canonical axis uses the sealed decoder binding.
+        # Full permutations/subsets retain exact requested sample order while
+        # reusing their already validated inverse map across cache frames.
         binding=self._sample_binding
         decoder_samples=None if binding[2] is cache_rows and binding[4] else cache_rows
         frames=np.searchsorted(self._starts,vv,side='right')-1
@@ -137,7 +145,8 @@ class CachedGDSAdapter:
         read_before=self._metrics['cache_read_validate_seconds'];start=time.perf_counter()
         for j in np.unique(frames):
             pos=np.flatnonzero(frames==j);local=vv[pos]-self._starts[j]
-            part=self._fast.prepare_validated(self._frame(int(j)),local,decoder_samples,minimum_mac=minimum_mac)
+            part=self._fast.prepare_validated(self._frame(int(j)),local,decoder_samples,
+                minimum_mac=minimum_mac,sample_binding=self._decoder_binding,metrics=self._metrics)
             # local columns after MAC filtering map back to request order.
             localmap=np.full(int(self._sizes[j]),-1,dtype=np.int64);localmap[local]=pos
             request_positions.append(localmap[part['columns']]);parts.append(part)
@@ -195,3 +204,7 @@ class CachedGDSAdapter:
         if type(block_size) is not int or block_size<1:raise ValueError('block_size must be positive integer')
         for start in range(0,len(vv),block_size):
             yield self.minor_block(vv[start:start+block_size],ss,device=device,minimum_mac=minimum_mac,resident=resident)
+
+    def iter_effective_minor_blocks(self,*args,**kwargs):
+        from .single_batches import iter_effective_minor_blocks
+        return iter_effective_minor_blocks(self,*args,**kwargs)

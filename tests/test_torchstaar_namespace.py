@@ -23,7 +23,7 @@ def test_public_scientific_functions_are_same_objects():
         for name in names:
             assert getattr(public, name) is getattr(original, name)
     assert torchstaar.run_chromosome is importlib.import_module('staar_phewas.chromosome').run_chromosome
-    assert torchstaar.__version__ == '0.3.1'
+    assert torchstaar.__version__ == '0.4.0'
 
 def test_installable_metadata_and_only_new_staar_commands():
     try:
@@ -33,15 +33,17 @@ def test_installable_metadata_and_only_new_staar_commands():
     from setuptools import find_packages
     config = tomllib.loads((ROOT / 'pyproject.toml').read_text())
     assert config['project']['name'] == 'torchstaar'
-    assert config['project']['version'] == '0.3.1'
+    assert config['project']['version'] == '0.4.0'
     scripts = config['project']['scripts']
     assert not any(name.startswith('staar-phewas') for name in scripts)
     for command, module in [('torchstaar','cli'), ('torchstaar-chromosome','chromosome'), ('torchstaar-prepare','prepare')]:
         assert scripts[command] == 'torchstaar.' + module + ':main'
         assert callable(importlib.import_module('torchstaar.' + module).main)
-    assert scripts['torchwgs'] == 'torchwgs.cli:main'
+    assert 'torchwgs' not in scripts
     packages = find_packages(str(ROOT), include=config['tool']['setuptools']['packages']['find']['include'])
-    assert {'torchstaar', 'staar_phewas', 'torchwgs'} <= set(packages)
+    assert {'torchstaar', 'staar_phewas'} <= set(packages)
+    assert not any(package == 'torchwgs' or package.startswith('torchwgs.') for package in packages)
+    assert not (ROOT / 'torchwgs').exists()
     assert 'staar_phewas.cuda_eigen' in packages
 
 def test_three_module_help_entry_points_cpu():

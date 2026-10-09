@@ -29,6 +29,10 @@ _memory_reserve_bytes=256*2**20
 _memory_guard_queries=_memory_guard_rejections=_memory_guard_max_workspace_bytes=0
 _memory_guard_query_seconds=0.
 _memory_guard_last_rejection=None
+_memory_guard_checks=_memory_guard_owned_cache_passes=0
+_memory_guard_total_seconds=_memory_guard_allocator_seconds=0.
+_memory_guard_backend_counts={}
+_memory_guard_last_owned_cache_pass=None
 
 if triton is not None:
     @triton.jit
@@ -127,20 +131,66 @@ def _available_product_workspace(**kwargs):
     return _product_workspace_availability(**kwargs)['available_bytes']
 
 
+def _allocator_backend():
+    """Unknown/non-native allocators must use the fresh CUDA-free route."""
+    getter=getattr(torch.cuda,'get_allocator_backend',None)
+    if not callable(getter):
+        getter=getattr(getattr(torch.cuda,'memory',None),'get_allocator_backend',None)
+    if not callable(getter):return 'unknown'
+    try:
+        backend=getter()
+    except Exception:
+        return 'unknown'
+    return backend if backend in ('native','cudaMallocAsync') else 'unknown'
+
+
+def _owned_cache_sufficient(allocated,reserved,required,*,limit,reserve):
+    """Byte-valued sufficient condition for the unchanged live/cap guard.
+
+    For any nonnegative fresh CUDA free value, owned unused cache minus reserve
+    already covers required. This is a preflight, not a fragmentation or
+    concurrent-allocation guarantee; actual allocation errors still propagate.
+    """
+    unused=max(int(reserved)-int(allocated),0)
+    return unused>=int(required)+int(reserve) and int(allocated)+int(required)<=int(limit)
+
+
 def _guard_product_workspace(left,right,*,mode):
     global _memory_guard_queries,_memory_guard_rejections,_memory_guard_max_workspace_bytes,_memory_guard_query_seconds,_memory_guard_last_rejection
+    global _memory_guard_checks,_memory_guard_owned_cache_passes,_memory_guard_total_seconds,_memory_guard_allocator_seconds,_memory_guard_last_owned_cache_pass
     estimate=_estimated_product_workspace(left.shape,right.shape,mode=mode,left_dtype=left.dtype,right_dtype=right.dtype,breakdown=True)
     required=estimate['required_bytes']
     if not required:return
     start=time.perf_counter()
+    _memory_guard_checks+=1
+    _memory_guard_max_workspace_bytes=max(_memory_guard_max_workspace_bytes,required)
+    allocator_start=time.perf_counter()
     allocated=torch.cuda.memory_allocated(left.device);reserved=torch.cuda.memory_reserved(left.device)
-    with torch.cuda.device(left.device):free,_=torch.cuda.mem_get_info()
-    _memory_guard_query_seconds+=time.perf_counter()-start
+    backend=_allocator_backend()
+    _memory_guard_allocator_seconds+=time.perf_counter()-allocator_start
+    _memory_guard_backend_counts[backend]=_memory_guard_backend_counts.get(backend,0)+1
+    if backend=='native' and _owned_cache_sufficient(allocated,reserved,required,
+            limit=_memory_limit_bytes,reserve=_memory_reserve_bytes):
+        _memory_guard_owned_cache_passes+=1
+        unused=max(int(reserved)-int(allocated),0)
+        _memory_guard_last_owned_cache_pass=dict(allocated_bytes=int(allocated),reserved_bytes=int(reserved),
+            required_bytes=required,reusable_reserved_bytes=unused,
+            available_owned_cache_lower_bound_bytes=unused-_memory_reserve_bytes,
+            process_limit_bytes=_memory_limit_bytes,reserve_bytes=_memory_reserve_bytes,
+            cuda_free_bytes=None,allocator_backend=backend)
+        _memory_guard_total_seconds+=time.perf_counter()-start
+        return
+    query_start=time.perf_counter()
+    _memory_guard_queries+=1
+    try:
+        with torch.cuda.device(left.device):free,_=torch.cuda.mem_get_info()
+    finally:
+        _memory_guard_query_seconds+=time.perf_counter()-query_start
+        _memory_guard_total_seconds+=time.perf_counter()-start
     snapshot=_product_workspace_availability(allocated=allocated,reserved=reserved,free=free,limit=_memory_limit_bytes,reserve=_memory_reserve_bytes)
-    _memory_guard_queries+=1;_memory_guard_max_workspace_bytes=max(_memory_guard_max_workspace_bytes,required)
     if required>snapshot['available_bytes']:
         _memory_guard_rejections+=1
-        _memory_guard_last_rejection=dict(snapshot,**estimate,left_shape=list(left.shape),right_shape=list(right.shape))
+        _memory_guard_last_rejection=dict(snapshot,**estimate,allocator_backend=backend,left_shape=list(left.shape),right_shape=list(right.shape))
         raise MemoryError(f'Native TF32 workspace requires estimated {required} new bytes, available {snapshot["available_bytes"]}; '
             f'allocated={allocated}, reserved={reserved}, CUDAfree={free}, cap_available={snapshot["cap_available_bytes"]}, '
             f'live_available={snapshot["live_available_bytes"]}, binding={snapshot["binding"]}, casts={estimate["cast_bytes"]}, '
@@ -262,6 +312,7 @@ def execution_metadata(*,reset=False):
     global _calls,_products,_ptx_verified,_vector_calls,_empty_calls,_outer_calls,_padded_output_elements
     global _ptx_inspections,_ptx_cache_hits
     global _memory_guard_queries,_memory_guard_rejections,_memory_guard_max_workspace_bytes,_memory_guard_query_seconds,_memory_guard_last_rejection
+    global _memory_guard_checks,_memory_guard_owned_cache_passes,_memory_guard_total_seconds,_memory_guard_allocator_seconds,_memory_guard_last_owned_cache_pass
     report={'backend':'triton_explicit_native_tf32' if _calls else 'not_used',
         'logical_product_count':_products,'logical_product_modes':dict(_modes),
         'tf32_gemm_call_count':_calls,'tf32_actual_kernel_launch_count':_calls,
@@ -279,10 +330,18 @@ def execution_metadata(*,reset=False):
         'vector_execution_policy':'CUDA FP32 GEMV/dot; no claim of TF32 Tensor Core execution',
         'outer_execution_policy':'K=1, nonsingleton output: CUDA FP32 broadcast multiply; no TF32 MMA',
         'tf32_memory_guard':{'process_allocated_limit_bytes':_memory_limit_bytes,'live_cuda_reserve_bytes':_memory_reserve_bytes,
+            'total_checks':_memory_guard_checks,'owned_cache_passes':_memory_guard_owned_cache_passes,
             'cuda_free_queries':_memory_guard_queries,'workspace_rejections':_memory_guard_rejections,
             'max_estimated_new_workspace_bytes':_memory_guard_max_workspace_bytes,'query_host_wall_seconds':_memory_guard_query_seconds,
+            'cuda_free_query_host_wall_seconds':_memory_guard_query_seconds,
+            'allocator_snapshot_host_wall_seconds':_memory_guard_allocator_seconds,
+            'guard_host_wall_seconds':_memory_guard_total_seconds,
+            'allocator_backend_check_counts':dict(_memory_guard_backend_counts),
+            'last_owned_cache_pass':_memory_guard_last_owned_cache_pass,
             'last_rejection':_memory_guard_last_rejection,'component_workspace_bytes':0,
-            'policy':'min(process cap minus allocated, CUDA free plus unused reserved minus reserve)',
+            'policy':'Fresh native owned cache >= required + reserve AND allocated + required <= process cap; otherwise fresh CUDA free plus unused reserved minus reserve and unchanged cap',
+            'counter_scope':'nonzero estimated workspace checks; owned passes + CUDA free queries = total checks after completed checks',
+            'timing_scope':'query timers measure only fresh mem_get_info route, including device-context entry/exit; allocator timer measures fresh allocated/reserved/backend; guard timer includes both routes. Nested observations, not additive to end-to-end wall.',
             'limitation':'Concurrent allocations/fragmentation can still OOM; preflight is not a reservation'}}
     if reset:
         _calls=_products=_ptx_verified=_vector_calls=_empty_calls=_outer_calls=_padded_output_elements=0
@@ -290,4 +349,7 @@ def execution_metadata(*,reset=False):
         _modes.clear();_vector_routes.clear()
         _memory_guard_queries=_memory_guard_rejections=_memory_guard_max_workspace_bytes=0
         _memory_guard_query_seconds=0.;_memory_guard_last_rejection=None
+        _memory_guard_checks=_memory_guard_owned_cache_passes=0
+        _memory_guard_total_seconds=_memory_guard_allocator_seconds=0.
+        _memory_guard_last_owned_cache_pass=None;_memory_guard_backend_counts.clear()
     return report

@@ -46,7 +46,7 @@ write_gaussian_null("runs/obj_nullmodel.Rdata", null_model,
 CLI 在 `phenotypes[].input` 指定对齐 NPZ，在 `transform` 指定 `none` 或 `rint`，在 `output_null` 指定正式文件：
 
 ```bash
-torchstaar examples/staar-analysis.json --device cuda --report runs/summary.json
+torchstaar private/analysis.json --device cuda --report runs/summary.json
 ```
 
 原 R 对应：
@@ -69,8 +69,8 @@ save(obj_nullmodel, file="runs/obj_nullmodel.Rdata")
 
 ## 算法、版本与验证
 
-混合模型保留 GMMAT 的 EM 初始化、AI REML 更新、非负边界步长、边界重拟合及停止条件。原返回值保留停止前一轮用于关联的 precision，并按最终 dispersion 缩放残差；不能用最终方差重新计算 precision 后当作相同对象。原 Matrix 的对角 Cholesky 求逆采用 `(1/sqrt(variance))²`，本实现保留此顺序。涉及 R 基础 `sum` 的项使用补偿 float64 求和。
+混合模型保留 GMMAT 的 EM 初始化、AI REML 更新、非负边界步长、边界重拟合及停止条件。原返回值保留停止前一轮用于关联的 precision，并按最终 dispersion 缩放残差；不能用最终方差重新计算 precision 后当作相同对象。原 Matrix 的对角 Cholesky 求逆采用 `(1/sqrt(variance))²`，本实现保留此顺序。显式 FP64 控制中，涉及 R 基础 `sum` 的项保留补偿求和；生产模式显式使用 TF32/FP32。
 
-当前模式与完整strict null验收见 [主指南](torchstaar.md#5-最新真实精度与耗时)。低级fit_gaussian_null默认FP64控制；生产应显式指定TF32，输入/停止时模型状态和原序列化规则保持。
+本版 Single 对照加载固定已有模型，未重新进行拟合 benchmark；实际范围见 [主指南](torchstaar.md#真实验证与计时范围)。低级fit_gaussian_null默认FP64控制；生产应显式指定TF32，输入/停止时模型状态和原序列化规则保持。
 
 参照 [GMMAT 1.3.2](https://github.com/cran/GMMAT/tree/ef49eec8d0d95951a48f7055a77321077dbc8c13)、[STAARpipeline 0.9.9](https://github.com/yuxinyuanqt/STAARpipeline/tree/fbce778bf14cc4f9e892989a194c64bae2670311) 和 [R 3.6 AS241](https://github.com/wch/r-source/blob/R-3-6-branch/src/nmath/qnorm.c)。Chen H et al., *American Journal of Human Genetics* (2019), [DOI](https://doi.org/10.1016/j.ajhg.2018.12.012)；Wichura MJ, *Applied Statistics* (1988), [DOI](https://doi.org/10.2307/2347330)。

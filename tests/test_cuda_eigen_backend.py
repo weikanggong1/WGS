@@ -100,7 +100,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(m.geometry((1,1)),(1,1,(1,),12))
         for shape in [(0,2,2),(2,3),(2,513,513),(1,1,1,1)]:
             with self.assertRaises(ValueError):m.geometry(shape)
-        with self.assertRaises(ValueError):m.available_bytes(0,0,0,limit=21*2**30)
+        with self.assertRaises(ValueError):m.available_bytes(0,0,0,limit=0)
         self.assertEqual(m.available_bytes(100,200,300,limit=1000,reserve=50),350)
     def test_column_major_copy_input_preserved_full_negative_values(self):
         b,t,api=self.backend();a=Tensor((2,2),[1,9,3,4]);before=a.values[:]

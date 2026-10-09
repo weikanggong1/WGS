@@ -28,7 +28,7 @@ flowchart LR
 | 4 | 一条 REF、一条缺失，(1,1) |
 | 5 | 一条任意非REF、一条缺失，(0,1) |
 
-转换时不做 MAC 过滤、minor 翻转或缺失填补，保留全物理轴上的空列与零 layer 变异。半缺失状态保留 called allele 与 REF 计数；后续 dosage 缺失处理沿用原 reader。minor 方向由当前请求样本的原 REF AF 决定，不能直接把 REF 当成 minor。缓存样本可以是源样本子集，但必须覆盖后续分析请求；运行时允许子集与重排，禁止重复/越界/缓存轴外样本。当前resident解码路径要求绑定样本数为1至65535；不是某个数据集的固定样本数。
+转换时不做 MAC 过滤、minor 翻转或缺失填补，保留全物理轴上的空列与零 layer 变异。半缺失状态保留 called allele 与 REF 计数；后续 dosage 缺失处理沿用原 reader。minor 方向由当前请求样本的原 REF AF 决定，不能直接把 REF 当成 minor。缓存样本可以是源样本子集，但必须覆盖后续分析请求；运行时允许子集与重排，禁止重复/越界/缓存轴外样本。CSR 样本索引在 `N<65536` 时使用 `uint16`，更大轴使用 `uint32`；有效合批要求 `N×effective_block_size<=2^31−1`，并通过当前显存预检。
 
 ## 转存命令
 
@@ -73,7 +73,9 @@ python -m torchstaar.cache_runtime.export \
 | `manifest.json`、`COMPLETE` | 完成 manifest 及其 SHA；必须一致才允许读取 |
 | `manifest.pending.json`、`journal.json` | 初始化绑定与已提交帧目录，用于恢复 |
 
-格式标签保持与已生成完成容器兼容。恢复检查输入绑定、样本顺序与所有已提交帧，裁掉未提交尾部，再从下一个物理列继续。每次提交先校验 CSR roundtrip 和原解码整数计数，再写流与 journal。追加缓存的逻辑及实际分配字节均限制在原 GDS 大小的10%以内，包含目录中已有辅助文件；超过上限拒绝继续，完成标记也不允许发布超限容器。实际压缩率由数据决定，不能保证任意 GDS 都满足10%。
+Writer 每帧仍写 1024 列。Container 可读取完成 manifest 中 `chunk=1..1024` 的有界帧，包括已有 128 列帧；物理帧必须连续、完整覆盖，流偏移与长度、样本/索引 SHA 及完成标记仍严格检查。这是读取兼容范围，未提供自动跨版本迁移或多目录聚合。
+
+恢复检查输入绑定、样本顺序与所有已提交帧，裁掉未提交尾部，再从下一个物理列继续。每次提交先校验 CSR roundtrip 和原解码整数计数，再写流与 journal。追加缓存的逻辑及实际分配字节均限制在原 GDS 大小的10%以内，包含目录中已有辅助文件；超过上限拒绝继续，完成标记也不允许发布超限容器。实际压缩率由数据决定，不能保证任意 GDS 都满足10%。
 
 ## Python分析入口
 
@@ -190,20 +192,20 @@ index_specs = {source_gds: [IndexCacheSpec(Path("candidate_index.npz"), index_bi
 
 压缩/序列化byte预算不包括输入矩阵、校验临时数组或GPU工作区；20GiB是GPU限制，64MiB是LRU限制。下划线函数是内部实现，不构成稳定调用接口。
 
-## 验证、版本与原软件
+## Single 有效列合批
 
-当前是Torchstaar缓存模块的包内入口，新增CPU生成数据契约用于验证编码、样本轴、恢复、损坏拒绝和context清理，不替代真实数据 benchmark。重排/子集/空轴、半缺失、minimum MAC、跨帧请求及mean/minor imputation都有精确CPU对照。公开F缓存入口已完成真实全染色体复验：795任务、19原生文件、严格null与显著联合范围通过，进程墙钟419.926秒。后续H2仅增加小矩阵完整谱候选为299.009秒，原reader/counts/writer仍保留；本次公共小谱接口完整复验296.196098秒，19文件/strict null及显著联合P通过。首次转存、缓存/源码绑定预检和独立R对照另计，已有缓存与暖文件系统的范围见 [TF32 benchmark](torchstaar.md)。当前公开代码通过结果由完整原R验收证明。
+`CachedGDSAdapter.iter_effective_minor_blocks(variant_indices, union_sample_indices, block_size=1024, effective_block_size=1024, device=None, minimum_mac=None, resident=True)` 接收唯一、范围有效的一维整数物理轴。`block_size` 为筛选前读取上限，按缓存帧边界拆分；`effective_block_size` 为通过原 MAC 筛选后的设备列上限，两者均为正整数。`minimum_mac=None` 不额外限制，生产 Single 传原 `mac_cutoff`；`device=None` 使用 adapter 的设备，驻留路线要求 `resident=True`。返回按原顺序的 `DeviceMinorBlock` 迭代器；空/全部过滤请求不生成设备矩阵，尾块可以不足。
 
-2026-10-06：包内相对导入；通用转存参数；显式reader factory与候选索引恢复；保留既有格式/校验；无sys.path修改。当前缓存不是可从R原软件直接读取的GDS替代物。
+样本验证与解码逆向映射用不可变绑定复用；完整值、dtype、维度或来源变化时重新校验。子集以完整缓存 allele counts 作安全 MAC 上界预筛，再按原整数计数和舍入规则计算实际队列摘要。半缺失 R/NA、A/NA 仍参与 allele 摘要，不能用整基因型 sentinel 剂量重建初始 MAC。CPU compact 合批保留来源索引、样本/变异顺序与各列摘要，不新建磁盘缓存。pipeline 的全局原统计分组不随设备批次重置。
 
-原软件读取示意：`SeqArray::seqOpen("input.gds")` 后使用 `SeqArray::seqGetData(file,"genotype")`；原 STAAR 分析入口、原实现和参考文献见[原软件接口](statistics.md)、[packed GDS reader](gds_packed.md)、[独立R验证](torchstaar.md)。实现文件见 [store](../staar_phewas/cache_runtime/store.py)、[state reader](../staar_phewas/cache_runtime/state_reader.py)、[adapter](../staar_phewas/cache_runtime/adapter_fast.py)。
+`single_batch_optimization` 默认 `true`；兼容缓存 reader、单 Gaussian 模型、单表型、驻留 TF32 CUDA、无 SPA 时启用。`individual_effective_block_size` 默认1024。运行汇总的 `single_optimization_configuration.activated`、`actual_effective_blocks/columns` 记录实际执行；request/configuration 不代表执行。具体参数见 [主指南](torchstaar.md#运行与优化参数)。
 
-## 默认缓存容量与近期完整对照
+## 验证与测量
 
-生产默认 `compact_cache_bytes=64*2**20`。帧miss才执行读取、hash、解压、几何和状态验证；hit复用immutable ValidatedSource。完整source proof在open/close执行。分析重新计算Score、协方差、完整谱和P，缓存不保存这些统计结果。
+本版完整 Single 实际扫描13,733,596个输入，1042个设备计算块，输出1,065,735行，genotype SDK回退0。read/validate 262.658秒、compact prepare 631.517秒、materialize主机边界92.985秒；其中compact合批110.944秒已经包含在prepare中。完整reader wall 1000.922秒，读准备阶段与其有嵌套；这些计时不直接相加，也不表示纯磁盘或纯GPU kernel时间。
 
-H2真实795任务中frame loads17,049、hits2,136、evictions16,928，read/validate28.028秒；H3把同一原adapter容量改为512MiB后loads16,897、hits2,288，read/validate28.093秒，总墙钟300.796秒对299.009秒。仅减少152次加载，没有显示扩容收益，因此保留64MiB默认。这些是共享环境观测，不宣称独立LRU性能增益。
+全部4个原生文件相对上一接受TF32的严格结构与数值对照通过，官方R另有同模型有界Single对照；读取、样本、模型与输入范围见 [真实验证](torchstaar.md#真实验证与计时范围)。本版不重新转存，首次缓存创建成本不在Single耗时内。CPU格式/损坏拒绝契约不能替代真实关联benchmark。
 
-公共运行不启用私有RAM snapshot、XDR buffer或counts seed，分别保留原public container、native writer和Device counts。禁用候选计时为0只表示候选未执行，不能推断原计数/写出成本为0。输出 `genotype_reader.analysis_cache`（或完成reader report）含frame loads/hits/evictions、cache/read-validation、compact prepare、materialize、minor block和sample-bind的匿名标量；部分host边界嵌套或含CUDA enqueue，不能相加或称GPU kernel时间。
+源码升级需保留历史producer证明，并明确核对consumer兼容性及当前输入；一般使用应保持同一转存/读取绑定。不能复制旧expected字典、改manifest或使用固定lambda跳过source proof。分析期间输入和缓存保持不变。
 
-源码版本变化必须重新证明兼容性。本轮已有cache复用逐项证明producer genotype/index seams与consumer一致、其余改动属于已审查统计后端；原cache、原manifest和oracle均未修改。一般使用者应在相同安装/source输入绑定下转存和读取；不满足绑定时明确拒绝，不能复制旧expected字典来跳过校验。缓存Python入口完整参数见上表，统计 `weighted_eigensolver` 与完整任务配置见 [benchmark](torchstaar.md)。
+原软件仍直接读取GDS：`SeqArray::seqOpen()` 后由STAARpipeline取基因型。六状态CSR不是R可以直接打开的GDS替代文件。参考：[CoreArray PyGDS](https://github.com/CoreArray/pygds)、[SeqArray](https://github.com/zhengxwen/SeqArray)、[STAARpipeline](https://github.com/li-lab-genetics/STAARpipeline)；文献见 [主指南](torchstaar.md#参考)。

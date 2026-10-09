@@ -47,7 +47,7 @@ def r_normal_quantile(probabilities):
 
 
 def rank_inverse_normal_tensor(values, *, device=None):
-    """Average ties and use REGENIE's Blom offset on each input column."""
+    """Average ties and use the Blom offset on each input column."""
     y = torch.as_tensor(values, dtype=torch.float64, device=device)
     single = y.ndim == 1
     if single:

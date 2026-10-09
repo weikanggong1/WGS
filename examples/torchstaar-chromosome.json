@@ -33,5 +33,7 @@
   "local_mask_reuse": true,
   "weight_batch_optimization": true,
   "statistics_tail_optimization": true,
-  "individual_genotype_block_size": 8192
+  "individual_genotype_block_size": 8192,
+  "single_batch_optimization": true,
+  "individual_effective_block_size": 1024
 }

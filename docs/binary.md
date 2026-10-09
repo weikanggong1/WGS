@@ -71,16 +71,6 @@ reference_individual <- STAARpipeline:::Individual_Score_Test_SPA(
 )
 ```
 
-本模块是低层 Python 数值 API；完整命令行入口与零模型配置遵循 pipeline 的支持范围。以下真实二分类对照使用原教程已有的 AD 零模型、288,554 个样本及真实 chr22 基因型。参考为原作者镜像的未经修改 R 包，包含无过滤 burden SPA、过滤 burden SPA、个体变异 SPA 三种调用；原 null 仅作为测试输入，用来隔离关联分析算法。
-
-| 真实集合 | 变异数 | 无过滤 burden 最大 P 值绝对差 | 过滤 burden 最大绝对差 | 个体 SPA 最大绝对差 | R 三种调用合计秒 | GPU 三种调用合计秒 |
-|---|---:|---:|---:|---:|---:|---:|
-| GENE_A pLoF | 3 | 1.87×10⁻⁹ | 6.67×10⁻¹⁶ | 9.07×10⁻¹³ | 3.901 | 1.866 |
-| GENE_B pLoF | 5 | 3.41×10⁻¹⁴ | 7.22×10⁻¹⁶ | 2.50×10⁻¹⁵ | 167.117 | 6.436 |
-| GENE_C pLoF | 9 | 2.31×10⁻¹³ | 7.22×10⁻¹⁶ | 3.74×10⁻¹³ | 40.781 | 4.104 |
-
-所有输出通过 `abs=10⁻⁸ + rel=10⁻⁷` 的逐项对照标准。部分困难的个体变异达到原 Newton 1000 次上限，或按原算法失败返回 P=1；这些边界的输出也一致。表内时间包括三种关联分析调用，不包含 GDS 读取、样本对齐或拟合零模型；GPU 首组包含首次 CUDA 初始化，R 在用户空间容器中运行。因此这是 association core 验证，不能据此宣称完整二分类零模型流程已经验收，也不能概括端到端加速比。固定矩阵单元检查仅验证边界和错误规则，不作为科学 benchmark。
-
-另以完整 coding wrapper 验证了真实二分类样本中的 GENE_A pLoF（11 个变异）和 GENE_B pLoF（19 个变异）。这两个集合包含在较小样本集合中为单态、在二分类完整样本中重新进入筛选的变异。命令行生成的原生 `.Rdata` 由原 R 回读，列表、矩阵、列名及属性均一致；与未经修改的 PheWAS wrapper 使用相同的默认 `SPA_p_filter=TRUE` 比较，全部统计量的最大绝对差分别为 1.33×10⁻¹⁵ 和 4.44×10⁻¹⁶。该对照使用已有原二分类相关样本零模型的验证缓存；它验证 GDS 筛选、注释权重、关联计算和文件输出，未把原 R 拟合状态计作 PyTorch 零模型拟合。
+本模块是显式 FP64 的低层 Python API，完整 TF32 染色体入口不接受二分类。二项拟合与原生状态说明见 [二项零模型](binary_null.md)。本版 Single benchmark 不覆盖 SPA 或完整二项流程；当前实测范围见 [主指南](torchstaar.md#真实验证与计时范围)。
 
 代码按 GPL-3.0-only 提供，依据 [STAAR 0.9.9](https://github.com/yuxinyuanqt/STAAR/tree/4bbf77ba8a90894a434f5eb4473d540e172dad05) 与 [STAARpipeline 0.9.9](https://github.com/yuxinyuanqt/STAARpipeline/tree/fbce778bf14cc4f9e892989a194c64bae2670311) 的对应 R/C++ 函数。参考 Li X, Li Z, et al., *Nature Genetics* 52, 969–983 (2020), [DOI](https://doi.org/10.1038/s41588-020-0676-4)；Li Z, Li X, et al., *Nature Methods* 19, 1599–1611 (2022), [DOI](https://doi.org/10.1038/s41592-022-01640-x)；Cauchy 合并文献见统计内核文档。

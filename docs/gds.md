@@ -89,7 +89,7 @@ QC 节点由数据配置指定。应先核对实际字段，不能仅因节点�
 
 ### Base 与 PheWAS 的频率求值顺序
 
-以上逐表型示例对应 PheWAS：在样本并集确定 minor 方向后，用当前表型的非缺失 dosage 列和计算 `MAF = MAC / (2 * (N - missing_count))`。Base STAARpipeline 0.9.9 保留另一条路径：先在模型样本求 REF_AF，再计算 `ALT_AF = 1 - REF_AF` 和 `MAF = min(REF_AF, ALT_AF)`，沿用 helper 返回的 MAF。低层接口的 `frequency_mode="count"/"reference"` 分别实现两条路径；pipeline 用 `AnalysisOptions(wrapper_semantics="phewas"/"base")` 选择原 wrapper 行为。本轮 chr21、单个连续表型的 base 串行完整流程已通过验收；多表型使用其对应的原 wrapper 验证。[原版公式和来源](torchstaar.md)
+以上逐表型示例对应 PheWAS：在样本并集确定 minor 方向后，用当前表型的非缺失 dosage 列和计算 `MAF = MAC / (2 * (N - missing_count))`。Base STAARpipeline 保留另一条路径：先在模型样本求 REF_AF，再计算 `ALT_AF = 1 - REF_AF` 和 `MAF = min(REF_AF, ALT_AF)`，沿用 helper 返回的 MAF。低层接口的 `frequency_mode="count"/"reference"` 分别实现两条路径；pipeline 用 `AnalysisOptions(wrapper_semantics="phewas"/"base")` 选择原 wrapper 行为。当前完整 Single 与上一 TF32 的结构/数值对照及有界官方 R 对照见[真实验证](torchstaar.md#真实验证与计时范围)。
 
 `mean` 都用各自得到的 `2 * MAF` 填补缺失，而不是在填补后重新估计频率。`minor` 都填零并使用全部模型样本作为分母：base 用 `MAC_restore = round(((2*MAF)*(1-allele_missing_rate))*N)` 恢复计数，再求 `MAF = MAC_restore/(2*N)`；PheWAS 用完整 dosage 的列和除以 `2*N`。Base 的恢复公式用于 minor 填补后的频率，与下表的初始 MAC 筛选公式不同。没有半缺失、样本和 minor 方向相同的情况下，两个实数等价的频率公式可能有不同浮点舍入，随之改变 mean 填充值。Base/PheWAS 的选择关系到原 wrapper 的计算语义，不能仅由 Rdata 输出布局推断。
 
@@ -104,7 +104,7 @@ QC 节点由数据配置指定。应先核对实际字段，不能仅因节点�
 | dosage、返回的 `missing_counts` | 任一 allele 缺失则该样本整次调用缺失 | genotype 和 mean/minor 填补 |
 | PheWAS 当前表型 MAC/MAF | 完整 dosage 的列和与非缺失整次调用样本数 | 每 trait 的 MAC 筛选与 `count` 频率 |
 
-原 SeqArray 1.48.0 的 6 样本、5 位点合成 GDS 单测确认了这一边界。例如一个位点有 8 个已知 allele、其中 5 个为 REF，base MAF 为 `1-5/8=0.375`；完整 dosage 仅有三个样本，PheWAS 当前表型 MAF 为 `3/(2*3)=0.5`。半缺失样本的 dosage 仍为 NA。这个规则单测不证明真实 1,023 行 pilot 或整份染色体含有半缺失调用；新 CPU/GPU 读取路径须分别保留 allele 摘要和整次调用缺失规则。
+半缺失边界用合成 GDS 契约验证。例如一个位点有 8 个已知 allele、其中 5 个为 REF，base MAF 为 `1-5/8=0.375`；完整 dosage 仅有三个样本，PheWAS 当前表型 MAF 为 `3/(2*3)=0.5`。半缺失样本的 dosage 仍为 NA。CPU/GPU 读取路径分别保留 allele 摘要和整次调用缺失规则；这类单测用于格式边界，性能测量使用真实输入。
 
 初始计数须保留上面的减法和 `round` 次序。例如 `N=6`、7 个已知 allele、`REF_AC=4`，缺失率为 `5/12`：float64 的 `N*(1-missing_rate)` 为 `3.4999999999999996`，原式得到 `ALT_AC=2`、初始 MAC 为 2；用 MAF 恢复的另一公式会得到 3。两者不能合并成同一个 MAC 定义。
 
@@ -180,7 +180,7 @@ with SeqArrayGDS("chromosome.gds") as genotype_reader:
 
 CLI 每次打开染色体均用 null model 的 canonical GDS sample IDs 重新映射样本行，并验证顺序。缓存的另一染色体行号不能直接代用。当前完整生产CLI使用 `statistics_execution="serial"`；二元SPA和联合多表型使用各自低级API与验证范围。
 
-单变异从稀疏 dosage 和独立 allele 摘要预筛 MAC，先筛掉达不到原阈值的列，再为保留列调用 `trait_dense`。Base 和 PheWAS 的并集初始 MAC 都由 REF_AC、allele missing rate 及上述 ALT_AC 公式得到；base 随后不再用完整 dosage MAC 二次筛选，PheWAS 当前表型仍按完整 dosage 的列和筛选。读取和解码仍须得到这些位点；过滤前不重复建立各表型的 dense 矩阵。并集 minor 方向、每个表型自己的 MAF 和 mean 填补、过滤后的 5000 位点分组、REF/ALT factor 与 row.names 按原 wrapper 规则处理。CUDA 整数解码和预筛先通过下述真实 100 kb 区段对照，随后在本轮完整 chr21 串行流程中通过四个 Single 正式文件及八份原 R 元数据读回。
+单变异从稀疏 dosage 和独立 allele 摘要预筛 MAC，先筛掉达不到原阈值的列，再为保留列调用 `trait_dense`。Base 和 PheWAS 的并集初始 MAC 都由 REF_AC、allele missing rate 及上述 ALT_AC 公式得到；base 随后不再用完整 dosage MAC 二次筛选，PheWAS 当前表型仍按完整 dosage 的列和筛选。读取和解码仍须得到这些位点；过滤前不重复建立各表型的 dense 矩阵。并集 minor 方向、每个表型自己的 MAF 和 mean 填补、过滤后的 5000 位点分组、REF/ALT factor 与 row.names 按原 wrapper 规则处理。当前六状态缓存路线的有效列合批保留这些规则；四份完整 Single 输出与上一 TF32 逐项核对，并另作有界官方 R 对照。
 
 ## 3. 命令行和安装
 
@@ -243,11 +243,11 @@ quality_labels <- seqGetData(genotype_file, "annotation/info/QC_label")
 seqClose(genotype_file)
 ```
 
-`$dosage` 是 REF 拷贝数。表型子集处理采用 STAARpipelinePheWAS 的 `Genotype_sp_extraction`、`Missing_num.sp` 和逐表型 mean/minor 填补规则。当前验证使用 R `gdsfmt` 直接读取同一 GDS 节点作为独立解码参照。
+`$dosage` 是 REF 拷贝数。表型子集处理采用 STAARpipelinePheWAS 的 `Genotype_sp_extraction`、`Missing_num.sp` 和逐表型 mean/minor 填补规则。独立解码检查可用 R `gdsfmt` 读取同一 GDS 节点作参照。
 
 ## 5. 当前验证与测量
 
-当前全染色体验证的reader是已转存六状态缓存，原GDS继续提供元数据；完整795任务/19文件与P精度由 [主指南](torchstaar.md#5-最新真实精度与耗时)统一记录。SDK原始读取、packed读取与已转存reader的准备成本分开，不能由局部读出或合成decoder合同推导完整速度。frame/hash/样本轴与MAC边界的CPU合同属于格式验证，完整科学benchmark采用真实数据及独立原R输出。
+当前完整 Single 测量的 reader 是已转存六状态缓存，原 GDS 继续提供元数据；4 个原生文件及精度见[主指南](torchstaar.md#真实验证与计时范围)。SDK 原始读取、packed 读取与已转存 reader 的准备成本分开。frame/hash/样本轴与 MAC 边界契约验证格式；真实全量数值参考为上一接受的 TF32 输出，官方 R 对照范围另列。
 
 ## 6. 更新记录
 

@@ -78,14 +78,14 @@ load("output/Study_Coding_base_1.Rdata")
 results_coding$missense
 ```
 
-原教程的对应写法是 `save(results_coding, file=...)`、`save(results_noncoding, file=...)`、`save(results_individual_analysis, file=...)` 和 `save(obj_nullmodel, file="obj_nullmodel.Rdata")`。关联文件保留配置的前缀与数组编号，例如 `Brain_Coding_1.Rdata`。
+原教程的对应写法是 `save(results_coding, file=...)`、`save(results_noncoding, file=...)`、`save(results_individual_analysis, file=...)` 和 `save(obj_nullmodel, file="obj_nullmodel.Rdata")`。关联文件保留配置的前缀与数组编号，例如 `Analysis_Coding_1.Rdata`。
 
 ## 当前验证与版本
 
-原生文件验收要求全部原结构、保存对象、NULL、factor/row.names和严格null一致；P有效性与显著联合精度分别检查。最新完整R验收、进程墙钟与近期版本记录只见 [主指南](torchstaar.md#5-最新真实精度与耗时)，不以文件写出成功代替验收通过。
+原生文件验收要求全部原结构、保存对象、NULL、factor/row.names和严格null一致；P有效性与显著联合精度分别检查。本版全量 Single 相对上一 TF32 的结构/数值验收，以及独立有界原 R 对照只见 [主指南](torchstaar.md#真实验证与计时范围)，不以文件写出成功代替验收通过。
 
 当前writer使用gzip level1的原XDR v3结构，cached null residuals按原缓存dtype序列化；关联张量精度不改变。Python写出不运行R，独立回读命令见 [验证说明](../validation/README.md)。
 
 ## 原实现与文献
 
-[rdata转换/序列化](https://github.com/vnmabus/rdata)，原STAARpipeline/PheWAS结构与方法文献见 [主指南参考](torchstaar.md#7-原实现许可与参考文献)。
+[rdata转换/序列化](https://github.com/vnmabus/rdata)，原STAARpipeline/PheWAS结构与方法文献见 [主指南参考](torchstaar.md#参考)。
