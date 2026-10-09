@@ -5,17 +5,32 @@ original paths; prefiltering uses a conservative integer upper bound only.
 """
 from collections import OrderedDict
 from pathlib import Path
+import threading
 import time
 import numpy as np
 
 
 class CachedGDSAdapter:
     def __init__(self, original_reader, container, *, device='cuda:0', compact_cache_bytes=64*2**20,
-                 own_reader=True):
+                 own_reader=True, prepared_cache=None, prefetch_depth=0,
+                 prefetch_memory_bytes=256*2**20, prefetch_processes=0,
+                 process_descriptor=None):
         from . import sparse_decode_fast
         self._fast=sparse_decode_fast
         self._reader=original_reader;self._container=container;self._device=device
         self._own_reader=own_reader;self._closed=False;self._lru=OrderedDict();self._lru_bytes=0
+        self._compact_prepare_lock = threading.Lock()
+        if type(prefetch_depth) is not int or prefetch_depth < 0:
+            raise ValueError('prefetch_depth must be a nonnegative integer')
+        if type(prefetch_memory_bytes) is not int or prefetch_memory_bytes < 1:
+            raise ValueError('prefetch_memory_bytes must be a positive integer')
+        if type(prefetch_processes) is not int or prefetch_processes < 0:
+            raise ValueError('prefetch_processes must be a nonnegative integer')
+        self._prepared_cache = prepared_cache
+        self._prefetch_depth, self._prefetch_memory_bytes = prefetch_depth, prefetch_memory_bytes
+        self._prefetch_processes = prefetch_processes
+        self._process_descriptor = process_descriptor
+        self._prepare_pool = None
         if type(compact_cache_bytes) is not int or compact_cache_bytes<1:raise ValueError('invalid compact cache budget')
         self._capacity=compact_cache_bytes
         self._sample_binding=None  # One axis only; immutable bytes-backed snapshots.
@@ -51,9 +66,13 @@ class CachedGDSAdapter:
 
     def close(self):
         if self._closed:return
+        if self._prepare_pool is not None:
+            self._prepare_pool.close()
         self._closed=True;self._lru.clear();self._lru_bytes=0
         self._sample_binding=None;self._metrics['sample_bind_cache_bytes']=0
         self._decoder_binding=None;self._metrics['decoder_sample_map_cache_bytes']=0
+        if self._prepared_cache is not None:
+            self._prepared_cache.close()
         try:
             if hasattr(self._container,'close'):self._container.close()
         finally:
@@ -64,9 +83,13 @@ class CachedGDSAdapter:
         result=dict(self._reader.reader_metadata)
         result['analysis_cache']=dict(self._metrics,backend='complete-reference-six-state-CSR',
             genotype_sdk_fallback_count=0,compact_cache_limit_bytes=self._capacity,
-            timer_contract='read_validate + compact_prepare + materialize are components of minor_block wall; '
+            timer_contract='minor_block wall is consumer wait plus materialization; with prefetch, producer '
+                           'read_validate/compact_prepare/cache IO overlap consumer work and are not additive; '
                            'sample_bind is another minor_block wall component; sample_validate is nested in sample_bind; '
-                           'metadata SDK timing remains original; CUDA materialize host time may enqueue work')
+                           'metadata timing is retained; CUDA materialize host time may enqueue work')
+        result['analysis_cache']['prefetch_processes_requested'] = self._prefetch_processes
+        if self._prepare_pool is not None:
+            result['analysis_cache']['process_pool'] = self._prepare_pool.metadata()
         return result
 
     def read_genotype(self,*args,**kwargs):raise RuntimeError('cache stores collapsed REF states, not raw allele identities; no SDK genotype fallback')
@@ -135,6 +158,10 @@ class CachedGDSAdapter:
         from ..gds import _indices
         vv=_indices(variants,self.n_variants,'variant_indices')
         ss,cache_rows=self._bind_samples(samples)
+        if self._prepared_cache is not None:
+            cached = self._prepared_cache.load(vv, ss, minimum_mac)
+            if cached is not None:
+                return cached, ss, vv
         # Only this immutable canonical axis uses the sealed decoder binding.
         # Full permutations/subsets retain exact requested sample order while
         # reusing their already validated inverse map across cache frames.
@@ -161,8 +188,40 @@ class CachedGDSAdapter:
         summaries=tuple(np.concatenate([p['summaries'][i] for p in parts])[order] if parts else np.empty(0,dtype=np.int64 if i==4 else np.float64) for i in range(5))
         prepared=dict(cache_variant_count=len(vv),cache_sample_count=len(ss),columns=selected[order],samples=np.arange(len(ss),dtype=np.int64),
             exception_col=inverse[col],exception_row=row,exception_state=state,summaries=summaries,full_union_summaries=len(cache_rows)==len(self._samples))
-        self._metrics['compact_prepare_seconds']+=time.perf_counter()-start-(self._metrics['cache_read_validate_seconds']-read_before)
+        self._add_compact_prepare_seconds(time.perf_counter()-start-(self._metrics['cache_read_validate_seconds']-read_before))
+        if self._prepared_cache is not None:
+            self._prepared_cache.store(vv, ss, minimum_mac, prepared)
         return prepared,ss,vv
+
+    def _add_compact_prepare_seconds(self, seconds):
+        """Serialize producer preparation and consumer Single packing clocks."""
+        with self._compact_prepare_lock:
+            self._metrics['compact_prepare_seconds'] += seconds
+
+    def _prepared_requests(self, requests, samples, minimum_mac):
+        """Keep CUDA materialization on the consumer thread."""
+        if self._prefetch_depth:
+            from .prepared_prefetch import iter_prepared
+            if (self._prefetch_processes and self._prepared_cache is not None
+                    and self._process_descriptor is not None):
+                from .prepared_process_pool import PreparedProcessPool
+                ss, _ = self._bind_samples(samples)
+                if self._prepare_pool is not None and not np.array_equal(ss, self._prepare_pool.samples):
+                    self._prepare_pool.close()
+                    self._prepare_pool = None
+                if self._prepare_pool is None:
+                    self._prepare_pool = PreparedProcessPool(self, ss, self._prefetch_processes,
+                        max(self._prefetch_memory_bytes, self._prefetch_processes*2**30))
+                results = self._prepare_pool.iter_prepared(requests, minimum_mac)
+                yield from iter_prepared(self, (), ss, minimum_mac,
+                    max_items=self._prefetch_depth, max_bytes=self._prefetch_memory_bytes,
+                    _prepared_results=results)
+            else:
+                yield from iter_prepared(self, requests, samples, minimum_mac,
+                    max_items=self._prefetch_depth, max_bytes=self._prefetch_memory_bytes)
+        else:
+            for request in requests:
+                yield self._prepare(request, samples, minimum_mac)
 
     @staticmethod
     def _sparse(prepared,samples,variants):
@@ -202,8 +261,32 @@ class CachedGDSAdapter:
         from ..gds import _indices
         vv=_indices(variant_indices,self.n_variants,'variant_indices');ss=_indices(union_sample_indices,self.n_samples,'union_sample_indices')
         if type(block_size) is not int or block_size<1:raise ValueError('block_size must be positive integer')
-        for start in range(0,len(vv),block_size):
-            yield self.minor_block(vv[start:start+block_size],ss,device=device,minimum_mac=minimum_mac,resident=resident)
+        requests=(vv[start:start+block_size] for start in range(0,len(vv),block_size))
+        iterator=self._prepared_requests(requests,ss,minimum_mac)
+        try:
+            while True:
+                waiting=time.perf_counter()
+                item=next(iterator,None)
+                self._metrics['minor_block_wall_seconds']+=time.perf_counter()-waiting
+                if item is None:
+                    break
+                prepared,bound_samples,variants=item
+                start=time.perf_counter()
+                if resident:
+                    result=self._fast.to_minor_block(prepared,bound_samples,variants,device=device or self._device)
+                    self._metrics['cuda_resident_calls']+=1
+                else:
+                    result=self._sparse(prepared,bound_samples,variants)
+                    self._metrics['cpu_sparse_calls']+=1
+                elapsed=time.perf_counter()-start
+                self._metrics['materialize_seconds']+=elapsed
+                self._metrics['minor_block_wall_seconds']+=elapsed
+                self._metrics['minor_block_calls']+=1
+                self._metrics['requested_variants']+=len(variants)
+                self._metrics['returned_variants']+=result.shape[1]
+                yield result
+        finally:
+            iterator.close()
 
     def iter_effective_minor_blocks(self,*args,**kwargs):
         from .single_batches import iter_effective_minor_blocks

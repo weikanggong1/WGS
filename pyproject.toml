@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchstaar"
-version = "0.5.0"
+version = "0.6.0"
 description = "Torchstaar: PyTorch GPU STAAR/MultiSTAAR association analysis"
 requires-python = ">=3.10"
 license = {text = "GPL-3.0-only"}

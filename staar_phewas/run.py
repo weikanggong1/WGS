@@ -244,7 +244,9 @@ def prepare_run(phenotype_csv, covariate_csv, cache_directory, *, output_directo
                 seed=1729, individual_effective_block_size=1024, single_mac_cutoff=20,
                 single_group_variants=5000, single_output_groups=20, transform="none",
                 matmul_mode="tf32", null_fit_mode="fp64", analysis_options=None,
-                host_memory_limit_gib=200.0, host_memory_reserve_gib=20.0, cpu_threads_per_worker=2, resume=True):
+                host_memory_limit_gib=200.0, host_memory_reserve_gib=20.0, cpu_threads_per_worker=1,
+                cohort_cache_gib=64.0, prefetch_depth=2, prefetch_memory_mib=256,
+                cpu_prepare_processes="auto", cpu_reserve_cores=4, cpu_background_cores=4, resume=True):
     """Validate three inputs, fit each ordinary Gaussian model and persist a resumable plan.
 
     Null fitting explicitly uses FP64 by default; association uses TF32/FP32.
@@ -264,6 +266,14 @@ def prepare_run(phenotype_csv, covariate_csv, cache_directory, *, output_directo
         raise ValueError("invalid random seed, MAC cutoff or host memory limit")
     if not 0 <= host_memory_reserve_gib < host_memory_limit_gib or type(cpu_threads_per_worker) is not int or cpu_threads_per_worker < 1:
         raise ValueError("host reserve must be below the host limit; CPU threads must be a positive integer")
+    if not np.isfinite(cohort_cache_gib) or cohort_cache_gib < 0:
+        raise ValueError("cohort_cache_gib must be finite and nonnegative; zero disables disk reuse")
+    if type(prefetch_depth) is not int or prefetch_depth < 0 or type(prefetch_memory_mib) is not int or prefetch_memory_mib < 1:
+        raise ValueError("prefetch_depth must be nonnegative and prefetch_memory_mib positive")
+    if cpu_prepare_processes != "auto" and (type(cpu_prepare_processes) is not int or cpu_prepare_processes < 0):
+        raise ValueError("cpu_prepare_processes must be auto or a nonnegative total process count")
+    if any(type(value) is not int or value < 0 for value in (cpu_reserve_cores,cpu_background_cores)):
+        raise ValueError("CPU reserve and background cores must be nonnegative integers")
     if matmul_mode not in ("tf32", "fp64") or null_fit_mode not in ("fp64", "tf32"):
         raise ValueError("matmul_mode and null_fit_mode must be tf32 or fp64")
     if transform not in ("none", "rint"):
@@ -285,7 +295,10 @@ def prepare_run(phenotype_csv, covariate_csv, cache_directory, *, output_directo
         individual_effective_block_size=individual_effective_block_size, single_mac_cutoff=single_mac_cutoff,
         single_group_variants=single_group_variants, single_output_groups=single_output_groups,
         host_memory_limit_gib=host_memory_limit_gib,host_memory_reserve_gib=host_memory_reserve_gib,
-        cpu_threads_per_worker=cpu_threads_per_worker)
+        cpu_threads_per_worker=cpu_threads_per_worker,cohort_cache_gib=cohort_cache_gib,
+        prefetch_depth=prefetch_depth,prefetch_memory_mib=prefetch_memory_mib,
+        cpu_prepare_processes=cpu_prepare_processes,cpu_reserve_cores=cpu_reserve_cores,
+        cpu_background_cores=cpu_background_cores)
     cache_bindings, initial_metadata = {}, {}
     for entry in entries:
         binding = {}
@@ -434,6 +447,51 @@ def _rss_bytes(pid):
     return 0
 
 
+def _process_tree_rss_bytes(pid):
+    """Include verified CPU preparation descendants in the owning worker lease.
+
+    RSS can count shared mmap pages more than once; the independent live-cgroup
+    admission check remains authoritative for total pressure. Process identity
+    checks avoid following a PID that has been reused during traversal.
+    """
+    total, pending, seen = 0, [int(pid)], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        identity = _process_identity(current)
+        if identity is None:
+            continue
+        seen.add(current)
+        try:
+            tasks = list(Path(f"/proc/{current}/task").iterdir())
+        except OSError:
+            tasks = []
+        children = set()
+        # ProcessPoolExecutor spawns from the prefetch loader TID. Linux keeps
+        # each task's children separately, so the main TID alone misses them.
+        for task in tasks:
+            try:
+                children.update(int(value) for value in (task/"children").read_text().split())
+            except (OSError,ValueError):
+                continue
+        if _process_identity(current) != identity:
+            continue
+        rss = _rss_bytes(current)
+        if _process_identity(current) != identity:
+            continue
+        total += rss
+        for child in children:
+            try:
+                stat = Path(f"/proc/{child}/stat").read_text()
+                fields = stat[stat.rindex(")") + 2:].split()
+                if int(fields[1]) == current:
+                    pending.append(child)
+            except (OSError,ValueError,IndexError):
+                continue
+    return total
+
+
 def _read_host_memory():
     """Read live cgroup RSS pressure, excluding reclaimable inactive file pages."""
     v1,v2 = Path("/sys/fs/cgroup/memory"),Path("/sys/fs/cgroup")
@@ -483,7 +541,7 @@ def _host_budget(connection, plan, *, desired_gib, extra_gib, excluding_job):
             identities = []
         for pid, raw in identities:
             if _process_identity(pid) == json.loads(raw):
-                project_rss += _rss_bytes(pid)
+                project_rss += _process_tree_rss_bytes(pid)
         # Current other applications and exports are measured rather than
         # frozen into the launch baseline. Live+new independently checks
         # pressure even when reclaimable mmap pages inflate process RSS.
@@ -525,13 +583,13 @@ def _claim(connection, plan):
                 # enters metadata preparation and the actual-M guard decides.
                 if reserve > capacity_gib:
                     reserve = 8.
-            reserve = max(float(reserve),_rss_bytes(os.getpid())/1024**3)
+            reserve = max(float(reserve),_process_tree_rss_bytes(os.getpid())/1024**3)
             if not np.isfinite(reserve) or reserve <= 0 or reserve > capacity_gib:
                 connection.execute("UPDATE jobs SET status='failed',finished=?,error=? WHERE id=?",
                     (time.time(), "estimated host workspace exceeds configured host limit", job_id))
                 continue
             budget = _host_budget(connection,plan,desired_gib=reserve,
-                                  extra_gib=max(0,reserve-_rss_bytes(os.getpid())/1024**3),excluding_job=-os.getpid())
+                                  extra_gib=max(0,reserve-_process_tree_rss_bytes(os.getpid())/1024**3),excluding_job=-os.getpid())
             if used + reserve <= limit and budget["admissible"]:
                 selected = (job_id, job, reserve)
                 break
@@ -552,7 +610,7 @@ def _host_memory_guard(connection, plan, job_id, *, n, m, phase="prepare"):
     limit = plan["input_identity"]["host_memory_limit_gib"]
     copies = 3 if phase == "prepare_nonresident" else 2
     new_allocation = copies * int(n) * int(m) * 4 / 1024**3 + 2.
-    required = max(8., _rss_bytes(os.getpid()) / 1024**3 + new_allocation)
+    required = max(8., _process_tree_rss_bytes(os.getpid()) / 1024**3 + new_allocation)
     preliminary = _host_budget(connection,plan,desired_gib=0,extra_gib=0,excluding_job=job_id)
     if required*1024**3 > preliminary["capacity_bytes"]:
         raise MemoryError("actual mask host workspace exceeds the configured project host limit")
@@ -605,19 +663,23 @@ def _single_outputs(pipeline, chromosome, directory, identity, arguments=None):
         outputs.append(dict(path=str(path), sha256=_sha256(path), rows=len(table),native_validation=validation))
         emitted += len(table)
         records = []
-    for trait, batch in pipeline.iter_individual_records(chromosome,**region,
+    iterator = pipeline.iter_individual_records(chromosome,**region,
             mac_cutoff=identity["single_mac_cutoff"], variant_type="variant",
-            subset_variants_num=identity["single_group_variants"]):
-        if trait != 0:
-            raise RuntimeError("single-phenotype worker returned another trait")
-        for row in batch:
-            chunk = row["_chunk"]
-            if first_chunk is None:
-                first_chunk = chunk
-            if chunk - first_chunk >= identity["single_output_groups"]:
-                flush()
-                first_chunk = chunk
-            records.append(row)
+            subset_variants_num=identity["single_group_variants"])
+    try:
+        for trait, batch in iterator:
+            if trait != 0:
+                raise RuntimeError("single-phenotype worker returned another trait")
+            for row in batch:
+                chunk = row["_chunk"]
+                if first_chunk is None:
+                    first_chunk = chunk
+                if chunk - first_chunk >= identity["single_output_groups"]:
+                    flush()
+                    first_chunk = chunk
+                records.append(row)
+    finally:
+        iterator.close()
     flush()
     if not outputs:
         tables = pipeline.individual_tables([[]])
@@ -819,7 +881,7 @@ def _shared_annotation_index(pipeline, entry, plan, metadata_digest, *, kind):
                 candidate_rows=document["candidate_rows"],mmap_read_only=True)
 
 
-def _run_worker(plan_path, device):
+def _run_worker(plan_path, device, cpu_allocation=None):
     from .cache_runtime.portable import PortableCachedGDS
     from .io import load_null_model
     from .pipeline import AnalysisOptions, PheWASPipeline
@@ -833,7 +895,10 @@ def _run_worker(plan_path, device):
     connection.execute("INSERT OR REPLACE INTO workers VALUES(?,?)",(os.getpid(),json.dumps(_process_identity(os.getpid()))))
     connection.execute("INSERT OR REPLACE INTO leases VALUES(?,?)",(-os.getpid(),max(1.,_rss_bytes(os.getpid())/1024**3)))
     connection.commit()
-    torch.set_num_threads(identity["cpu_threads_per_worker"])
+    cpu_allocation = cpu_allocation or dict(main_threads=identity["cpu_threads_per_worker"],prepare_processes=0)
+    torch.set_num_threads(cpu_allocation["main_threads"])
+    if torch.get_num_interop_threads() != 1:
+        torch.set_num_interop_threads(1)
     configure_tf32(memory_limit_gib=identity["analysis_options"]["memory_limit_gib"])
     if device.startswith("cuda"):
         torch.cuda.set_device(device)
@@ -867,7 +932,13 @@ def _run_worker(plan_path, device):
                         reader.close()
                     reader, pipeline, key = None, None, None
                     model = load_null_model(plan["phenotypes"][job["trait"]]["path"], device=device, matmul_mode=identity["matmul_mode"])
-                    reader = PortableCachedGDS(entry["container_directory"],entry["metadata_directory"],device=device)
+                    cache_gib = identity.get("cohort_cache_gib", 0)
+                    reader = PortableCachedGDS(entry["container_directory"],entry["metadata_directory"],device=device,
+                        prepared_cache_directory=(Path(plan["cache_directory"]) / ".cohort_compact_v1") if cache_gib else None,
+                        prepared_cache_max_bytes=int(cache_gib * 2**30),
+                        prefetch_depth=identity.get("prefetch_depth",0),
+                        prefetch_memory_bytes=identity.get("prefetch_memory_mib",256) * 2**20,
+                        prefetch_processes=cpu_allocation["prepare_processes"])
                     model.gds_sample_ids = model.sample_ids.copy()
                     analysis = dict(plan["dataset_analysis"])
                     analysis.update(reader.manifest.get("analysis",{}))
@@ -935,6 +1006,7 @@ def _run_worker(plan_path, device):
                 report["covariance_diagnostics"] = list(pipeline.covariance_diagnostics)
                 report["batch_diagnostics"] = list(pipeline.batch_diagnostics)
                 report["genotype_reader"] = reader.reader_metadata
+                report["cpu_allocation"] = cpu_allocation
                 report["metadata_manifest_sha256"] = metadata_digest
                 report["scope"] = "selected interval" if job["kind"] == "individual" and job["arguments"].get("start") is not None else "whole chromosome" if job["kind"] == "individual" else "selected gene"
                 report["shared_annotation_index"] = index_report
@@ -969,7 +1041,7 @@ def _run_worker(plan_path, device):
                     pipeline._local_union_device_prepared = None
                 gc.collect()
                 connection.execute("DELETE FROM leases WHERE job_id=?",(job_id,))
-                connection.execute("INSERT OR REPLACE INTO leases VALUES(?,?)",(-os.getpid(),max(1.,_rss_bytes(os.getpid())/1024**3)))
+                connection.execute("INSERT OR REPLACE INTO leases VALUES(?,?)",(-os.getpid(),max(1.,_process_tree_rss_bytes(os.getpid())/1024**3)))
                 connection.commit()
     finally:
         if reader is not None:
@@ -1056,9 +1128,20 @@ def execute_plan(plan_path, *, devices=None, workers=8, retry_failed=False):
     for model in plan["phenotypes"]:
         if _sha256(model["path"]) != model["sha256"]:
             raise ValueError("persisted null model changed after input preparation")
+    from .cpu_budget import allocate_cpu_budget
+    cpu_options = plan["input_identity"]
+    cpu_budget = allocate_cpu_budget(len(devices),
+        requested=cpu_options.get("cpu_prepare_processes",0),
+        reserve_cores=cpu_options.get("cpu_reserve_cores",4),
+        background_cores=cpu_options.get("cpu_background_cores",4),
+        main_threads_per_worker=cpu_options["cpu_threads_per_worker"],
+        cache_enabled=cpu_options.get("cohort_cache_gib",0)>0,
+        prefetch_enabled=cpu_options.get("prefetch_depth",0)>0)
+    _json_write(Path(plan["output_directory"]) / "cpu_allocation.private.json",cpu_budget)
     before = time.perf_counter()
     context = mp.get_context("spawn")
-    processes = [context.Process(target=_run_worker,args=(str(plan_path),device)) for device in devices]
+    processes = [context.Process(target=_run_worker,args=(str(plan_path),device,allocation))
+                 for device,allocation in zip(devices,cpu_budget["worker_allocations"])]
     thread_names = ("OMP_NUM_THREADS","OPENBLAS_NUM_THREADS","MKL_NUM_THREADS")
     previous_threads = {name:os.environ.get(name) for name in thread_names}
     try:
@@ -1104,6 +1187,7 @@ def execute_plan(plan_path, *, devices=None, workers=8, retry_failed=False):
         peak_reserved_mib=max((item["peak_reserved_mib"] for item in reports),default=0),
         implementation_sha256=plan["input_identity"]["implementation_sha256"],
         cache_counts=cache_counts,host_admission_deferrals=deferrals,
+        cpu_allocation=cpu_budget,
         input_counts=[item["alignment"] for item in plan["phenotypes"]],
         null_fit_mode=plan["input_identity"]["null_fit_mode"],association_matmul_mode=plan["input_identity"]["matmul_mode"],
         precision_validation="association execution alone does not establish original-software accuracy",
@@ -1138,6 +1222,14 @@ def main(argv=None):
     parser.add_argument("--chromosomes",nargs="+")
     parser.add_argument("--analyses",nargs="+",choices=_KINDS,default=list(_KINDS))
     parser.add_argument("--memory-limit-gib",type=float,default=40.)
+    parser.add_argument("--cohort-cache-gib",type=float,default=64.)
+    parser.add_argument("--prefetch-depth",type=int,default=2)
+    parser.add_argument("--prefetch-memory-mib",type=int,default=256)
+    parser.add_argument("--cpu-threads-per-worker",type=int,default=1)
+    parser.add_argument("--cpu-prepare-processes",default="auto",
+                        type=lambda value: value if value == "auto" else int(value))
+    parser.add_argument("--cpu-reserve-cores",type=int,default=4)
+    parser.add_argument("--cpu-background-cores",type=int,default=4)
     parser.add_argument("--transform",choices=("none","rint"),default="none")
     parser.add_argument("--retry-failed",action="store_true")
     args = vars(parser.parse_args(argv))

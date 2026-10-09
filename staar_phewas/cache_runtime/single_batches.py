@@ -90,7 +90,12 @@ def iter_effective_minor_blocks(adapter, variant_indices, union_sample_indices,
         prepared, selected_variants = _merge_prepared(parts, len(samples))
         pack_seconds = time.perf_counter() - began
         metrics['single_pack_seconds'] = metrics.get('single_pack_seconds', 0.) + pack_seconds
-        metrics['compact_prepare_seconds'] += pack_seconds
+        add_prepare_seconds = getattr(adapter, '_add_compact_prepare_seconds', None)
+        if add_prepare_seconds is not None:
+            add_prepare_seconds(pack_seconds)
+        else:
+            # Preserve compatibility with synchronous third-party/mock adapters.
+            metrics['compact_prepare_seconds'] += pack_seconds
         began = time.perf_counter()
         result = adapter._fast.to_minor_block(prepared, samples, selected_variants,
                                                device=device or adapter._device)
@@ -104,28 +109,38 @@ def iter_effective_minor_blocks(adapter, variant_indices, union_sample_indices,
         metrics['single_effective_columns'] = metrics.get('single_effective_columns', 0) + result.shape[1]
         return result
 
-    for request in _physical_requests(adapter, variants, block_size):
-        began = time.perf_counter()
-        prepared, bound_samples, bound_variants = adapter._prepare(request, samples, minimum_mac)
-        metrics['minor_block_wall_seconds'] += time.perf_counter() - began
-        metrics['requested_variants'] += len(bound_variants)
-        metrics['single_compact_requests'] = metrics.get('single_compact_requests', 0) + 1
-        if not np.array_equal(bound_samples, samples):
-            raise RuntimeError('Single compact request changed its bound sample axis')
-        count = len(prepared['columns'])
-        begin = 0
-        while begin < count:
-            stop = min(count, begin + effective_block_size - pending_count)
-            part = prepared if begin == 0 and stop == count else _slice_prepared(prepared, begin, stop)
-            parts.append((part, bound_variants[part['columns']]))
-            pending_count += stop - begin
-            begin = stop
-            if pending_count == effective_block_size:
-                result = materialize()
-                parts.clear()
-                pending_count = 0
-                yield result
-                del result
+    requests = _physical_requests(adapter, variants, block_size)
+    prepare_requests = getattr(adapter, '_prepared_requests', None)
+    iterator = (prepare_requests(requests, samples, minimum_mac) if prepare_requests is not None else
+                (adapter._prepare(request, samples, minimum_mac) for request in requests))
+    try:
+        while True:
+            began = time.perf_counter()
+            item = next(iterator, None)
+            metrics['minor_block_wall_seconds'] += time.perf_counter() - began
+            if item is None:
+                break
+            prepared, bound_samples, bound_variants = item
+            metrics['requested_variants'] += len(bound_variants)
+            metrics['single_compact_requests'] = metrics.get('single_compact_requests', 0) + 1
+            if not np.array_equal(bound_samples, samples):
+                raise RuntimeError('Single compact request changed its bound sample axis')
+            count = len(prepared['columns'])
+            begin = 0
+            while begin < count:
+                stop = min(count, begin + effective_block_size - pending_count)
+                part = prepared if begin == 0 and stop == count else _slice_prepared(prepared, begin, stop)
+                parts.append((part, bound_variants[part['columns']]))
+                pending_count += stop - begin
+                begin = stop
+                if pending_count == effective_block_size:
+                    result = materialize()
+                    parts.clear()
+                    pending_count = 0
+                    yield result
+                    del result
+    finally:
+        iterator.close()
     if pending_count:
         result = materialize()
         parts.clear()

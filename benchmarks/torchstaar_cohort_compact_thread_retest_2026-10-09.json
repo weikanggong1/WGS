@@ -1,0 +1,1188 @@
+{
+  "schema_version": 1,
+  "utc": "2026-10-09T14:32:24.018409+00:00",
+  "samples": 339013,
+  "jobs_per_case": 4,
+  "model_refitted": false,
+  "source_implementation_sha256": {
+    "v3_reference": "cba9fed9d15bda1813f7dfa8a239fd8b150cd945756fc60196b93d1cdc184328",
+    "candidate_cold": "0ab6976fc089962285ed67ac837f28aaaf0ccd6a6c9df6ba644c93f164a89259",
+    "candidate_warm": "0ab6976fc089962285ed67ac837f28aaaf0ccd6a6c9df6ba644c93f164a89259"
+  },
+  "accuracy_threshold": {
+    "value": 0.001,
+    "operator": "strict_less_than",
+    "exceptions_applied": false
+  },
+  "all_preflight_passed": true,
+  "native_integrity_passed": true,
+  "maximum_delta_minus_log10_p": 0.0,
+  "total_compared_probability_and_log_values": 44600,
+  "real_long_mask_validation": {
+    "M": 9854,
+    "rank": 512,
+    "seed": 1729,
+    "probes": 0,
+    "validated_cases": 3,
+    "passed": true
+  },
+  "derived_cache_validation": {
+    "case_totals": {
+      "v3_reference": {
+        "frame_loads": 204,
+        "cohort_compact_hits": 0,
+        "cohort_compact_misses": 0,
+        "cohort_compact_writes": 0,
+        "cohort_compact_errors": 0,
+        "cohort_compact_budget_skips": 0,
+        "cohort_compact_load_seconds": 0,
+        "cohort_compact_store_seconds": 0,
+        "prefetch_sessions": 0,
+        "prefetch_enqueued_items": 0
+      },
+      "candidate_cold": {
+        "frame_loads": 204,
+        "cohort_compact_hits": 0,
+        "cohort_compact_misses": 271,
+        "cohort_compact_writes": 271,
+        "cohort_compact_errors": 0,
+        "cohort_compact_budget_skips": 0,
+        "cohort_compact_load_seconds": 0.7318126279860735,
+        "cohort_compact_store_seconds": 30.23518384899944,
+        "prefetch_sessions": 4,
+        "prefetch_enqueued_items": 271
+      },
+      "candidate_warm": {
+        "frame_loads": 0,
+        "cohort_compact_hits": 271,
+        "cohort_compact_misses": 0,
+        "cohort_compact_writes": 0,
+        "cohort_compact_errors": 0,
+        "cohort_compact_budget_skips": 0,
+        "cohort_compact_load_seconds": 18.64676493126899,
+        "cohort_compact_store_seconds": 0,
+        "prefetch_sessions": 4,
+        "prefetch_enqueued_items": 271
+      }
+    },
+    "cold_started_empty": true,
+    "cold_published_entries": true,
+    "warm_cache_hits": true,
+    "cold_frame_loads": 204,
+    "warm_frame_loads": 0,
+    "warm_reduced_population_frame_loads": true,
+    "errors": 0,
+    "budget_verified": true,
+    "passed": true
+  },
+  "resident_gene_route_validation": {
+    "passed": true,
+    "jobs": [
+      {
+        "case": "candidate_cold",
+        "job_id": 2,
+        "kind": "coding",
+        "resident_genotypes_executed": true
+      },
+      {
+        "case": "candidate_cold",
+        "job_id": 3,
+        "kind": "noncoding",
+        "resident_genotypes_executed": true
+      },
+      {
+        "case": "candidate_cold",
+        "job_id": 4,
+        "kind": "ncrna",
+        "resident_genotypes_executed": true
+      },
+      {
+        "case": "candidate_warm",
+        "job_id": 2,
+        "kind": "coding",
+        "resident_genotypes_executed": true
+      },
+      {
+        "case": "candidate_warm",
+        "job_id": 3,
+        "kind": "noncoding",
+        "resident_genotypes_executed": true
+      },
+      {
+        "case": "candidate_warm",
+        "job_id": 4,
+        "kind": "ncrna",
+        "resident_genotypes_executed": true
+      }
+    ]
+  },
+  "comparison": "threaded candidate counter-lock retest against preserved earlier frozen TF32 reference",
+  "official_R_validated": false,
+  "whole_genome_validated": false,
+  "exclusive_benchmark": false,
+  "timing_contract": "reference observed in an earlier trial; only cold/warm candidates execute now; same GPU index does not establish exclusive or contemporaneous timing; OS page cache is uncontrolled; stage times overlap and must not be summed",
+  "cases": {
+    "v3_reference": {
+      "wall_seconds": 354.0251585189253,
+      "counts": {
+        "completed": 4
+      },
+      "compact_before": {
+        "index_exists": false,
+        "ready": 0,
+        "writing": 0,
+        "used_bytes": 0,
+        "max_bytes": null
+      },
+      "compact_after": {
+        "index_exists": false,
+        "ready": 0,
+        "writing": 0,
+        "used_bytes": 0,
+        "max_bytes": null
+      },
+      "profiles": [
+        {
+          "job_id": 1,
+          "kind": "individual",
+          "seconds": 39.142537055537105,
+          "setup_seconds": 16.532229306176305,
+          "association_rows": 11063,
+          "host_memory_wait_seconds": 0,
+          "peak_allocated_mib": 5260.73779296875,
+          "peak_reserved_mib": 8500.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 12,
+              "host_wall_seconds": 17.675320314243436,
+              "cuda_stream_seconds": 17.67742510668188
+            },
+            "genotype_trait_prepare": {
+              "calls": 11,
+              "host_wall_seconds": 0.7562591871246696,
+              "cuda_stream_seconds": 0.7786014976501465
+            },
+            "score_covariance": {
+              "calls": 11,
+              "host_wall_seconds": 0.9943726966157556,
+              "cuda_stream_seconds": 1.0762128295898437
+            },
+            "individual_tail": {
+              "calls": 11,
+              "host_wall_seconds": 0.3314166646450758,
+              "cuda_stream_seconds": 0.3256887389421464
+            },
+            "result_d2h": {
+              "calls": 11,
+              "host_wall_seconds": 0.09560434613376856,
+              "cuda_stream_seconds": 0.002348640009760857
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 11,
+            "frame_loads": 133,
+            "frame_cache_hits": 0,
+            "frame_cache_evictions": 122,
+            "cache_read_validate_seconds": 3.7581853857263923,
+            "compact_prepare_seconds": 12.05664199218154,
+            "materialize_seconds": 1.2712934203445911,
+            "minor_block_wall_seconds": 17.298629282042384,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 11,
+            "requested_variants": 134532,
+            "returned_variants": 11063,
+            "sample_bind_calls": 133,
+            "sample_bind_cache_hits": 132,
+            "sample_bind_validations": 1,
+            "sample_bind_seconds": 0.1686782455071807,
+            "sample_validate_seconds": 0.07714818883687258,
+            "decoder_sample_axis_validations": 1,
+            "decoder_sample_axis_cache_hits": 133,
+            "decoder_sample_map_builds": 1,
+            "safe_mac_prescreen_calls": 133,
+            "safe_mac_prescreen_input_variants": 134532,
+            "safe_mac_prescreen_rejected_variants": 122951,
+            "safe_mac_prescreen_candidate_variants": 11581,
+            "single_compact_requests": 133,
+            "single_pack_seconds": 1.476387407630682,
+            "single_effective_blocks": 11,
+            "single_effective_columns": 11063,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 67108864
+          }
+        },
+        {
+          "job_id": 2,
+          "kind": "coding",
+          "seconds": 15.223955931141973,
+          "setup_seconds": 1.8374994397163391e-06,
+          "association_rows": 5,
+          "host_memory_wait_seconds": 0.0006605535745620728,
+          "peak_allocated_mib": 801.3935546875,
+          "peak_reserved_mib": 8500.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 6,
+              "host_wall_seconds": 0.27642596513032913,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 5,
+              "host_wall_seconds": 1.4913060367107391,
+              "cuda_stream_seconds": 1.4920786056518556
+            },
+            "genotype_h2d": {
+              "calls": 5,
+              "host_wall_seconds": 0.10189404524862766,
+              "cuda_stream_seconds": 0.10259897708892822
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.15684701688587666,
+              "cuda_stream_seconds": 0.2668888416290283
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 4.807350983843207,
+              "cuda_stream_seconds": 4.698556941986085
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 5,
+            "frame_loads": 10,
+            "frame_cache_hits": 4,
+            "frame_cache_evictions": 9,
+            "cache_read_validate_seconds": 0.20541688613593578,
+            "compact_prepare_seconds": 0.026975255459547043,
+            "materialize_seconds": 0.032813058234751225,
+            "minor_block_wall_seconds": 0.26979988161474466,
+            "cpu_sparse_calls": 5,
+            "cuda_resident_calls": 0,
+            "requested_variants": 528,
+            "returned_variants": 528,
+            "sample_bind_calls": 5,
+            "sample_bind_cache_hits": 5,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.003954603336751461,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 14,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "single_compact_requests": 0,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        },
+        {
+          "job_id": 3,
+          "kind": "noncoding",
+          "seconds": 110.58490700554103,
+          "setup_seconds": 101.17484792042524,
+          "association_rows": 6,
+          "host_memory_wait_seconds": 0.0007032575085759163,
+          "peak_allocated_mib": 1452.21337890625,
+          "peak_reserved_mib": 8502.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 8,
+              "host_wall_seconds": 0.4341552956029773,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 7,
+              "host_wall_seconds": 2.70458307210356,
+              "cuda_stream_seconds": 2.7103973999023436
+            },
+            "genotype_h2d": {
+              "calls": 5,
+              "host_wall_seconds": 0.239162290468812,
+              "cuda_stream_seconds": 0.2401355504989624
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.053474959917366505,
+              "cuda_stream_seconds": 0.1930389404296875
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 0.4715293347835541,
+              "cuda_stream_seconds": 0.33344739151000974
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 7,
+            "frame_loads": 1,
+            "frame_cache_hits": 8,
+            "frame_cache_evictions": 1,
+            "cache_read_validate_seconds": 0.09984962362796068,
+            "compact_prepare_seconds": 0.13398052100092173,
+            "materialize_seconds": 0.18203151412308216,
+            "minor_block_wall_seconds": 0.4255503434687853,
+            "cpu_sparse_calls": 7,
+            "cuda_resident_calls": 0,
+            "requested_variants": 852,
+            "returned_variants": 852,
+            "sample_bind_calls": 7,
+            "sample_bind_cache_hits": 7,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.008183010853827,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 9,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "single_compact_requests": 0,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        },
+        {
+          "job_id": 4,
+          "kind": "ncrna",
+          "seconds": 178.82580644451082,
+          "setup_seconds": 4.7373585402965546e-05,
+          "association_rows": 1,
+          "host_memory_wait_seconds": 0.014057731255888939,
+          "peak_allocated_mib": 21896.0693359375,
+          "peak_reserved_mib": 24396.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 127,
+              "host_wall_seconds": 4.384250193834305,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 126,
+              "host_wall_seconds": 51.869701754301786,
+              "cuda_stream_seconds": 51.91092057800292
+            },
+            "score_covariance": {
+              "calls": 1,
+              "host_wall_seconds": 6.6177884098142385,
+              "cuda_stream_seconds": 6.61792626953125
+            },
+            "eigen_tail": {
+              "calls": 1,
+              "host_wall_seconds": 44.169503193348646,
+              "cuda_stream_seconds": 44.16984375
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 126,
+            "frame_loads": 60,
+            "frame_cache_hits": 125,
+            "frame_cache_evictions": 51,
+            "cache_read_validate_seconds": 1.893932738341391,
+            "compact_prepare_seconds": 0.8766072513535619,
+            "materialize_seconds": 1.4528644112870097,
+            "minor_block_wall_seconds": 4.371467159129679,
+            "cpu_sparse_calls": 126,
+            "cuda_resident_calls": 0,
+            "requested_variants": 16069,
+            "returned_variants": 16069,
+            "sample_bind_calls": 126,
+            "sample_bind_cache_hits": 126,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.13019385375082493,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 185,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "single_compact_requests": 0,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        }
+      ]
+    },
+    "candidate_cold": {
+      "wall_seconds": 282.5032807299867,
+      "counts": {
+        "completed": 4
+      },
+      "compact_before": {
+        "index_exists": false,
+        "ready": 0,
+        "writing": 0,
+        "used_bytes": 0,
+        "max_bytes": null
+      },
+      "compact_after": {
+        "index_exists": true,
+        "ready": 271,
+        "writing": 0,
+        "used_bytes": 3216257024,
+        "max_bytes": 68719476736,
+        "ready_blob_bytes": 3214602144
+      },
+      "profiles": [
+        {
+          "job_id": 1,
+          "kind": "individual",
+          "seconds": 69.56480148993433,
+          "setup_seconds": 18.685985224321485,
+          "association_rows": 11063,
+          "host_memory_wait_seconds": 0,
+          "peak_allocated_mib": 5260.73779296875,
+          "peak_reserved_mib": 8500.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 12,
+              "host_wall_seconds": 46.666061208583415,
+              "cuda_stream_seconds": 46.66953540620208
+            },
+            "genotype_trait_prepare": {
+              "calls": 11,
+              "host_wall_seconds": 0.4416546858847141,
+              "cuda_stream_seconds": 0.46395113372802743
+            },
+            "score_covariance": {
+              "calls": 11,
+              "host_wall_seconds": 0.5688953725621104,
+              "cuda_stream_seconds": 0.6439962463378905
+            },
+            "individual_tail": {
+              "calls": 11,
+              "host_wall_seconds": 0.04054395481944084,
+              "cuda_stream_seconds": 0.030075199194252493
+            },
+            "result_d2h": {
+              "calls": 11,
+              "host_wall_seconds": 0.08186229038983583,
+              "cuda_stream_seconds": 0.004152191996574402
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 11,
+            "frame_loads": 133,
+            "frame_cache_hits": 0,
+            "frame_cache_evictions": 122,
+            "cache_read_validate_seconds": 5.2473621824756265,
+            "compact_prepare_seconds": 19.156358757056296,
+            "materialize_seconds": 1.5885037509724498,
+            "minor_block_wall_seconds": 45.99598215892911,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 11,
+            "requested_variants": 134532,
+            "returned_variants": 11063,
+            "sample_bind_calls": 133,
+            "sample_bind_cache_hits": 132,
+            "sample_bind_validations": 1,
+            "sample_bind_seconds": 0.2987948954105377,
+            "sample_validate_seconds": 0.10949011147022247,
+            "decoder_sample_axis_validations": 1,
+            "decoder_sample_axis_cache_hits": 133,
+            "decoder_sample_map_builds": 1,
+            "safe_mac_prescreen_calls": 133,
+            "safe_mac_prescreen_input_variants": 134532,
+            "safe_mac_prescreen_rejected_variants": 122951,
+            "safe_mac_prescreen_candidate_variants": 11581,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 47.622834340669215,
+            "prefetch_prepare_wall_seconds": 46.47822300158441,
+            "prefetch_producer_wait_seconds": 1.1107998825609684,
+            "prefetch_consumer_wait_seconds": 42.0204556286335,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 3407793380,
+            "prefetch_enqueued_items": 133,
+            "prefetch_yielded_items": 133,
+            "cohort_compact_sample_axis_hashes": 1,
+            "cohort_compact_misses": 133,
+            "cohort_compact_load_seconds": 0.4805500181391835,
+            "cohort_compact_sample_axis_hash_reuse": 265,
+            "cohort_compact_writes": 133,
+            "cohort_compact_written_bytes": 3047639320,
+            "cohort_compact_store_seconds": 23.574719164520502,
+            "single_compact_requests": 133,
+            "single_pack_seconds": 2.377872229553759,
+            "single_effective_blocks": 11,
+            "single_effective_columns": 11063,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 67108864
+          }
+        },
+        {
+          "job_id": 2,
+          "kind": "coding",
+          "seconds": 10.337210925295949,
+          "setup_seconds": 2.564862370491028e-06,
+          "association_rows": 5,
+          "host_memory_wait_seconds": 0,
+          "peak_allocated_mib": 903.2373046875,
+          "peak_reserved_mib": 8500.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 6,
+              "host_wall_seconds": 0.6795803271234035,
+              "cuda_stream_seconds": 0.6803882104754448
+            },
+            "genotype_trait_metadata": {
+              "calls": 5,
+              "host_wall_seconds": 0.0868316451087594,
+              "cuda_stream_seconds": 0.08697372913360596
+            },
+            "genotype_trait_prepare": {
+              "calls": 5,
+              "host_wall_seconds": 0.4737588996067643,
+              "cuda_stream_seconds": 0.47444480133056643
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.05385386664420366,
+              "cuda_stream_seconds": 0.16183491134643554
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 3.000728389248252,
+              "cuda_stream_seconds": 2.8941400680541993
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 5,
+            "frame_loads": 10,
+            "frame_cache_hits": 4,
+            "frame_cache_evictions": 9,
+            "cache_read_validate_seconds": 0.3581990161910653,
+            "compact_prepare_seconds": 0.05053663719445467,
+            "materialize_seconds": 0.06457187421619892,
+            "minor_block_wall_seconds": 0.6717639695852995,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 5,
+            "requested_variants": 528,
+            "returned_variants": 528,
+            "sample_bind_calls": 5,
+            "sample_bind_cache_hits": 5,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.007512006908655167,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 14,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 0.7354623200371861,
+            "prefetch_prepare_wall_seconds": 0.7340498603880405,
+            "prefetch_producer_wait_seconds": 0.0,
+            "prefetch_consumer_wait_seconds": 0.6061905976384878,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 19574216,
+            "prefetch_enqueued_items": 5,
+            "prefetch_yielded_items": 5,
+            "cohort_compact_sample_axis_hashes": 0,
+            "cohort_compact_misses": 5,
+            "cohort_compact_load_seconds": 0.017837537452578545,
+            "cohort_compact_sample_axis_hash_reuse": 10,
+            "cohort_compact_writes": 5,
+            "cohort_compact_written_bytes": 6033696,
+            "cohort_compact_store_seconds": 0.297380892559886,
+            "single_compact_requests": 0,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        },
+        {
+          "job_id": 3,
+          "kind": "noncoding",
+          "seconds": 105.7964092399925,
+          "setup_seconds": 104.45057960785925,
+          "association_rows": 6,
+          "host_memory_wait_seconds": 0,
+          "peak_allocated_mib": 1626.8017578125,
+          "peak_reserved_mib": 8502.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 8,
+              "host_wall_seconds": 0.5931812850758433,
+              "cuda_stream_seconds": 0.5937527661472559
+            },
+            "genotype_trait_metadata": {
+              "calls": 7,
+              "host_wall_seconds": 0.07590862922370434,
+              "cuda_stream_seconds": 0.07491884803771973
+            },
+            "genotype_trait_prepare": {
+              "calls": 5,
+              "host_wall_seconds": 0.16595437936484814,
+              "cuda_stream_seconds": 0.16860310745239257
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.07269682083278894,
+              "cuda_stream_seconds": 0.21946719932556155
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 0.39291670359671116,
+              "cuda_stream_seconds": 0.24704866790771482
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 7,
+            "frame_loads": 1,
+            "frame_cache_hits": 8,
+            "frame_cache_evictions": 1,
+            "cache_read_validate_seconds": 0.03505861945450306,
+            "compact_prepare_seconds": 0.0699667502194643,
+            "materialize_seconds": 0.07783858943730593,
+            "minor_block_wall_seconds": 0.5881724311038852,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 7,
+            "requested_variants": 852,
+            "returned_variants": 852,
+            "sample_bind_calls": 7,
+            "sample_bind_cache_hits": 7,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.005058335140347481,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 9,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 0.6441168589517474,
+            "prefetch_prepare_wall_seconds": 0.6426324546337128,
+            "prefetch_producer_wait_seconds": 0.0,
+            "prefetch_consumer_wait_seconds": 0.5094780018553138,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 42490724,
+            "prefetch_enqueued_items": 7,
+            "prefetch_yielded_items": 7,
+            "cohort_compact_sample_axis_hashes": 0,
+            "cohort_compact_misses": 7,
+            "cohort_compact_load_seconds": 0.013990512117743492,
+            "cohort_compact_sample_axis_hash_reuse": 14,
+            "cohort_compact_writes": 7,
+            "cohort_compact_written_bytes": 23534336,
+            "cohort_compact_store_seconds": 0.5164664043113589,
+            "single_compact_requests": 0,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        },
+        {
+          "job_id": 4,
+          "kind": "ncrna",
+          "seconds": 86.20030270703137,
+          "setup_seconds": 2.4615786969661713e-05,
+          "association_rows": 1,
+          "host_memory_wait_seconds": 0.00032493099570274353,
+          "peak_allocated_mib": 21896.0693359375,
+          "peak_reserved_mib": 24396.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 127,
+              "host_wall_seconds": 6.581128210760653,
+              "cuda_stream_seconds": 6.593500224307179
+            },
+            "genotype_trait_metadata": {
+              "calls": 126,
+              "host_wall_seconds": 1.5806449688971043,
+              "cuda_stream_seconds": 1.5634838428497313
+            },
+            "genotype_trait_prepare": {
+              "calls": 1,
+              "host_wall_seconds": 26.258179726079106,
+              "cuda_stream_seconds": 26.25851171875
+            },
+            "score_covariance": {
+              "calls": 1,
+              "host_wall_seconds": 5.1691906582564116,
+              "cuda_stream_seconds": 5.16941064453125
+            },
+            "eigen_tail": {
+              "calls": 1,
+              "host_wall_seconds": 44.273210633546114,
+              "cuda_stream_seconds": 44.2735390625
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 126,
+            "frame_loads": 60,
+            "frame_cache_hits": 125,
+            "frame_cache_evictions": 51,
+            "cache_read_validate_seconds": 1.583810817450285,
+            "compact_prepare_seconds": 0.4639862449839711,
+            "materialize_seconds": 1.6071586553007364,
+            "minor_block_wall_seconds": 6.5732288202270865,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 126,
+            "requested_variants": 16069,
+            "returned_variants": 16069,
+            "sample_bind_calls": 126,
+            "sample_bind_cache_hits": 126,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.078514838591218,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 185,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 8.2339550787583,
+            "prefetch_prepare_wall_seconds": 8.224804732948542,
+            "prefetch_producer_wait_seconds": 0.0,
+            "prefetch_consumer_wait_seconds": 4.9621505457907915,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 478618306,
+            "prefetch_enqueued_items": 126,
+            "prefetch_yielded_items": 126,
+            "cohort_compact_sample_axis_hashes": 0,
+            "cohort_compact_misses": 126,
+            "cohort_compact_load_seconds": 0.21943456027656794,
+            "cohort_compact_sample_axis_hash_reuse": 252,
+            "cohort_compact_writes": 126,
+            "cohort_compact_written_bytes": 137394792,
+            "cohort_compact_store_seconds": 5.846617387607694,
+            "single_compact_requests": 0,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        }
+      ]
+    },
+    "candidate_warm": {
+      "wall_seconds": 216.34721323754638,
+      "counts": {
+        "completed": 4
+      },
+      "compact_before": {
+        "index_exists": true,
+        "ready": 271,
+        "writing": 0,
+        "used_bytes": 3216257024,
+        "max_bytes": 68719476736,
+        "ready_blob_bytes": 3214602144
+      },
+      "compact_after": {
+        "index_exists": true,
+        "ready": 271,
+        "writing": 0,
+        "used_bytes": 3216257024,
+        "max_bytes": 68719476736,
+        "ready_blob_bytes": 3214602144
+      },
+      "profiles": [
+        {
+          "job_id": 1,
+          "kind": "individual",
+          "seconds": 37.54096968937665,
+          "setup_seconds": 14.585556197911501,
+          "association_rows": 11063,
+          "host_memory_wait_seconds": 0,
+          "peak_allocated_mib": 5260.73779296875,
+          "peak_reserved_mib": 8500.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 12,
+              "host_wall_seconds": 17.612014960497618,
+              "cuda_stream_seconds": 17.61461242580414
+            },
+            "genotype_trait_prepare": {
+              "calls": 11,
+              "host_wall_seconds": 0.6070647398009896,
+              "cuda_stream_seconds": 0.6294488353729248
+            },
+            "score_covariance": {
+              "calls": 11,
+              "host_wall_seconds": 2.0921147586777806,
+              "cuda_stream_seconds": 2.1697185764312747
+            },
+            "individual_tail": {
+              "calls": 11,
+              "host_wall_seconds": 0.034651401452720165,
+              "cuda_stream_seconds": 0.028219999082386496
+            },
+            "result_d2h": {
+              "calls": 11,
+              "host_wall_seconds": 0.09149186313152313,
+              "cuda_stream_seconds": 0.002717632047832012
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 11,
+            "frame_loads": 0,
+            "frame_cache_hits": 0,
+            "frame_cache_evictions": 0,
+            "cache_read_validate_seconds": 0.0,
+            "compact_prepare_seconds": 1.2188060265034437,
+            "materialize_seconds": 1.3703401805832982,
+            "minor_block_wall_seconds": 17.158974991180003,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 11,
+            "requested_variants": 134532,
+            "returned_variants": 11063,
+            "sample_bind_calls": 133,
+            "sample_bind_cache_hits": 132,
+            "sample_bind_validations": 1,
+            "sample_bind_seconds": 0.18237892910838127,
+            "sample_validate_seconds": 0.08199553471058607,
+            "decoder_sample_axis_validations": 1,
+            "decoder_sample_axis_cache_hits": 0,
+            "decoder_sample_map_builds": 1,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 20.20386109687388,
+            "prefetch_prepare_wall_seconds": 16.715166521258652,
+            "prefetch_producer_wait_seconds": 3.471775686368346,
+            "prefetch_consumer_wait_seconds": 14.564040513709188,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 3408349152,
+            "prefetch_enqueued_items": 133,
+            "prefetch_yielded_items": 133,
+            "cohort_compact_sample_axis_hashes": 1,
+            "cohort_compact_hits": 133,
+            "cohort_compact_read_bytes": 3047639320,
+            "cohort_compact_load_seconds": 16.508729424327612,
+            "single_compact_requests": 133,
+            "cohort_compact_sample_axis_hash_reuse": 132,
+            "single_pack_seconds": 1.2188060265034437,
+            "single_effective_blocks": 11,
+            "single_effective_columns": 11063,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 67108864
+          }
+        },
+        {
+          "job_id": 2,
+          "kind": "coding",
+          "seconds": 8.114516540430486,
+          "setup_seconds": 1.6596168279647827e-06,
+          "association_rows": 5,
+          "host_memory_wait_seconds": 0,
+          "peak_allocated_mib": 903.2373046875,
+          "peak_reserved_mib": 8500.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 6,
+              "host_wall_seconds": 0.1567231770604849,
+              "cuda_stream_seconds": 0.1571442221850157
+            },
+            "genotype_trait_metadata": {
+              "calls": 5,
+              "host_wall_seconds": 0.0507314819842577,
+              "cuda_stream_seconds": 0.05044870376586914
+            },
+            "genotype_trait_prepare": {
+              "calls": 5,
+              "host_wall_seconds": 0.27699209097772837,
+              "cuda_stream_seconds": 0.2774811859130859
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.09555005840957165,
+              "cuda_stream_seconds": 0.2108709144592285
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 3.1334695341065526,
+              "cuda_stream_seconds": 3.019102199554443
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 5,
+            "frame_loads": 0,
+            "frame_cache_hits": 0,
+            "frame_cache_evictions": 0,
+            "cache_read_validate_seconds": 0.0,
+            "compact_prepare_seconds": 0.0,
+            "materialize_seconds": 0.09918713383376598,
+            "minor_block_wall_seconds": 0.15197378769516945,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 5,
+            "requested_variants": 528,
+            "returned_variants": 528,
+            "sample_bind_calls": 5,
+            "sample_bind_cache_hits": 5,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.0026230765506625175,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 0,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 0.14389691222459078,
+            "prefetch_prepare_wall_seconds": 0.11063853558152914,
+            "prefetch_producer_wait_seconds": 0.03271501325070858,
+            "prefetch_consumer_wait_seconds": 0.05230868235230446,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 19594216,
+            "prefetch_enqueued_items": 5,
+            "prefetch_yielded_items": 5,
+            "cohort_compact_sample_axis_hashes": 0,
+            "cohort_compact_hits": 5,
+            "cohort_compact_read_bytes": 6033696,
+            "cohort_compact_load_seconds": 0.10757383890450001,
+            "single_compact_requests": 0,
+            "cohort_compact_sample_axis_hash_reuse": 5,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        },
+        {
+          "job_id": 3,
+          "kind": "noncoding",
+          "seconds": 89.08990987669677,
+          "setup_seconds": 87.98692199867219,
+          "association_rows": 6,
+          "host_memory_wait_seconds": 0,
+          "peak_allocated_mib": 1626.8017578125,
+          "peak_reserved_mib": 8502.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 8,
+              "host_wall_seconds": 0.22478975635021925,
+              "cuda_stream_seconds": 0.2253277114406228
+            },
+            "genotype_trait_metadata": {
+              "calls": 7,
+              "host_wall_seconds": 0.07188569847494364,
+              "cuda_stream_seconds": 0.07098124694824219
+            },
+            "genotype_trait_prepare": {
+              "calls": 5,
+              "host_wall_seconds": 0.15877448488026857,
+              "cuda_stream_seconds": 0.16144390201568604
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.05258112121373415,
+              "cuda_stream_seconds": 0.19969762992858886
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 0.5487850029021502,
+              "cuda_stream_seconds": 0.4025289039611816
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 7,
+            "frame_loads": 0,
+            "frame_cache_hits": 0,
+            "frame_cache_evictions": 0,
+            "cache_read_validate_seconds": 0.0,
+            "compact_prepare_seconds": 0.0,
+            "materialize_seconds": 0.07104739546775818,
+            "minor_block_wall_seconds": 0.21945994161069393,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 7,
+            "requested_variants": 852,
+            "returned_variants": 852,
+            "sample_bind_calls": 7,
+            "sample_bind_cache_hits": 7,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.00367810670286417,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 0,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 0.2631272468715906,
+            "prefetch_prepare_wall_seconds": 0.2622875636443496,
+            "prefetch_producer_wait_seconds": 0.0,
+            "prefetch_consumer_wait_seconds": 0.14776617102324963,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 42519064,
+            "prefetch_enqueued_items": 7,
+            "prefetch_yielded_items": 7,
+            "cohort_compact_sample_axis_hashes": 0,
+            "cohort_compact_hits": 7,
+            "cohort_compact_read_bytes": 23534336,
+            "cohort_compact_load_seconds": 0.2577170617878437,
+            "single_compact_requests": 0,
+            "cohort_compact_sample_axis_hash_reuse": 7,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        },
+        {
+          "job_id": 4,
+          "kind": "ncrna",
+          "seconds": 71.71636936161667,
+          "setup_seconds": 2.365652471780777e-05,
+          "association_rows": 1,
+          "host_memory_wait_seconds": 0.00040108710527420044,
+          "peak_allocated_mib": 21896.0693359375,
+          "peak_reserved_mib": 24396.0,
+          "stage_profile": {
+            "gds_sdk_decode_prepare": {
+              "calls": 127,
+              "host_wall_seconds": 1.7997549967840314,
+              "cuda_stream_seconds": 1.808430938340724
+            },
+            "genotype_trait_metadata": {
+              "calls": 126,
+              "host_wall_seconds": 1.3152772784233093,
+              "cuda_stream_seconds": 1.2967904920578002
+            },
+            "genotype_trait_prepare": {
+              "calls": 1,
+              "host_wall_seconds": 19.421334393322468,
+              "cuda_stream_seconds": 19.421529296875
+            },
+            "score_covariance": {
+              "calls": 1,
+              "host_wall_seconds": 5.09357637539506,
+              "cuda_stream_seconds": 5.093650390625
+            },
+            "eigen_tail": {
+              "calls": 1,
+              "host_wall_seconds": 41.879519833251834,
+              "cuda_stream_seconds": 41.8796328125
+            }
+          },
+          "reader_incremental_metrics": {
+            "minor_block_calls": 126,
+            "frame_loads": 0,
+            "frame_cache_hits": 0,
+            "frame_cache_evictions": 0,
+            "cache_read_validate_seconds": 0.0,
+            "compact_prepare_seconds": 0.0,
+            "materialize_seconds": 1.357931112870574,
+            "minor_block_wall_seconds": 1.7935018511489034,
+            "cpu_sparse_calls": 0,
+            "cuda_resident_calls": 126,
+            "requested_variants": 16069,
+            "returned_variants": 16069,
+            "sample_bind_calls": 126,
+            "sample_bind_cache_hits": 126,
+            "sample_bind_validations": 0,
+            "sample_bind_seconds": 0.07532456237822771,
+            "sample_validate_seconds": 0.0,
+            "decoder_sample_axis_validations": 0,
+            "decoder_sample_axis_cache_hits": 0,
+            "decoder_sample_map_builds": 0,
+            "safe_mac_prescreen_calls": 0,
+            "safe_mac_prescreen_input_variants": 0,
+            "safe_mac_prescreen_rejected_variants": 0,
+            "safe_mac_prescreen_candidate_variants": 0,
+            "prefetch_sessions": 1,
+            "prefetch_producer_wall_seconds": 3.1805127654224634,
+            "prefetch_prepare_wall_seconds": 1.8637892045080662,
+            "prefetch_producer_wait_seconds": 1.3061987180262804,
+            "prefetch_consumer_wait_seconds": 0.43199810665100813,
+            "prefetch_queued_bytes": 0,
+            "prefetch_queued_items": 0,
+            "prefetch_total_queued_bytes": 479119896,
+            "prefetch_enqueued_items": 126,
+            "prefetch_yielded_items": 126,
+            "cohort_compact_sample_axis_hashes": 0,
+            "cohort_compact_hits": 126,
+            "cohort_compact_read_bytes": 137394792,
+            "cohort_compact_load_seconds": 1.7727446062490344,
+            "single_compact_requests": 0,
+            "cohort_compact_sample_axis_hash_reuse": 126,
+            "single_pack_seconds": 0.0,
+            "single_effective_blocks": 0,
+            "single_effective_columns": 0,
+            "genotype_sdk_fallback_count": 0,
+            "compact_cache_limit_bytes": 0
+          }
+        }
+      ]
+    }
+  },
+  "version": "0.6.0",
+  "os_page_cache_flushed": false,
+  "derived_cache_scope": "cold means no derived entries; warm reuses those entries; OS page cache uncontrolled",
+  "source_allocator_limit_gib": 27,
+  "production_allocator_limit_gib": 40,
+  "derived_cache_gib": 64,
+  "prefetch_depth": 2,
+  "prefetch_memory_mib": 256,
+  "reference_reuse": {
+    "reference_result_reused": true,
+    "reference_from_earlier_trial": true,
+    "reference_recomputed": false,
+    "candidates_reused": false,
+    "reference_and_candidates_same_trial": false,
+    "reference_source_implementation_sha256": "cba9fed9d15bda1813f7dfa8a239fd8b150cd945756fc60196b93d1cdc184328",
+    "reference_plan_sha256": "df8aee9d25af4722c64f7c18fa95a07319dd886ef25ec82e9ea4097c5cd4051a",
+    "reference_database_sha256": "1f4d3a6bec1a22191b64bd7e7dc5622b93dd6056293b242c1843b6eee1f9d523",
+    "reference_execution_receipt_sha256": "53bfdb95a41b91c64394c69aca4f79e4e180cc11d91f979c460708471ffc51af",
+    "reference_native_sha256": [
+      "6fd33601c5118b6296d4583773347ffdd409ab9064359a4ecae17279912ccf85",
+      "819eeccabfdd4e5544e5162b6305b52d714d4ee19d0ed918867a4f862bbc8bc7",
+      "b9ca968c4eac380ff023fa667b12d1f13451e40ffa2d41393a970a7020d7eaac",
+      "19390d66be2ef311472b9df613912cc78e87ec379d33f3c9936ce3a750d8eed6"
+    ],
+    "reference_started_utc": "2026-10-09T13:47:38.232691+00:00",
+    "reference_finished_utc": "2026-10-09T13:53:32.257797+00:00",
+    "earlier_reference_wall_seconds": 354.0251585189253,
+    "new_reference_compute_seconds": 0.0,
+    "reference_source_files_unchanged": true,
+    "original_harness_unchanged": true,
+    "benchmark_note": "reference observed in an earlier trial; only cold/warm candidates execute now; same GPU index does not establish exclusive or contemporaneous timing; OS page cache is uncontrolled",
+    "exclusive_benchmark": false,
+    "os_page_cache_controlled": false
+  },
+  "reference_and_candidates_same_trial": false,
+  "new_trial_candidate_wall_seconds": 498.8504939675331,
+  "gpu_components": {
+    "unique_tests_passed": 201,
+    "subtests_passed": 24,
+    "scope": "components, not population benchmark"
+  },
+  "all_nonprobability_values_equal": true
+}

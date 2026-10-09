@@ -524,9 +524,19 @@ class PortableMetadataReader:
 
 
 class PortableCachedGDS(CachedGDSAdapter):
-    """Standalone validated chromosome reader with mature Single packing."""
+    """Standalone validated chromosome reader with mature Single packing.
+
+    ``supports_resident_minor_blocks`` advertises lossless CUDA dosage
+    materialization without a native GDS SDK. The pipeline still admits each
+    gene's storage and decoder workspace before selecting this route.
+    """
+    supports_resident_minor_blocks = True
+
     def __init__(self, container_directory, metadata_directory=None, *, device="cuda:0",
-                 compact_cache_bytes=64 * 2**20, verify_checksums=True):
+                 compact_cache_bytes=64 * 2**20, verify_checksums=True,
+                 prepared_cache_directory=None, prepared_cache_max_bytes=64 * 2**30,
+                 prefetch_depth=0, prefetch_memory_bytes=256 * 2**20,
+                 prefetch_processes=0):
         cache = Path(container_directory)
         metadata = PortableMetadataReader(metadata_directory or cache / "metadata", cache,
                                           verify_checksums=verify_checksums)
@@ -553,8 +563,40 @@ class PortableCachedGDS(CachedGDSAdapter):
                 def close(self):
                     self.original.close()
 
+            prepared_cache = None
+            process_descriptor = None
+            if prepared_cache_directory is not None:
+                from .cohort_compact_cache import CohortCompactCache
+                # Bind physical population, logical eid axis and exact decoder
+                # semantics. Changing a model alone does not invalidate compact
+                # genotype data; changing samples or requested variants does.
+                import hashlib
+                from . import adapter_fast, sparse_decode_fast
+                from .. import gds
+                digest = hashlib.sha256()
+                for module in (adapter_fast, sparse_decode_fast, gds):
+                    digest.update(Path(module.__file__).read_bytes())
+                source_binding = dict(schema_version=1,
+                    genotype_manifest=container.manifest,
+                    metadata_manifest_sha256=hashlib.sha256(
+                        (metadata.directory / "manifest.json").read_bytes()).hexdigest(),
+                    decoder_semantics_sha256=digest.hexdigest())
+                prepared_cache = CohortCompactCache(prepared_cache_directory, source_binding,
+                    max_bytes=prepared_cache_max_bytes)
+                process_descriptor = dict(container_directory=str(cache.resolve()),
+                    metadata_directory=str(metadata.directory.resolve()),
+                    compact_cache_bytes=compact_cache_bytes, verify_checksums=verify_checksums,
+                    prepared_cache_directory=str(Path(prepared_cache_directory).resolve()),
+                    prepared_cache_max_bytes=prepared_cache_max_bytes,
+                    source_binding=source_binding)
             super().__init__(metadata, LogicalContainer(container), device=device,
-                             compact_cache_bytes=compact_cache_bytes, own_reader=True)
+                             compact_cache_bytes=compact_cache_bytes, own_reader=True,
+                             prepared_cache=prepared_cache, prefetch_depth=prefetch_depth,
+                             prefetch_memory_bytes=prefetch_memory_bytes,
+                             prefetch_processes=prefetch_processes,
+                             process_descriptor=process_descriptor)
+            if prepared_cache is not None:
+                prepared_cache.metrics = self._metrics
         except BaseException:
             if container is not None:
                 container.close()

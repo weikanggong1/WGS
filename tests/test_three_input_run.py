@@ -4,7 +4,11 @@ import copy
 import json
 from pathlib import Path
 import sqlite3
+import os
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -116,6 +120,27 @@ class ThreeInputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"within"):
             workflow.prepare_run(self.phenotype,self.covariate,cache,analyses=["individual"])
 
+    def test_cpu_preparation_configuration_is_bound_to_resume(self):
+        self.inputs()
+        cache = self.dataset()
+        options = dict(output_directory=self.root/"cpu_plan",analyses=["individual"],
+                       cpu_prepare_processes=4,cpu_reserve_cores=3,cpu_background_cores=0,
+                       cpu_threads_per_worker=1)
+        path = workflow.prepare_run(self.phenotype,self.covariate,cache,**options)
+        identity = json.loads(path.read_text())["input_identity"]
+        for key in ("cpu_prepare_processes","cpu_reserve_cores","cpu_background_cores","cpu_threads_per_worker"):
+            self.assertEqual(identity[key],options[key])
+        options["cpu_prepare_processes"] = 2
+        with self.assertRaisesRegex(ValueError,"different plan"):
+            workflow.prepare_run(self.phenotype,self.covariate,cache,**options)
+
+    def test_invalid_cpu_settings_fail_before_reading_inputs(self):
+        for options in ({"cpu_prepare_processes":True},{"cpu_prepare_processes":-1},
+                        {"cpu_prepare_processes":"all"},{"cpu_reserve_cores":-1},
+                        {"cpu_background_cores":True}):
+            with self.subTest(options=options),self.assertRaisesRegex(ValueError,"CPU|cpu_prepare"):
+                workflow.prepare_run("missing.csv","missing.csv","missing_cache",**options)
+
     def test_probability_gate_rejects_invalid_outputs(self):
         workflow._probability_gate([{"STAAR-O":0.,"pvalue_log10":1000.,"Score":0.}])
         for row in ({"STAAR-O":float("nan")},{"pvalue":1.2},{"Score_se":float("nan")}):
@@ -149,6 +174,39 @@ class ThreeInputTests(unittest.TestCase):
         with mock.patch.object(workflow,"_read_host_memory",return_value=live):
             self.assertTrue(workflow._host_budget(connection,plan,desired_gib=20.,extra_gib=20.,excluding_job=1)["admissible"])
         connection.close()
+
+    @unittest.skipUnless(Path("/proc/self/task").exists(),"Linux process-tree admission")
+    def test_host_admission_counts_children_spawned_by_loader_thread(self):
+        ready, release = threading.Event(), threading.Event()
+        children, errors = [], []
+        def loader():
+            try:
+                with subprocess.Popen([sys.executable,"-c",
+                        "import sys; print('ready',flush=True); sys.stdin.read(1)"],
+                        stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True) as child:
+                    children.append(child.pid)
+                    if child.stdout.readline().strip() != "ready":
+                        raise RuntimeError("child failed to start")
+                    ready.set()
+                    release.wait(timeout=20)
+                    child.stdin.close()
+                    child.wait(timeout=10)
+            except BaseException as error:
+                errors.append(error)
+                ready.set()
+        thread = threading.Thread(target=loader)
+        thread.start()
+        try:
+            self.assertTrue(ready.wait(timeout=10))
+            self.assertFalse(errors)
+            sizes = {os.getpid():100,children[0]:200}
+            with mock.patch.object(workflow,"_rss_bytes",side_effect=lambda pid:sizes.get(pid,0)):
+                self.assertEqual(workflow._process_tree_rss_bytes(os.getpid()),300)
+        finally:
+            release.set()
+            thread.join(timeout=15)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(errors)
 
     def test_pending_metadata_does_not_prevent_claiming_a_ready_later_chromosome(self):
         self.inputs()
