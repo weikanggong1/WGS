@@ -28,7 +28,7 @@ def _make_solver(memory_limit):
     return FP32SmallSpectrumSolver(torch_module=torch,memory_limit=memory_limit)
 
 @contextmanager
-def eigensolver_context(mode='torch',*,memory_limit=20*2**30):
+def eigensolver_context(mode='torch',*,memory_limit=40*2**30):
     """Own one serialized weighted-spectrum solver for one pipeline run.
 
     This module never replaces Torch functions. Its selector may temporarily

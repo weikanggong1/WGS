@@ -1,4 +1,4 @@
-"""Native GDS -> Gaussian PheWAS association pipeline.
+"""Cache/variant reader -> Gaussian PheWAS association pipeline.
 
 SPDX-License-Identifier: GPL-3.0-only
 Analysis rules follow the frozen STAARpipelinePheWAS 0.9.7.1 source.
@@ -39,6 +39,33 @@ def _individual_log_probabilities(score, variance):
                        torch.where(positive, log_probabilities, 0.))
 
 
+def _cmac_scalar_sum(genotype):
+    """Return the scalar sum of imputed minor dosages for cMAC metadata.
+
+    genotype is a sample-by-variant NumPy array or PyTorch tensor. FP32 inputs
+    use an FP64 accumulator; PyTorch reduces bounded row chunks to limit its
+    temporary FP64 storage to 64 MiB. Other dtypes retain their native sum.
+    This reduction changes neither genotype storage nor score/covariance
+    matrix multiplication and never creates a full FP64 genotype matrix.
+    """
+    if isinstance(genotype, torch.Tensor):
+        if genotype.dtype == torch.float32:
+            chunk_elements = 8 * 2**20
+            columns_per_chunk = min(chunk_elements, max(1, genotype.shape[1]))
+            rows_per_chunk = max(1, chunk_elements // columns_per_chunk)
+            totals = [genotype[start:start + rows_per_chunk,
+                               column:column + columns_per_chunk].sum(dtype=torch.float64)
+                      for column in range(0, genotype.shape[1], columns_per_chunk)
+                      for start in range(0, genotype.shape[0], rows_per_chunk)]
+            if not totals:
+                return 0.0
+            return float(torch.stack(totals).sum())
+        return float(genotype.sum())
+    if genotype.dtype == np.float32:
+        return float(genotype.sum(dtype=np.float64))
+    return float(genotype.sum())
+
+
 @dataclass(frozen=True)
 class AnalysisOptions:
     rare_maf_cutoff: float = 0.01
@@ -49,18 +76,32 @@ class AnalysisOptions:
     imputation: str = "mean"
     genotype_block_size: int = 128
     annotation_block_size: int = 250_000
-    memory_limit_gib: float = 20.0
+    memory_limit_gib: float = 40.0
+    variant_tile_size: int | None = None
+    covariance_backend: str = "cached"
+    cached_variant_tile_size: int = 4096
+    sample_block_size: int | None = None
     spa_p_filter: bool = True
     p_filter_cutoff: float = 0.05
     spa_tol: float = 2**-13
     spa_max_iter: int = 1000
     wrapper_semantics: str = "phewas"
+    long_mask_threshold: int = 5000
+    long_mask_method: str = "fastskat"
+    long_mask_rank: int = 512
+    long_mask_seed: int = 1729
 
     def __post_init__(self):
         if not 0 < self.rare_maf_cutoff <= 0.5:
             raise ValueError("rare_maf_cutoff must be in (0, 0.5]")
         if self.rv_num_cutoff < 1 or self.rv_num_cutoff_max <= self.rv_num_cutoff:
             raise ValueError("invalid variant-set size limits")
+        if self.variant_tile_size is not None and (type(self.variant_tile_size) is not int or self.variant_tile_size < 1):
+            raise ValueError("variant_tile_size must be a positive integer or null")
+        if self.sample_block_size is not None and (type(self.sample_block_size) is not int or self.sample_block_size < 1):
+            raise ValueError("sample_block_size must be a positive integer or null")
+        if self.variant_tile_size is not None and self.sample_block_size is not None:
+            raise ValueError("variant_tile_size and sample_block_size are mutually exclusive")
         if self.rv_num_cutoff_max_prefilter < 1 or self.genotype_block_size < 1 or self.annotation_block_size < 1 or self.memory_limit_gib <= 0:
             raise ValueError("prefilter, block size and memory budget must be positive")
         if self.variant_type not in ("SNV", "Indel", "variant") or self.imputation not in ("mean", "minor"):
@@ -69,6 +110,20 @@ class AnalysisOptions:
             raise ValueError("invalid binary SPA settings")
         if self.wrapper_semantics not in ("phewas", "base"):
             raise ValueError("wrapper_semantics must be phewas or base")
+        if type(self.long_mask_threshold) is not int or self.long_mask_threshold < 1:
+            raise ValueError("long_mask_threshold must be a positive integer")
+        if self.memory_limit_gib > 40:
+            raise ValueError("memory_limit_gib must not exceed 40 GiB")
+        if self.covariance_backend not in ("cached", "legacy"):
+            raise ValueError("covariance_backend must be cached or legacy")
+        if type(self.cached_variant_tile_size) is not int or self.cached_variant_tile_size < 1 or self.cached_variant_tile_size % 512:
+            raise ValueError("cached_variant_tile_size must be a positive multiple of 512")
+        if self.long_mask_method not in ("fastskat", "liu"):
+            raise ValueError("long_mask_method must be fastskat or liu")
+        if type(self.long_mask_rank) is not int or self.long_mask_rank < 1:
+            raise ValueError("long_mask_rank must be a positive integer")
+        if type(self.long_mask_seed) is not int or self.long_mask_seed < 0:
+            raise ValueError("long_mask_seed must be a nonnegative integer")
 
 
 class PheWASPipeline:
@@ -151,6 +206,11 @@ class PheWASPipeline:
         self.resident_genotypes = False
         self.single_batch_optimization = True
         self.individual_effective_block_size = 1024
+        self.covariance_diagnostics = []
+        # Optional blocking callback; the worker owns/releases its job lease.
+        self.host_memory_guard = None
+        self.hybrid_mask_sizes = []
+        self.hybrid_union_M = 0
 
     @property
     def profiler(self):
@@ -342,10 +402,32 @@ class PheWASPipeline:
         Native TF32 uses FP32 inputs/outputs and no reconstruction planes.
         Raw SDK slabs and already resident model tensors are independent.
         """
+        options = getattr(self, "options", AnalysisOptions())
         n, m, t = model.n, int(number_variants), model.n_pheno
         native = getattr(model, "matmul_mode", "fp64") == "tf32"
         bytes_per_element = 4 if native else 8
         genotype_copies, covariance_copies = (4, 6)
+        if options.sample_block_size is not None and m <= options.long_mask_threshold and not individual and native and t == 1 and not getattr(model, "use_spa", False) and not getattr(getattr(model, "spectrum", None), "blocks", ()):
+            k = min(int(options.sample_block_size), n)
+            q = getattr(getattr(model, "precision_x", None), "shape", (n, 1))[1]
+            return bytes_per_element * (2 * k * m + 3 * (t * m) ** 2 + q * m + n * t * t)
+        if m > options.long_mask_threshold and not individual and native and t == 1 and not getattr(model, "use_spa", False) and not getattr(getattr(model, "spectrum", None), "blocks", ()):
+            if options.covariance_backend == "cached":
+                from ._cached_covariance import plan_cached_workspace
+                allocated = reserved = 0
+                if str(getattr(model, "device", "cpu")).startswith("cuda"):
+                    allocated = torch.cuda.memory_allocated(model.device)
+                    reserved = torch.cuda.memory_reserved(model.device)
+                plan = plan_cached_workspace(n, m, model.x.shape[1],
+                    variant_tile_size=options.cached_variant_tile_size,
+                    memory_limit_gib=options.memory_limit_gib,
+                    allocated_bytes=allocated, reserved_bytes=reserved)
+                # Genotype panels are freed before the statistical stage.
+                # Include dense masking/weighting and bounded rank workspaces.
+                spectrum = 4 * (4 * m * m + 16 * m * min(options.long_mask_rank, m) + n)
+                return max(plan["conservative_new_workspace_bytes"], spectrum)
+            b = min(int(options.variant_tile_size or 512), m)
+            return bytes_per_element * (4 * n * b + 2 * (t * m) ** 2 + n * t * t)
         model_terms = n * t * t
         if individual:
             # Covariate projection and per-site scores/variance/tails need
@@ -440,17 +522,95 @@ class PheWASPipeline:
         return dict(device=model.device, resident=True)
 
     def _resident_gene_cmac(self, genotype):
-        """Same imputed-G sum definition, using native FP32 device reduction."""
+        """Sum imputed dosages on-device, with FP64 accumulation for FP32 input."""
         counters = self.local_mask_reuse_counters
         key = "resident_gene_cmac_device_reductions"
         counters[key] = counters.get(key, 0) + 1
-        return float(genotype.sum())
+        return _cmac_scalar_sum(genotype)
+
+    def _hybrid_host_guard(self, model, selected_m):
+        """Reserve host space before a dense allocation, using actual rare M.
+
+        The optional callback receives n, m, and phase='prepare'. It must block
+        until its worker has a lease and retain that lease until the job exits;
+        this method does not release it between genotype and covariance phases.
+        """
+        guard = getattr(self, "host_memory_guard", None)
+        if guard is not None:
+            guard(n=model.n, m=int(selected_m), phase="prepare")
+
+    def _hybrid_sizes(self, physical, local_masks):
+        self.hybrid_union_M = int(len(physical))
+        self.hybrid_mask_sizes = ([int(len(physical))] if local_masks is None else
+                                 [int(np.isin(physical, mask).sum()) for mask in local_masks])
+
+    def _resident_gene_to_host(self, prepared):
+        """Stream selected FP32 columns to host without a CUDA N-by-M array.
+
+        Variant order, imputation, and FP32 values match resident preparation.
+        The FP64 cMAC scalar helper is reused; matrix products remain TF32.
+        """
+        model = self.models[0]
+        mapping = prepared["_resident_mapping"]
+        self._hybrid_host_guard(model, len(mapping))
+        host = np.empty((model.n, len(mapping)), dtype=np.float32, order="F")
+        frequency = {"frequency_mode": "reference"} if self.options.wrapper_semantics == "base" else {}
+        blocks = prepared["_resident_blocks"]
+        with self.profiler.measure("genotype_trait_prepare", gpu=True):
+            for bi in range(len(blocks)):
+                block = blocks[bi]
+                destination = np.flatnonzero(mapping[:, 0] == bi)
+                if len(destination):
+                    selected = block.select_columns(mapping[destination, 1])
+                    dense = selected.trait_dense(self.trait_rows[0], self.options.imputation,
+                                                dtype=model.x.dtype, **frequency)[0]
+                    host[:, destination] = dense.cpu().numpy()
+                    del dense, selected
+                blocks[bi] = None
+                del block
+        result = {key: value for key, value in prepared.items()
+                  if key not in ("_resident_blocks", "_resident_mapping")}
+        result["_genotype_host"] = host
+        counter = "hybrid_resident_to_host_families"
+        self.local_mask_reuse_counters[counter] = self.local_mask_reuse_counters.get(counter, 0) + 1
+        return result
+
+    def _long_mask_products(self, model, host):
+        if self.options.covariance_backend == "legacy":
+            return model.score_covariance_tiled(host,
+                variant_tile_size=self.options.variant_tile_size or 512)
+        score, covariance, report = model.score_covariance_cached(host,
+            variant_tile_size=self.options.cached_variant_tile_size,
+            memory_limit_gib=self.options.memory_limit_gib, profile=True)
+        self.covariance_diagnostics.append(report)
+        return score, covariance
+
+    def _hybrid_host_products(self, model, host):
+        """Use tiled TF32 covariance only above the configured mask threshold."""
+        count = int(host.shape[1])
+        self._limit(model, count)
+        if count > self.options.long_mask_threshold:
+            if (model.matmul_mode != "tf32" or model.n_pheno != 1 or model.use_spa
+                    or model.spectrum.blocks):
+                raise NotImplementedError("hybrid long masks require single Gaussian TF32 diagonal precision")
+            counter = "hybrid_long_host_masks"
+            self.local_mask_reuse_counters[counter] = self.local_mask_reuse_counters.get(counter, 0) + 1
+            with self.profiler.measure("score_covariance", gpu=True):
+                return self._long_mask_products(model, host)
+        with self.profiler.measure("genotype_h2d", gpu=True):
+            genotype = torch.as_tensor(host, dtype=model.x.dtype, device=model.device)
+        with self.profiler.measure("score_covariance", gpu=True):
+            result = model.score_covariance(genotype)
+        del genotype
+        return result
 
     def _materialize_resident_gene(self, prepared, columns=None):
         """Build only selected rare FP32 columns, never concatenate candidates."""
         model = self.models[0]
         mapping = prepared["_resident_mapping"]
         columns = np.arange(len(mapping)) if columns is None else np.asarray(columns, dtype=np.int64)
+        if len(columns) > self.options.long_mask_threshold:
+            raise MemoryError("long mask must use host/tiled preparation before CUDA genotype materialization")
         self._limit(model, len(columns))
         # Original NumPy rare/column indexing yields sample-by-variant F
         # layout. Keep those strides for GEMV without allocating a clone.
@@ -548,6 +708,16 @@ class PheWASPipeline:
             _resident_blocks=blocks, _resident_mapping=mapping)
         counters = self.local_mask_reuse_counters
         counters["resident_gene_prepared_columns"] = counters.get("resident_gene_prepared_columns", 0) + count
+        self._hybrid_sizes(prepared["_variant_indices"], local_masks)
+        if count > self.options.long_mask_threshold:
+            prepared = self._resident_gene_to_host(prepared)
+            if defer_score:
+                return [prepared]
+            payload = {key: value for key, value in prepared.items() if not key.startswith("_")}
+            host = prepared["_genotype_host"]
+            payload["cmac"] = _cmac_scalar_sum(host)
+            payload["score"], payload["covariance"] = self._hybrid_host_products(model, host)
+            return [payload]
         if defer_score:
             return [prepared]
         genotype = self._materialize_resident_gene(prepared)
@@ -598,6 +768,11 @@ class PheWASPipeline:
         results = []
         for model, rows in zip(self.models, self.trait_rows):
             pieces, frequencies, extraction_groups, source_frequencies = [], [], [], []
+            # Nonresident preparation retains dense pieces before concatenate/
+            # rare filtering. Admit that upper bound before the first piece.
+            guard = getattr(self, "host_memory_guard", None)
+            if guard is not None and columns:
+                guard(n=model.n, m=len(columns), phase="prepare_nonresident")
             for block, keep in blocks:
                 frequency = {"frequency_mode": "reference"} if self.options.wrapper_semantics == "base" else {}
                 if getattr(model, "matmul_mode", "fp64") == "tf32" and isinstance(block, SparseMinorBlock):
@@ -649,6 +824,8 @@ class PheWASPipeline:
                     raise UnionGeometryRejected("actual rare union covariance exceeds separate-mask cells")
             if not _defer_score:
                 self._limit(model, count)
+            self._hybrid_sizes(indices[np.asarray(columns, dtype=np.int64)[rare]], _local_masks)
+            self._hybrid_host_guard(model, count)
             g = (torch.cat(pieces, dim=1) if isinstance(pieces[0], torch.Tensor) else np.concatenate(pieces, axis=1))[:, rare]
             selected_maf = maf[rare]
             annotation = phred[np.asarray(columns)[rare]]
@@ -681,13 +858,26 @@ class PheWASPipeline:
                 if workspace <= 0:
                     raise MemoryError("no workspace remains for reference sparse score reduction")
                 reduction_options = {"reduction": "reference_sparse", "max_workspace_bytes": workspace}
-            # Preserve the established host summation order for native CMAC.
-            cmac = float(g.sum())
-            if str(getattr(model, "device", "cpu")).startswith("cuda") or getattr(model, "matmul_mode", "fp64") == "tf32":
-                with self.profiler.measure("genotype_h2d", gpu=True):
-                    g = torch.as_tensor(g, dtype=model.x.dtype, device=model.device)
+            # Only cMAC's scalar accumulator is promoted for FP32 genotypes.
+            cmac = _cmac_scalar_sum(g)
+            sampled = (count <= self.options.long_mask_threshold and self.options.sample_block_size is not None and
+                     getattr(model, "matmul_mode", "fp64") == "tf32" and
+                     isinstance(model, GaussianNullModel) and not model.spectrum.blocks and
+                     model.n_pheno == 1 and not model.use_spa)
+            tiled = (count > self.options.long_mask_threshold and
+                     getattr(model, "matmul_mode", "fp64") == "tf32" and
+                     isinstance(model, GaussianNullModel) and not model.spectrum.blocks and
+                     model.n_pheno == 1 and not model.use_spa)
             with self.profiler.measure("score_covariance", gpu=True):
-                u, v = model.score_covariance(g, **reduction_options)
+                if sampled:
+                    u, v = model.score_covariance_sample_block(g, sample_block_size=self.options.sample_block_size)
+                elif tiled:
+                    u, v = self._long_mask_products(model, g)
+                else:
+                    if str(getattr(model, "device", "cpu")).startswith("cuda") or getattr(model, "matmul_mode", "fp64") == "tf32":
+                        with self.profiler.measure("genotype_h2d", gpu=True):
+                            g = torch.as_tensor(g, dtype=model.x.dtype, device=model.device)
+                    u, v = model.score_covariance(g, **reduction_options)
             cutoffs=dict(rare_maf_cutoff=self.options.rare_maf_cutoff,rv_num_cutoff=self.options.rv_num_cutoff,
                          rv_num_cutoff_max=self.options.rv_num_cutoff_max)
             payload = dict(score=u, covariance=v, maf=selected_maf, mac=np.rint(selected_maf*2*model.n),
@@ -699,20 +889,25 @@ class PheWASPipeline:
         return results
 
     def _evaluate_prepared(self, payload, model):
+        options = getattr(self, "options", AnalysisOptions())
         if payload is None:
             return None
         if model.use_spa:
             cutoffs={name:payload[name] for name in ("rare_maf_cutoff", "rv_num_cutoff", "rv_num_cutoff_max")}
             return staar_binary_spa(torch.as_tensor(payload["_genotype"], dtype=torch.float64, device=model.device),
                 payload["maf"], model.scaled_residuals, model.fitted_probability, model.xw, model.projection_left,
-                payload["annotations"], payload["names"], spa_p_filter=self.options.spa_p_filter,
-                p_filter_cutoff=self.options.p_filter_cutoff, tol=self.options.spa_tol,
-                max_iter=self.options.spa_max_iter, covariance=payload["covariance"], **cutoffs)
+                payload["annotations"], payload["names"], spa_p_filter=options.spa_p_filter,
+                p_filter_cutoff=options.p_filter_cutoff, tol=options.spa_tol,
+                max_iter=options.spa_max_iter, covariance=payload["covariance"], **cutoffs)
         with self.profiler.measure("eigen_tail", gpu=True):
             if model.n_pheno > 1:
                 return multi_staar_test(**payload)
             tail_optimization = getattr(self, "statistics_tail_optimization", False)
             result = staar_test(**payload, matmul_mode=getattr(model, "matmul_mode", "fp64"),
+                               long_mask_threshold=options.long_mask_threshold,
+                               long_mask_method=options.long_mask_method,
+                               long_mask_rank=options.long_mask_rank,
+                               long_mask_seed=options.long_mask_seed,
                                tail_optimization=tail_optimization,
                                weight_batch_optimization=getattr(self, "weight_batch_optimization", False))
             if tail_optimization:
@@ -787,7 +982,11 @@ class PheWASPipeline:
             for trait,(model,payload) in enumerate(zip(self.models,prepared)):
                 if payload is None:
                     continue
-                if model.n_pheno!=1 or model.use_spa:
+                # Generic cross-mask batching uses an explicit FP64 core.
+                # Native TF32 keeps the established within-mask weight batch
+                # and routes long masks through their configured FastSKAT tail.
+                if model.n_pheno!=1 or model.use_spa or getattr(model, "matmul_mode", "fp64") == "tf32":
+                    flush(); pending_bytes = 0
                     output[set_index][trait]=self._evaluate_prepared(payload,model)
                     continue
                 size=8*(payload["score"].numel()+payload["covariance"].numel())
@@ -885,6 +1084,16 @@ class PheWASPipeline:
                 self._local_union_device_prepared = prepared
             else:
                 self._local_union_host_prepared = prepared
+            if len(prepared["_variant_indices"]) > self.options.long_mask_threshold:
+                # Reuse filtered host values; do not materialize a large CUDA
+                # union even when each individual mask is small.
+                counter = "hybrid_union_split_families"
+                counters[counter] = counters.get(counter, 0) + 1
+                if "_resident_blocks" in prepared:
+                    prepared = self._resident_gene_to_host(prepared)
+                    self._local_union_host_prepared = prepared
+                    self._local_union_device_prepared = None
+                return self._test_masks_from_union_host(prepared, index_sets)
             result, reason = attempt_union(lambda: self._calculate_local_union(index_sets, prepared),
                                            device=self.models[0].device)
             if reason is not None:
@@ -937,17 +1146,12 @@ class PheWASPipeline:
                                            grouped=self.options.wrapper_semantics == "base")
             if len(columns) < self.options.rv_num_cutoff:
                 output.append([None]); continue
-            self._limit(model, len(columns))
             host = prepared["_genotype_host"][:, columns]
             payload = {key: value for key, value in prepared.items() if not key.startswith("_")}
             for key in ("maf", "mac", "annotations"):
                 payload[key] = prepared[key][columns]
-            payload["cmac"] = float(host.sum())
-            with self.profiler.measure("genotype_h2d", gpu=True):
-                genotype = torch.as_tensor(host, dtype=model.x.dtype, device=model.device)
-            with self.profiler.measure("score_covariance", gpu=True):
-                payload["score"], payload["covariance"] = model.score_covariance(genotype)
-            del genotype
+            payload["cmac"] = _cmac_scalar_sum(host)
+            payload["score"], payload["covariance"] = self._hybrid_host_products(model, host)
             output.append([self._evaluate_prepared(payload, model)])
             counter = "fallback_host_reused_masks"
             self.local_mask_reuse_counters[counter] = self.local_mask_reuse_counters.get(counter, 0) + 1
@@ -993,9 +1197,8 @@ class PheWASPipeline:
                     covariance=union_covariance.index_select(0, device_columns).index_select(1, device_columns),
                     maf=prepared["maf"][columns], mac=prepared["mac"][columns],
                     annotations=prepared["annotations"][columns],
-                    # Advanced column indexing reproduces the original host
-                    # mask layout and sum order, not a sum of rounded MACs.
-                    cmac=self._resident_gene_cmac(genotype[:, device_columns]) if resident else float(host_genotype[:, columns].sum()))
+                    # Sum the selected imputed columns, rather than rounded MACs.
+                    cmac=self._resident_gene_cmac(genotype[:, device_columns]) if resident else _cmac_scalar_sum(host_genotype[:, columns]))
                 result = self._evaluate_prepared(payload, model)
                 evaluated_masks += 1
             output.append([result])

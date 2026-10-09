@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchstaar"
-version = "0.4.0"
+version = "0.5.0"
 description = "Torchstaar: PyTorch GPU STAAR/MultiSTAAR association analysis"
 requires-python = ">=3.10"
 license = {text = "GPL-3.0-only"}
@@ -14,7 +14,9 @@ dependencies = ["numpy>=1.26,<2", "scipy>=1.13", "torch>=2.4", "rdata==1.1.0", "
 test = ["pytest>=7"]
 
 [project.scripts]
-torchstaar = "torchstaar.cli:main"
+torchstaar = "staar_phewas.run:main"
+torchstaar-run = "staar_phewas.run:main"
+torchstaar-config = "torchstaar.cli:main"
 torchstaar-prepare = "torchstaar.prepare:main"
 torchstaar-chromosome = "torchstaar.chromosome:main"
 

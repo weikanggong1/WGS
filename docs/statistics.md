@@ -1,3 +1,5 @@
+> 0.5.0 的长 mask 使用 FastSKAT 混合谱和 4096 缓存协方差；完整谱/近似边界与真实验证见[版本说明](hybrid_validation.md)，三输入调用见[运行指南](cache_only_run.md)。
+
 # Torchstaar统计API与完整谱后端
 
 ## 功能与输入输出
@@ -82,14 +84,14 @@ Burden是 `(wᵀu)²/(wᵀVw)`；SKAT使用 `Σ(w_i u_i)²` 与 `D_wVD_w` 的全
 from torchstaar.cuda_eigen import FP32SmallSpectrumSolver
 
 # 已经生成CUDA FP32 [B,M,M]完整对称weighted矩阵；不含Score/读取/概率。
-with FP32SmallSpectrumSolver(memory_limit=20 * 2**30) as spectrum_solver:
+with FP32SmallSpectrumSolver(memory_limit=40 * 2**30) as spectrum_solver:
     full_eigenvalues = spectrum_solver.eigvalsh(weighted_matrices, UPLO="U")
 spectrum_execution = spectrum_solver.report()  # 关闭后记录cleanup/info/library proof。
 ```
 
 | API/参数 | 输入和输出 |
 |---|---|
-| `FP32SmallSpectrumSolver(memory_limit=20*2**30)` | 正整数字节预算，默认20GiB，拥有一个串行selector；首个selected CUDA调用才加载官方CUDA库。 |
+| `FP32SmallSpectrumSolver(memory_limit=40*2**30)` | 正整数字节预算，默认40GiB，拥有一个串行selector；首个selected CUDA调用才加载官方CUDA库。 |
 | `expected_solver_sha256` / `expected_runtime_sha256` | 可选既有cuSOLVER/runtime SHA字符串；提供则精确匹配。实际SHA总是记录，package hash存在时核对。 |
 | `eigvalsh(matrix,UPLO='U')` | selected为strided CUDA FP32、requires_grad=False的 `[M,M]`/`[B,M,M]`，33≤M≤512；返回升序全谱 `[M]`/`[B,M]` FP32。范围外由原Torch处理；实际失败及后端由执行报告记录。 |
 | `report()` | 实际selected/outside calls、矩阵/维度、API/library/status与cleanup；不隐含科学验收。 |
@@ -97,7 +99,7 @@ spectrum_execution = spectrum_solver.report()  # 关闭后记录cleanup/info/lib
 
 ## CLI、原R与真实验证
 
-本页低级函数没有独立数据读取CLI。完整任务使用 `torchstaar expanded_configuration.json --device cuda:0 --weighted-eigensolver auto --report private/report.json`；配置与全部CLI参数见主指南。原R对应 `STAAR::STAAR`/`STAAR_sp`、`CCT`及 `Saddle`，锁定实现见下方。
+本页低级函数没有独立数据读取CLI。完整任务使用 `torchstaar-config expanded_configuration.json --device cuda:0 --weighted-eigensolver auto --report private/report.json`；配置与全部CLI参数见主指南。原R对应 `STAAR::STAAR`/`STAAR_sp`、`CCT`及 `Saddle`，锁定实现见下方。
 
 本版真实测量只覆盖完整 Single 与有界原 R Single。低级集合统计、完整谱或 mock 检查不能代替当前 gene-based 端到端对照；范围见 [主指南](torchstaar.md#真实验证与计时范围)。`eigen_tail` 包含整个 staar_test，内部计时不可相加或称纯 eig 时间。
 

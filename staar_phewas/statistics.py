@@ -46,6 +46,30 @@ _STATISTICS_METADATA = {
     "native_spectrum_reuse": "exact FP64 cross-products of represented FP32 weights; no tolerance",
     "native_relation_transfer_scope": "one complete Boolean relation table per CUDA test; excludes validation and probability transfers",
     "native_tail_batch": "original Saddle/moment/CCT branches, FP64 probability arithmetic",
+    "tail_method": "saddlepoint_gamma_or_fastskat_hybrid",
+    "exact_spectrum_threshold": 5000,
+    "davies_calls": 0,
+    "davies_faults": 0,
+    "davies_retry_calls": 0,
+    "davies_retry_faults": 0,
+    "davies_kuonen_fallback_calls": 0,
+    "davies_kuonen_fallback_failures": 0,
+    "davies_psd_clipped_calls": 0,
+    "davies_psd_clip_max_relative": 0.0,
+    "liu_approximate_calls": 0,
+    "liu_approximate_failures": 0,
+    "liu_failure_records": [],
+    "liu_lobpcg_max_residual": 0.0,
+    "liu_lobpcg_max_orthogonality": 0.0,
+    "liu_trace_max_relative_se": 0.0,
+    "fastskat_approximate_calls": 0,
+    "fastskat_approximate_failures": 0,
+    "fastskat_lobpcg_max_residual": 0.0,
+    "fastskat_lobpcg_max_orthogonality": 0.0,
+    "fastskat_subspace_residual_limit": 0.25,
+    "fastskat_residual_trace_method": "exact_dense",
+    "fastskat_failure_records": [],
+    "tail_metadata": [],
 }
 
 
@@ -61,6 +85,28 @@ def statistics_execution_metadata(*, reset=False):
                     "native_relation_row_batches", "native_relation_bulk_d2h_calls", "native_relation_max_scratch_bytes",
                     "probability_output_d2h_calls", "probability_output_d2h_values", "cct_validation_flag_batches"):
             _STATISTICS_METADATA[key] = 0
+        _STATISTICS_METADATA["davies_calls"] = 0
+        _STATISTICS_METADATA["davies_faults"] = 0
+        _STATISTICS_METADATA["davies_retry_calls"] = 0
+        _STATISTICS_METADATA["davies_retry_faults"] = 0
+        _STATISTICS_METADATA["davies_kuonen_fallback_calls"] = 0
+        _STATISTICS_METADATA["davies_kuonen_fallback_failures"] = 0
+        _STATISTICS_METADATA["davies_psd_clipped_calls"] = 0
+        _STATISTICS_METADATA["davies_psd_clip_max_relative"] = 0.0
+        _STATISTICS_METADATA["liu_approximate_calls"] = 0
+        _STATISTICS_METADATA["liu_approximate_failures"] = 0
+        _STATISTICS_METADATA["liu_failure_records"] = []
+        _STATISTICS_METADATA["liu_lobpcg_max_residual"] = 0.0
+        _STATISTICS_METADATA["liu_lobpcg_max_orthogonality"] = 0.0
+        _STATISTICS_METADATA["liu_trace_max_relative_se"] = 0.0
+        _STATISTICS_METADATA["fastskat_approximate_calls"] = 0
+        _STATISTICS_METADATA["fastskat_approximate_failures"] = 0
+        _STATISTICS_METADATA["fastskat_lobpcg_max_residual"] = 0.0
+        _STATISTICS_METADATA["fastskat_lobpcg_max_orthogonality"] = 0.0
+        _STATISTICS_METADATA["fastskat_subspace_residual_limit"] = 0.25
+        _STATISTICS_METADATA["fastskat_residual_trace_method"] = "exact_dense"
+        _STATISTICS_METADATA["fastskat_failure_records"] = []
+        _STATISTICS_METADATA["tail_metadata"] = []
     return result
 
 
@@ -477,7 +523,7 @@ def _native_weight_relations(rows, *, scratch_limit=64 * 2**20):
         available = tf32._product_workspace_availability(
             allocated=torch.cuda.memory_allocated(rows.device),
             reserved=torch.cuda.memory_reserved(rows.device), free=free,
-            limit=min(20 * 2**30, tf32._memory_limit_bytes),
+            limit=min(40 * 2**30, tf32._memory_limit_bytes),
             reserve=tf32._memory_reserve_bytes)["available_bytes"]
         budget = min(budget, available - persistent_bytes)
     bytes_per_row = 17 * number_weights * number_variants + 9 * number_weights
@@ -504,6 +550,479 @@ def _native_weight_relations(rows, *, scratch_limit=64 * 2**20):
 def _native_weighted_spectra(covariance, weights):
     from ._weighted_spectra import native_weighted_spectra
     return native_weighted_spectra(covariance, weights)
+
+
+def _record_tail_metadata(metadata):
+    """Keep a bounded, JSON-serializable tail-method audit trail."""
+    entry = {str(key): value for key, value in metadata.items()}
+    _STATISTICS_METADATA["tail_metadata"].append(entry)
+    del _STATISTICS_METADATA["tail_metadata"][:-64]
+
+
+def _liu_failure(*, index, m, rank, probes, seed, reason, **extra):
+    """Record a reproducible long-mask failure before stopping that mask."""
+    _STATISTICS_METADATA["liu_approximate_failures"] += 1
+    record = {"method": "liu_hutchinson_approx", "approximate": True,
+              "m": int(m), "M": int(m), "rank": int(rank),
+              "probes": int(probes), "probe_count": int(probes),
+              "seed": int(seed), "weight_index": int(index),
+              "reason": str(reason)}
+    record.update({str(key): value for key, value in extra.items()})
+    _STATISTICS_METADATA["liu_failure_records"].append(record)
+    raise ArithmeticError(f"Liu approximation stopped for weight {index}: {reason}")
+
+
+
+
+def _saddlepoint_skat_pvalues(q_values, spectra):
+    """Use the established complete-spectrum Saddle/moment tail for M<=10k."""
+    from ._fused_saddle import quadratic_form_sf_batch
+    values = quadratic_form_sf_batch(q_values, spectra).to(dtype=torch.float64)
+    if not bool(torch.isfinite(values).all()) or bool(((values < 0) | (values > 1)).any()):
+        raise ArithmeticError("Saddle/moment SKAT tail failed for one or more weights")
+    _record_tail_metadata({
+        "method": "saddlepoint_gamma",
+        "m": int(spectra.shape[1]),
+        "weights": int(spectra.shape[0]),
+        "eigenvalue_cutoff": 1e-8,
+        "root_tolerance": 1e-8,
+        "moment_switch": 1e-4,
+        "approximate": False,
+    })
+    return values.to(dtype=torch.float64, device=q_values.device)
+
+
+def _liu_hutchinson_pvalues(q_values, covariance, skat_weights, *, rank=512,
+                            probes=32, seed=1729, threshold=5000):
+    """Original Liu approximation above the configured mask threshold without a full eigensolve.
+
+    The largest ``rank`` eigenvalues are obtained with LOBPCG.  Fixed-seed
+    Rademacher probes estimate the residual c2--c4 traces; c1 is the exact
+    covariance diagonal sum.  A negative residual beyond its probe standard
+    error is a hard failure, so the caller cannot silently return an unstable
+    tail.  The standard Liu branch uses l=1/s1^2 when s1^2<=s2 (Liu.mod's
+    l=1/s2 branch is deliberately excluded).
+    """
+    if covariance.ndim != 2 or covariance.shape[0] != covariance.shape[1]:
+        raise ValueError("Liu approximation requires a square covariance")
+    m = int(covariance.shape[0])
+    if m <= int(threshold):
+        raise ValueError("Liu approximation is reserved above the configured mask threshold")
+    device = covariance.device
+    dtype = covariance.dtype
+    k = min(int(rank), m - 1)
+    p = min(int(probes), m)
+    if k < 1 or p < 4:
+        raise ValueError("Liu approximation requires positive rank and at least four probes")
+    if covariance.is_cuda:
+        from . import tf32
+        limit_bytes = min(40 * 2**30, int(tf32._memory_limit_bytes))
+        allocated = int(torch.cuda.memory_allocated(covariance.device))
+        # v is already resident.  Account for the temporary and final
+        # weighted matrices, LOBPCG basis/work vectors, and probes before
+        # allocating a second M-by-M object.
+        estimate_bytes = (8 * m * m + 20 * m * k + 4 * m * p +
+                          int(tf32._memory_reserve_bytes))
+        if allocated + estimate_bytes > limit_bytes:
+            _liu_failure(index=0, m=m, rank=k, probes=p, seed=seed,
+                         reason="estimated CUDA workspace exceeds configured 40 GiB limit",
+                         allocated_bytes=allocated, estimated_bytes=estimate_bytes,
+                         limit_bytes=limit_bytes)
+    generator = torch.Generator(device=device)
+    generator.manual_seed(int(seed))
+    z = torch.randint(0, 2, (m, p), generator=generator, device=device,
+                      dtype=torch.int8).to(dtype=dtype).mul_(2).sub_(1)
+    _STATISTICS_METADATA["liu_init"] = "fixed-seed-rademacher-X"
+    pvalues = []
+    trace_se = []
+    weight_records = []
+    for index in range(int(skat_weights.shape[1])):
+        weights = skat_weights[:, index].to(dtype=dtype, device=device)
+        weighted = covariance * weights[:, None] * weights[None, :]
+        init = torch.randint(0, 2, (m, k), generator=generator, device=device,
+                             dtype=torch.int8).to(dtype=dtype).mul_(2).sub_(1)
+        top, basis = torch.lobpcg(weighted, k=k, B=None, X=init,
+                                  largest=True, niter=100, tol=1e-5)
+        order = top.flatten().argsort(descending=True)
+        top = top.flatten().gather(0, order).to(dtype=torch.float64)
+        basis = basis[:, order].to(dtype=dtype)
+        if not bool(torch.isfinite(top).all()) or not bool(torch.isfinite(basis).all()):
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="LOBPCG produced non-finite eigenpairs")
+        if bool((top < -1e-5).any()):
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="LOBPCG produced a negative eigenvalue")
+        trace = weighted.diagonal().to(dtype=torch.float64).sum()
+        top_trace_gap = trace - top.sum()
+        if bool(top_trace_gap < -1e-4 * trace.abs().clamp_min(1)):
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="leading eigenvalue trace exceeds covariance trace",
+                         top_trace_gap=float(top_trace_gap.detach().cpu()))
+        projected = torch.matmul(weighted, basis)
+        residual_norm = torch.linalg.vector_norm(projected - basis * top.to(dtype=dtype)) / torch.linalg.vector_norm(projected).clamp_min(1e-12)
+        orthogonality = torch.linalg.vector_norm(torch.matmul(basis.T, basis) - torch.eye(k, dtype=dtype, device=device)) / math.sqrt(float(k))
+        residual_norm_value = float(residual_norm.detach().cpu())
+        orthogonality_value = float(orthogonality.detach().cpu())
+        _STATISTICS_METADATA["liu_lobpcg_max_residual"] = max(_STATISTICS_METADATA["liu_lobpcg_max_residual"], residual_norm_value)
+        _STATISTICS_METADATA["liu_lobpcg_max_orthogonality"] = max(_STATISTICS_METADATA["liu_lobpcg_max_orthogonality"], orthogonality_value)
+        if residual_norm_value > 1e-3 or orthogonality_value > 1e-2:
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="LOBPCG convergence or orthogonality guard failed",
+                         residual_norm=residual_norm_value,
+                         orthogonality=orthogonality_value)
+        # Deflate the leading subspace before Hutchinson estimation.  This
+        # estimates the residual spectrum directly and avoids spending probe
+        # variance on the rank-k component already obtained by LOBPCG.
+        projections = torch.matmul(basis.T, z)
+        vectors = z
+        estimates = []
+        errors = []
+        for power in range(1, 5):
+            vectors = torch.matmul(weighted, vectors)
+            leading = (projections.square() * top.to(dtype=dtype).pow(power)[:, None]).sum(dim=0)
+            samples = ((z * vectors).sum(dim=0) - leading).to(dtype=torch.float64)
+            estimates.append(samples.mean())
+            errors.append(samples.std(unbiased=True) / math.sqrt(float(p)))
+        c1 = weighted.diagonal().to(dtype=torch.float64).sum()
+        top_moments = torch.stack([top.pow(power).sum() for power in range(1, 5)])
+        estimates_tensor = torch.stack(estimates)
+        errors_tensor = torch.stack(errors)
+        residual = estimates_tensor
+        # The probe estimate may be slightly below the exact leading moment;
+        # tolerate one standard error, but reject a materially negative tail.
+        tolerance = torch.maximum(errors_tensor * 4, residual.new_tensor(1e-10) * top_moments.abs().clamp_min(1))
+        if bool((residual[1:] < -tolerance[1:]).any()):
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="negative residual trace exceeds probe tolerance")
+        relative_se = errors_tensor[1:] / (top_moments[1:] + residual[1:].abs()).clamp_min(1e-12)
+        max_relative_se = float(relative_se.max().detach().cpu())
+        _STATISTICS_METADATA["liu_trace_max_relative_se"] = max(_STATISTICS_METADATA["liu_trace_max_relative_se"], max_relative_se)
+        if max_relative_se > 0.25:
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="Hutchinson trace relative standard error exceeds 0.25",
+                         max_relative_se=max_relative_se,
+                         trace_se=errors_tensor.detach().cpu().tolist())
+        moments = torch.cat((c1.reshape(1), top_moments[1:] + residual[1:].clamp_min(0)))
+        c1, c2, c3, c4 = moments
+        if bool((~torch.isfinite(moments)).any()) or bool(c2 <= 0) or bool(c3 <= 0) or bool(c4 <= 0):
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="Liu moments are non-finite or non-positive")
+        s1 = c3 / c2.pow(1.5)
+        s2 = c4 / c2.square()
+        if bool((~torch.isfinite(torch.stack((s1, s2))) | (s1 <= 0) | (s2 <= 0)).any()):
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="Liu standardized moments are invalid")
+        if bool(s1.square() > s2):
+            a = 1 / (s1 - torch.sqrt(s1.square() - s2))
+            delta = s1 * a.pow(3) - a.square()
+            degrees = a.square() - 2 * delta
+        else:
+            a = 1 / s1
+            delta = s1.new_zeros(())
+            degrees = 1 / s1.square()
+        transformed = (q_values[index].to(dtype=torch.float64) - c1) / torch.sqrt(2 * c2)
+        transformed = transformed * (math.sqrt(2) * a) + degrees + delta
+        if bool(((~torch.isfinite(transformed)) | (degrees <= 0) | (delta < 0)).any()):
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="Liu transformed statistic is invalid")
+        # SciPy is already a project runtime dependency and supplies the
+        # noncentral chi-square survival function absent from PyTorch 2.5.
+        from scipy.stats import ncx2
+        probability = float(ncx2.sf(float(transformed.detach().cpu()),
+                                    float(degrees.detach().cpu()),
+                                    float(delta.detach().cpu())))
+        if not math.isfinite(probability) or probability < 0 or probability > 1:
+            _liu_failure(index=index, m=m, rank=k, probes=p, seed=seed,
+                         reason="Liu probability is invalid")
+        pvalues.append(q_values.new_tensor(probability, dtype=torch.float64))
+        trace_se.append(errors_tensor.detach().cpu().tolist())
+        weight_records.append({"index": index, "c1": float(c1), "c2": float(c2),
+                               "c3": float(c3), "c4": float(c4),
+                               "degrees": float(degrees), "delta": float(delta),
+                               "lobpcg_residual": residual_norm_value,
+                               "lobpcg_orthogonality": orthogonality_value,
+                               "trace_relative_se": max_relative_se})
+        del weighted, top, basis, init, projected, projections, vectors
+    _STATISTICS_METADATA["liu_approximate_calls"] += 1
+    _record_tail_metadata({
+        "method": "liu_hutchinson_approx",
+        "m": m,
+        "M": m,
+        "rank": k,
+        "probes": p,
+        "probe_count": p,
+        "seed": int(seed),
+        "trace_se": trace_se,
+        "lobpcg_init": "fixed-seed-rademacher-X",
+        "weights": weight_records,
+        "approximate": True,
+    })
+    return torch.stack(pvalues).to(device=q_values.device)
+
+
+def _fastskat_failure(*, index, m, rank, seed, reason, **extra):
+    """Stop a long mask when the top-k or residual moments are not reliable."""
+    _STATISTICS_METADATA["fastskat_approximate_failures"] += 1
+    record = {"method": "fastskat_hybrid", "approximate": True,
+              "m": int(m), "M": int(m), "rank": int(rank),
+              "probes": 0, "probe_count": 0, "seed": int(seed),
+              "weight_index": int(index), "reason": str(reason)}
+    record.update({str(key): value for key, value in extra.items()})
+    _STATISTICS_METADATA["fastskat_failure_records"].append(record)
+    raise ArithmeticError(f"FastSKAT hybrid stopped for weight {index}: {reason}")
+
+
+def _fastskat_hybrid_sf_tensor(statistic, top_eigenvalues, residual_mean,
+                               residual_second, diagnostics=None):
+    """Saddlepoint tail for top eigenvalues plus a Satterthwaite residual.
+
+    If the residual spectrum has first moment ``mu`` and second power sum
+    ``s2``, it is represented by ``a * chi2_nu`` with ``a=s2/mu`` and
+    ``nu=mu**2/s2``.  The cgf and its derivatives then retain the leading
+    eigenvalues individually and include the residual as a continuous
+    chi-square multiplicity. Near the mean a two-moment Satterthwaite
+    Gamma fallback is used for the hybrid distribution.
+    """
+    top = _double(top_eigenvalues).reshape(-1)
+    q_raw = _double(statistic, device=top.device)
+    mu = _double(residual_mean, device=top.device)
+    s2 = _double(residual_second, device=top.device)
+    if (not top.numel() or q_raw.numel() != 1 or not bool(torch.isfinite(top).all())
+            or not bool(torch.isfinite(torch.stack((q_raw, mu, s2))).all())
+            or bool(q_raw < 0) or bool(mu < 0) or bool(s2 < 0)):
+        raise ValueError("FastSKAT hybrid requires finite nonnegative moments")
+    if bool(q_raw == 0):
+        if diagnostics is not None:
+            diagnostics.update(tail_branch="zero_statistic", has_residual=bool(mu > 0 and s2 > 0))
+        return q_raw.new_tensor(1.)
+    if bool((top < -1e-6).any()):
+        raise ArithmeticError("FastSKAT hybrid received a materially negative top eigenvalue")
+    top = top.clamp_min(0)
+    top_scale = top.max() if top.numel() else q_raw.new_zeros(())
+    # A residual component is absent only when both moments are zero. A
+    # comparison between moments of different orders is not scale invariant.
+    if bool((mu > 0) != (s2 > 0)):
+        raise ArithmeticError("FastSKAT hybrid residual moments are inconsistent")
+    has_residual = bool(mu > 0 and s2 > 0)
+    if has_residual:
+        residual_scale = s2 / mu
+        residual_dof = mu.square() / s2
+    else:
+        residual_scale = q_raw.new_zeros(())
+        residual_dof = q_raw.new_zeros(())
+    scale = torch.maximum(top_scale, residual_scale).clamp_min(1e-30)
+    scaled_top = top / scale
+    scaled_residual_scale = residual_scale / scale
+    q = q_raw / scale
+    mean = scaled_top.sum()
+    if has_residual:
+        mean = mean + residual_dof * scaled_residual_scale
+    total_mean = top.sum() + mu
+    total_second = top.square().sum() + s2
+    if bool(total_second <= 0) or bool(total_mean <= 0):
+        raise DegenerateTestError("FastSKAT hybrid has zero total variance")
+
+    def derivative(root):
+        value = (scaled_top / (1 - 2 * scaled_top * root)).sum()
+        if has_residual:
+            value = value + (mu / scale) / (1 - 2 * scaled_residual_scale * root)
+        return value
+
+    if bool(q >= mean):
+        lower = q.new_zeros(())
+    else:
+        lower = q.new_tensor(-1.)
+        for _ in range(80):
+            if bool(derivative(lower) <= q):
+                break
+            lower = lower * 2
+        else:
+            raise ArithmeticError("FastSKAT hybrid could not bracket a negative saddlepoint root")
+    upper = q.new_tensor(0.499999999)
+    if bool(derivative(upper) < q):
+        raise ArithmeticError("FastSKAT hybrid could not bracket a positive saddlepoint root")
+    root = q.new_zeros(())
+    for iteration in range(256):
+        root = (lower + upper) / 2
+        residual = derivative(root) - q
+        if bool(residual.abs() <= 1e-10 * (q.abs() + 1)):
+            break
+        upper = torch.where(residual > 0, root, upper)
+        lower = torch.where(residual > 0, lower, root)
+    else:
+        raise ArithmeticError("FastSKAT hybrid saddlepoint root did not converge")
+    if diagnostics is not None:
+        diagnostics.update(
+            has_residual=has_residual,
+            saddlepoint_iterations=iteration + 1,
+            saddlepoint_root=float(root.detach().cpu()),
+            saddlepoint_relative_residual=float((residual.abs() / (q.abs() + 1)).detach().cpu()),
+            tail_branch=("satterthwaite_two_moment_gamma" if bool(root.abs() < 1e-4)
+                         else "hybrid_saddlepoint"),
+        )
+    if bool(root.abs() < 1e-4):
+        dof = total_mean.square() / total_second
+        adjusted = ((q_raw - total_mean) / torch.sqrt(2 * total_second)
+                    * torch.sqrt(2 * dof) + dof)
+        return torch.where(adjusted <= 0, q_raw.new_tensor(1.),
+                           torch.special.gammaincc(dof / 2, adjusted / 2))
+    cumulant = -0.5 * torch.log1p(-2 * scaled_top * root).sum()
+    if has_residual:
+        x = -2 * scaled_residual_scale * root
+        safe_x = torch.where(x == 0, x.new_tensor(1.), x)
+        log_ratio = torch.where(x == 0, x.new_tensor(1.), torch.log1p(x) / safe_x)
+        cumulant = cumulant + (mu / scale) * root * log_ratio
+    w2 = 2 * (root * q - cumulant)
+    if bool(w2 <= 0):
+        raise ArithmeticError("FastSKAT hybrid saddlepoint has a non-positive signed root")
+    signed_root = torch.copysign(torch.sqrt(w2), root)
+    second_derivative = 2 * (scaled_top.square() /
+                             (1 - 2 * scaled_top * root).square()).sum()
+    if has_residual:
+        second_derivative = second_derivative + 2 * (s2 / scale.square()) / (1 - 2 * scaled_residual_scale * root).square()
+    v = root * torch.sqrt(second_derivative)
+    z = signed_root + torch.log(v / signed_root) / signed_root
+    return (0.5 * torch.erfc(z / math.sqrt(2))).clamp(0, 1)
+
+
+def _fastskat_ritz_pairs(weighted, basis):
+    """Pair Ritz values with the corresponding vectors of the same subspace.
+
+    Sorting the values without rotating the basis gives an invalid eigenpair
+    residual.  The small orthogonal rotation changes neither the retained
+    subspace nor the residual-moment definition.
+    """
+    ritz = torch.matmul(basis.T, torch.matmul(weighted, basis))
+    values, rotation = torch.linalg.eigh(ritz, UPLO="U")
+    return (values.flip(0).to(dtype=torch.float64),
+            torch.matmul(basis, rotation.flip(1)))
+
+
+def _fastskat_hybrid_pvalues(q_values, covariance, skat_weights, *, rank=512,
+                             seed=1729, threshold=5000):
+    """FastSKAT-style top-k spectrum plus exact-dense residual moments.
+
+    The dense covariance already held by the current WGS pipeline makes the
+    residual trace moments available without Hutchinson probes: ``c1`` is the
+    diagonal trace and ``c2=||A||_F^2``.  Only the leading ``rank`` eigenpairs
+    use LOBPCG; the residual is reduced to a Satterthwaite chi-square and is
+    included analytically in the saddlepoint cgf.  This is approximate because
+    the residual spectrum is collapsed to two moments.
+    """
+    if covariance.ndim != 2 or covariance.shape[0] != covariance.shape[1]:
+        raise ValueError("FastSKAT hybrid requires a square covariance")
+    m = int(covariance.shape[0])
+    if m <= int(threshold):
+        raise ValueError("FastSKAT hybrid is reserved above the configured mask threshold")
+    if q_values.ndim != 1 or skat_weights.ndim != 2 or skat_weights.shape[0] != m:
+        raise ValueError("FastSKAT hybrid q/weights have incompatible shapes")
+    device = covariance.device
+    dtype = covariance.dtype
+    k = min(int(rank), m - 1)
+    if k < 1:
+        raise ValueError("FastSKAT hybrid requires a positive rank")
+    if covariance.is_cuda:
+        from . import tf32
+        limit_bytes = min(40 * 2**30, int(tf32._memory_limit_bytes))
+        allocated = int(torch.cuda.memory_allocated(covariance.device))
+        estimate_bytes = 8 * m * m + 24 * m * k + int(tf32._memory_reserve_bytes)
+        if allocated + estimate_bytes > limit_bytes:
+            _fastskat_failure(index=0, m=m, rank=k, seed=seed,
+                              reason="estimated CUDA workspace exceeds configured 40 GiB limit",
+                              allocated_bytes=allocated, estimated_bytes=estimate_bytes,
+                              limit_bytes=limit_bytes)
+    from ._fastskat_numerics import refine_spectrum_and_moments
+    from .precision_audit import explicit_fp64_spectral_refinement
+    generator = torch.Generator(device=device)
+    generator.manual_seed(int(seed))
+    pvalues = []
+    weight_records = []
+    for index in range(int(skat_weights.shape[1])):
+        weights = skat_weights[:, index].to(dtype=dtype, device=device)
+        weighted = covariance * weights[:, None] * weights[None, :]
+        # A fixed-seed Gaussian basis is required here.  Rademacher columns
+        # can be strongly correlated for a large identity-like block and
+        # trigger a known LOBPCG failure mode with spurious eigenvalues.
+        init = torch.randn((m, k), generator=generator, device=device,
+                           dtype=dtype)
+        try:
+            top, basis = torch.lobpcg(weighted, k=k, B=None, X=init,
+                                      largest=True, niter=200, tol=1e-5)
+        except RuntimeError as error:
+            _fastskat_failure(index=index, m=m, rank=k, seed=seed,
+                              reason="LOBPCG failed", error=str(error))
+        top = top.flatten()
+        basis = basis.to(dtype=dtype)
+        if not bool(torch.isfinite(top).all()) or not bool(torch.isfinite(basis).all()):
+            _fastskat_failure(index=index, m=m, rank=k, seed=seed,
+                              reason="LOBPCG produced non-finite eigenpairs")
+        # Refine the sampled subspace against the stored matrix itself.
+        # FP64 is confined to spectral refinement; genotype/covariance GEMMs
+        # retain their explicit TF32 route and the dense matrix stays FP32.
+        try:
+            with explicit_fp64_spectral_refinement():
+                refined = refine_spectrum_and_moments(weighted, basis)
+        except (RuntimeError, ArithmeticError) as error:
+            _fastskat_failure(index=index, m=m, rank=k, seed=seed,
+                              reason="FP64 spectral refinement failed", error=str(error))
+        top, basis, projected = (refined[key] for key in ("top", "basis", "projected"))
+        trace, trace2 = refined["trace"], refined["trace2"]
+        residual_mean, residual_second = refined["residual_mean"], refined["residual_second"]
+        residual_norm_value = float(refined["residual_norm"].detach().cpu())
+        orthogonality_value = float(refined["orthogonality"].detach().cpu())
+        _STATISTICS_METADATA["fastskat_lobpcg_max_residual"] = max(
+            _STATISTICS_METADATA["fastskat_lobpcg_max_residual"], residual_norm_value)
+        _STATISTICS_METADATA["fastskat_lobpcg_max_orthogonality"] = max(
+            _STATISTICS_METADATA["fastskat_lobpcg_max_orthogonality"], orthogonality_value)
+        if residual_norm_value > 0.25 or orthogonality_value > 1e-2:
+            _fastskat_failure(index=index, m=m, rank=k, seed=seed,
+                              reason="LOBPCG convergence or orthogonality guard failed",
+                              residual_norm=residual_norm_value,
+                              orthogonality=orthogonality_value)
+        tail_diagnostics = {}
+        pvalue = _fastskat_hybrid_sf_tensor(q_values[index], top, residual_mean,
+                                            residual_second, diagnostics=tail_diagnostics)
+        if not bool(torch.isfinite(pvalue)):
+            _fastskat_failure(index=index, m=m, rank=k, seed=seed,
+                              reason="FastSKAT hybrid probability is non-finite")
+        pvalues.append(pvalue.to(dtype=torch.float64))
+        weight_records.append({
+            "index": index,
+            "residual_mean": float(residual_mean.detach().cpu()),
+            "residual_second": float(residual_second.detach().cpu()),
+            "residual_scale": float((residual_second / residual_mean).detach().cpu())
+            if bool(residual_mean > 0) else 0.0,
+            "residual_dof": float((residual_mean.square() / residual_second).detach().cpu())
+            if bool(residual_second > 0) else 0.0,
+            "lobpcg_residual": residual_norm_value,
+            "lobpcg_orthogonality": orthogonality_value,
+            **tail_diagnostics,
+            "spectral_refinement": refined["metadata"],
+        })
+        del weighted, top, basis, init, projected, refined
+    _STATISTICS_METADATA["fastskat_approximate_calls"] += 1
+    _record_tail_metadata({
+        "method": "fastskat_hybrid",
+        "tail_method": "top_k_plus_residual_satterthwaite_saddlepoint",
+        "m": m,
+        "M": m,
+        "rank": k,
+        "probes": 0,
+        "probe_count": 0,
+        "seed": int(seed),
+        "lobpcg_init": "fixed-seed-gaussian-X",
+        "lobpcg_max_iter": 200,
+        "subspace_residual_limit": 0.25,
+        "subspace_power_iterations": 2,
+        "spectral_refinement_precision": "blockwise_fp64",
+        "dense_storage_precision": "fp32",
+        "residual_second_reduction": "fp64_square_and_sum",
+        "residual_definition": "matched_ritz_pairs_frobenius_relative",
+        "residual_trace_method": "exact_dense",
+        "weights": weight_records,
+        "approximate": True,
+    })
+    return torch.stack(pvalues).to(device=q_values.device)
 
 
 def _staar_probability_fields(pvalues, labels, *, tail_optimization=False, batch_copy=True):
@@ -559,6 +1078,10 @@ def staar_test(
     cmac: float | None = None,
     _skat_pvalues: torch.Tensor | None = None,
     matmul_mode: str = "fp64",
+    long_mask_threshold: int = 5000,
+    long_mask_method: str = "fastskat",
+    long_mask_rank: int = 512,
+    long_mask_seed: int = 1729,
     tail_optimization: bool = False,
     weight_batch_optimization: bool = False,
     output_batch_optimization: bool = True,
@@ -566,8 +1089,13 @@ def staar_test(
 ) -> dict[str, float | int]:
     """Return STAAR columns from already oriented, imputed score inputs.
 
-    Native tf32 uses FP32 scores, covariance, weights and complete eigvalsh.
-    Probability arithmetic alone uses FP64 for underflow/cancellation stability.
+    Native tf32 uses FP32 scores, covariance and weights.  M<=long_mask_threshold (default 5000) uses the
+    established complete-spectrum saddlepoint/fourth-moment Gamma path;
+    larger masks default to a recorded FastSKAT-style top-k LOBPCG spectrum
+    plus an exact-dense residual Satterthwaite chi-square in the saddlepoint
+    cgf.  ``long_mask_method='liu'`` retains the earlier rank-512/32-probe
+    Liu implementation for comparison.  Probability arithmetic uses FP64 for
+    underflow stability.
     Explicit fp64 controls preserve the earlier scalar implementation.
     weight_batch_optimization groups score products and chi-square tails,
     retains individual one-dimensional reductions for explicit FP64 controls.
@@ -585,6 +1113,15 @@ def staar_test(
     otherwise the sum of the caller's MAC values is returned.
     """
     validate_mode(matmul_mode)
+    if type(long_mask_threshold) is not int or long_mask_threshold < 1:
+        raise ValueError("long_mask_threshold must be a positive integer")
+    _STATISTICS_METADATA["exact_spectrum_threshold"] = long_mask_threshold
+    if long_mask_method not in ("fastskat", "liu"):
+        raise ValueError("long_mask_method must be fastskat or liu")
+    if int(long_mask_rank) < 1:
+        raise ValueError("long_mask_rank must be positive")
+    if int(long_mask_seed) < 0:
+        raise ValueError("long_mask_seed must be nonnegative")
     native = matmul_mode == "tf32"
     core_dtype = torch.float32 if native else torch.float64
     u = torch.as_tensor(score, dtype=core_dtype)
@@ -670,8 +1207,11 @@ def staar_test(
         if _skat_pvalues.shape != (number_weights,):
             raise ValueError("precomputed SKAT values do not match the annotation weights")
     small_spectra = None
-    if native and _skat_pvalues is None:
+    approximate_spectrum = None
+    if native and _skat_pvalues is None and count <= long_mask_threshold:
         small_spectra = _native_weighted_spectra(v, skat_weights)
+    elif native and _skat_pvalues is None:
+        approximate_spectrum = True
     elif _skat_pvalues is None and u.is_cuda and len(u) <= 32 and number_weights > 1:
         # A natural batch of annotation weights selects the small-matrix
         # CUDA Jacobi solver. Reuse that spectrum through the scalar tail.
@@ -714,8 +1254,17 @@ def staar_test(
             q_values = torch.stack([row.sum() for row in q_products])
     if native:
         if _skat_pvalues is None:
-            from ._fused_saddle import quadratic_form_sf_batch
-            pvalues[0] = quadratic_form_sf_batch(q_values, small_spectra)
+            if approximate_spectrum:
+                if long_mask_method == "fastskat":
+                    pvalues[0] = _fastskat_hybrid_pvalues(
+                        q_values, v, skat_weights, rank=int(long_mask_rank),
+                        seed=int(long_mask_seed), threshold=long_mask_threshold)
+                else:
+                    pvalues[0] = _liu_hutchinson_pvalues(
+                        q_values, v, skat_weights, rank=int(long_mask_rank),
+                        seed=int(long_mask_seed), threshold=long_mask_threshold)
+            else:
+                pvalues[0] = _saddlepoint_skat_pvalues(q_values, small_spectra)
         else:
             pvalues[0] = _skat_pvalues
         pvalues[1] = burden_pvalues

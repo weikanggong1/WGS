@@ -1,3 +1,5 @@
+> 0.5.0 的默认主入口为两份 CSV 加一个完整缓存目录，见[三输入指南](cache_only_run.md)。本页保留低级配置及原软件调用；兼容配置命令为 `torchstaar-config`，新的默认入口采用最多 8 GPU 和 40 GiB/worker。
+
 # Torchstaar：STAAR 的 PyTorch GPU 流程
 
 ## 功能与流程
@@ -170,7 +172,7 @@ torchstaar-chromosome private/chromosome.json --plan-only --report private/plan.
 # 从原 GDS 执行全部四类分析。
 torchstaar-chromosome private/chromosome.json --device cuda:0 --report private/report.json
 # 对已展开作业执行；六状态缓存由显式 Python 包装接入。
-torchstaar private/plan.json --device cuda:0 --report private/report.json
+torchstaar-config private/plan.json --device cuda:0 --report private/report.json
 ```
 
 两个命令的 `config` 是私有 JSON 路径，`--device` 默认 `cuda`；完整入口的 `--report` 必填，普通入口可选。`--plan-only` 只用于完整入口。普通入口的 `--weighted-eigensolver auto|torch|cusolver_batched` 可覆盖配置后端。已有缓存的本次 benchmark 使用前面的 Python 包装；直接 CLI 读取原 GDS 的耗时不代表缓存路线。

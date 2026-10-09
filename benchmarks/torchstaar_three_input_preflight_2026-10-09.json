@@ -1,0 +1,352 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-09",
+  "version": "0.5.0",
+  "implementation_sha256": "cba9fed9d15bda1813f7dfa8a239fd8b150cd945756fc60196b93d1cdc184328",
+  "samples": 339013,
+  "input_mode": "phenotype CSV + covariate CSV + standalone cache directory",
+  "reference": "same CSV-fitted model and frozen implementation; legacy512 TF32 covariance backend",
+  "scope": "one selected Single interval and three selected gene jobs; not complete chromosome or whole genome; no official R validation",
+  "pilot_memory_limit_gib": 27,
+  "production_memory_limit_gib": 40,
+  "association_precision": "TF32 with FP32 storage; explicit FP64 null fit and spectral refinement",
+  "covariance_configuration": {
+    "cached_output_panel": 4096,
+    "preparation_block": 512,
+    "long_mask_rank": 512,
+    "threshold": 5000,
+    "seed": 1729,
+    "probes": 0
+  },
+  "all_preflight_pass": true,
+  "completed_jobs_per_backend": 4,
+  "failed_jobs_per_backend": 0,
+  "timing_contract": "Concurrent single observations on separate GPUs; cold/warm and external GPU load are not controlled. Host wall and CUDA stream times overlap and cannot be added.",
+  "source_sha256": {
+    "_cached_covariance.py": "7dda0a6b8fa8ca331fd8f45c126b3dc97b173d320154253ee01bd1e881a30ae9",
+    "pipeline.py": "acfc5ce06c70f9e3ae0237131552a3f79f4f61b354cc19e354e1ae706eb54025",
+    "statistics.py": "091afd9a22134f5da83551afbce0ab6cbb20ce1d38dc303b10509bb97064fcc3",
+    "null_model.py": "b2ce2bec94b2b664bf1a3535aca8666a7f8fe39c7e13276922a569e145d90f4c",
+    "tf32.py": "a829ed65b440882efe4815f9a0ccdb8c07ce5454f07fb65bfbd57bf71aab1a99",
+    "run.py": "7693b06ea9f70707ee5a7890d891d40d9cda5580447ceb39f28d4a05fd828e26"
+  },
+  "jobs": [
+    {
+      "ordinal": 1,
+      "kind": "individual",
+      "rows": 11063,
+      "measurements": {
+        "cached": {
+          "seconds": 36.716363029554486,
+          "setup_seconds": 16.71548563800752,
+          "peak_allocated_mib": 5260.73779296875,
+          "peak_reserved_mib": 8500.0,
+          "host_memory_wait_seconds": 0,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 12,
+              "host_wall_seconds": 13.616511289961636,
+              "cuda_stream_seconds": 13.61814778506756
+            },
+            "genotype_trait_prepare": {
+              "calls": 11,
+              "host_wall_seconds": 0.3805587952956557,
+              "cuda_stream_seconds": 0.402698595046997
+            },
+            "score_covariance": {
+              "calls": 11,
+              "host_wall_seconds": 2.7863090923056006,
+              "cuda_stream_seconds": 2.8714657897949216
+            },
+            "individual_tail": {
+              "calls": 11,
+              "host_wall_seconds": 0.35929534677416086,
+              "cuda_stream_seconds": 0.353983269624412
+            },
+            "result_d2h": {
+              "calls": 11,
+              "host_wall_seconds": 0.10005884803831577,
+              "cuda_stream_seconds": 0.0025870719626545904
+            }
+          }
+        },
+        "legacy": {
+          "seconds": 37.20315841026604,
+          "setup_seconds": 16.001393711194396,
+          "peak_allocated_mib": 5260.73779296875,
+          "peak_reserved_mib": 8500.0,
+          "host_memory_wait_seconds": 0,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 12,
+              "host_wall_seconds": 13.96293287910521,
+              "cuda_stream_seconds": 13.964540999464688
+            },
+            "genotype_trait_prepare": {
+              "calls": 11,
+              "host_wall_seconds": 0.31645849253982306,
+              "cuda_stream_seconds": 0.33884198188781733
+            },
+            "score_covariance": {
+              "calls": 11,
+              "host_wall_seconds": 2.8336031641811132,
+              "cuda_stream_seconds": 2.9158302001953125
+            },
+            "individual_tail": {
+              "calls": 11,
+              "host_wall_seconds": 0.48485936876386404,
+              "cuda_stream_seconds": 0.47968862979859106
+            },
+            "result_d2h": {
+              "calls": 11,
+              "host_wall_seconds": 0.09733633417636156,
+              "cuda_stream_seconds": 0.002428127944469452
+            }
+          }
+        }
+      },
+      "probability_values": 11063,
+      "log_values": 11063,
+      "max_abs_delta_negative_log10p": 0.0,
+      "native_structure_equal": true,
+      "nonprobability_values_equal": true
+    },
+    {
+      "ordinal": 2,
+      "kind": "coding",
+      "rows": 5,
+      "measurements": {
+        "cached": {
+          "seconds": 13.01951910648495,
+          "setup_seconds": 1.4426186680793762e-06,
+          "peak_allocated_mib": 801.3935546875,
+          "peak_reserved_mib": 8500.0,
+          "host_memory_wait_seconds": 0.0006861155852675438,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 6,
+              "host_wall_seconds": 0.2799805235117674,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 5,
+              "host_wall_seconds": 1.2228932343423367,
+              "cuda_stream_seconds": 1.2239284896850589
+            },
+            "genotype_h2d": {
+              "calls": 5,
+              "host_wall_seconds": 0.06781612988561392,
+              "cuda_stream_seconds": 0.06845801615715028
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.9144395217299461,
+              "cuda_stream_seconds": 1.026986650466919
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 3.0896630715578794,
+              "cuda_stream_seconds": 2.9783401260375975
+            }
+          }
+        },
+        "legacy": {
+          "seconds": 13.021076811477542,
+          "setup_seconds": 1.7099082469940186e-06,
+          "peak_allocated_mib": 801.3935546875,
+          "peak_reserved_mib": 8500.0,
+          "host_memory_wait_seconds": 0.0009863534942269325,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 6,
+              "host_wall_seconds": 0.285995845682919,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 5,
+              "host_wall_seconds": 1.1844871984794736,
+              "cuda_stream_seconds": 1.1853199195861817
+            },
+            "genotype_h2d": {
+              "calls": 5,
+              "host_wall_seconds": 0.06887734029442072,
+              "cuda_stream_seconds": 0.06955219173431397
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 0.9083398981019855,
+              "cuda_stream_seconds": 1.0189722042083742
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 3.021558410488069,
+              "cuda_stream_seconds": 2.9119237747192384
+            }
+          }
+        }
+      },
+      "probability_values": 76,
+      "log_values": 0,
+      "max_abs_delta_negative_log10p": 0.0,
+      "native_structure_equal": true,
+      "nonprobability_values_equal": true
+    },
+    {
+      "ordinal": 3,
+      "kind": "noncoding",
+      "rows": 6,
+      "measurements": {
+        "cached": {
+          "seconds": 100.16208098642528,
+          "setup_seconds": 92.55814127344638,
+          "peak_allocated_mib": 1452.21337890625,
+          "peak_reserved_mib": 8502.0,
+          "host_memory_wait_seconds": 0.0006319237872958183,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 8,
+              "host_wall_seconds": 0.1970191653817892,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 7,
+              "host_wall_seconds": 2.2070283899083734,
+              "cuda_stream_seconds": 2.2082071533203123
+            },
+            "genotype_h2d": {
+              "calls": 5,
+              "host_wall_seconds": 0.11324359383434057,
+              "cuda_stream_seconds": 0.11387126541137696
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 1.1112333675846457,
+              "cuda_stream_seconds": 1.2626417617797852
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 0.9922974137589335,
+              "cuda_stream_seconds": 0.8420128860473632
+            }
+          }
+        },
+        "legacy": {
+          "seconds": 98.84797098580748,
+          "setup_seconds": 91.73671501968056,
+          "peak_allocated_mib": 1452.21337890625,
+          "peak_reserved_mib": 8502.0,
+          "host_memory_wait_seconds": 0.0006763637065887451,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 8,
+              "host_wall_seconds": 0.21091166324913502,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 7,
+              "host_wall_seconds": 2.1986006405204535,
+              "cuda_stream_seconds": 2.1998709564208982
+            },
+            "genotype_h2d": {
+              "calls": 5,
+              "host_wall_seconds": 0.11607480887323618,
+              "cuda_stream_seconds": 0.11671449589729309
+            },
+            "score_covariance": {
+              "calls": 5,
+              "host_wall_seconds": 1.022624995559454,
+              "cuda_stream_seconds": 1.1702506141662596
+            },
+            "eigen_tail": {
+              "calls": 5,
+              "host_wall_seconds": 0.5550351897254586,
+              "cuda_stream_seconds": 0.40852025985717777
+            }
+          }
+        }
+      },
+      "probability_values": 84,
+      "log_values": 0,
+      "max_abs_delta_negative_log10p": 0.0,
+      "native_structure_equal": true,
+      "nonprobability_values_equal": true
+    },
+    {
+      "ordinal": 4,
+      "kind": "ncrna",
+      "rows": 1,
+      "measurements": {
+        "cached": {
+          "seconds": 135.27876590378582,
+          "setup_seconds": 3.011152148246765e-05,
+          "peak_allocated_mib": 21896.0693359375,
+          "peak_reserved_mib": 24396.0,
+          "host_memory_wait_seconds": 0.015265345573425293,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 127,
+              "host_wall_seconds": 2.1633766517043114,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 126,
+              "host_wall_seconds": 39.6372117633,
+              "cuda_stream_seconds": 39.65935214233399
+            },
+            "score_covariance": {
+              "calls": 1,
+              "host_wall_seconds": 8.371483182534575,
+              "cuda_stream_seconds": 8.3715029296875
+            },
+            "eigen_tail": {
+              "calls": 1,
+              "host_wall_seconds": 42.13029064517468,
+              "cuda_stream_seconds": 42.130140625
+            }
+          }
+        },
+        "legacy": {
+          "seconds": 165.22293913923204,
+          "setup_seconds": 2.8264708817005157e-05,
+          "peak_allocated_mib": 2298.67724609375,
+          "peak_reserved_mib": 8508.0,
+          "host_memory_wait_seconds": 0.024425599724054337,
+          "stages": {
+            "cached_genotype_decode_prepare": {
+              "calls": 127,
+              "host_wall_seconds": 3.20741609018296,
+              "cuda_stream_seconds": 0.0
+            },
+            "genotype_trait_prepare": {
+              "calls": 126,
+              "host_wall_seconds": 37.7326328381896,
+              "cuda_stream_seconds": 37.75436216735838
+            },
+            "score_covariance": {
+              "calls": 1,
+              "host_wall_seconds": 40.41867496352643,
+              "cuda_stream_seconds": 40.418796875
+            },
+            "eigen_tail": {
+              "calls": 1,
+              "host_wall_seconds": 41.59931424725801,
+              "cuda_stream_seconds": 41.599390625
+            }
+          }
+        }
+      },
+      "probability_values": 14,
+      "log_values": 0,
+      "max_abs_delta_negative_log10p": 0.0,
+      "native_structure_equal": true,
+      "nonprobability_values_equal": true,
+      "M": 9854,
+      "cached_execution_mode": "two_original_and_weighted_panels",
+      "covariance_d2h_copies": 0
+    }
+  ],
+  "total_probability_values": 11237,
+  "total_log_values": 11063,
+  "max_abs_delta_negative_log10p": 0.0,
+  "all_probability_values_bitwise_equal": true
+}

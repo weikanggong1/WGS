@@ -10,7 +10,7 @@ import threading
 import time
 from .library_resolution import resolve_libraries, query_versions
 
-PROCESS_LIMIT = 20 * 2**30
+PROCESS_LIMIT = 40 * 2**30
 RESERVE_BYTES = 256 * 2**20
 NOVECTOR = 0
 UPPER = 1
@@ -26,7 +26,7 @@ def library_sha(path):
 def available_bytes(allocated, reserved, free, *, limit=PROCESS_LIMIT, reserve=RESERVE_BYTES):
     if any(type(x) is not int or x < 0 for x in (allocated, reserved, free, limit, reserve)):
         raise ValueError('memory snapshot must contain nonnegative integer bytes')
-    if limit == 0: raise ValueError('process limit must be positive integer bytes')
+    if limit == 0 or limit > PROCESS_LIMIT: raise ValueError('process limit must be in (0,40 GiB]')
     return max(0, min(limit - allocated, free + max(0, reserved - allocated) - reserve))
 
 

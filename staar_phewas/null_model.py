@@ -164,6 +164,142 @@ class GaussianNullModel:
         self.matmul_mode = mode
         return self
 
+    def score_covariance_sample_block(self, genotype, *, sample_block_size=8192, matmul_mode=None):
+        """TF32 Gaussian score/covariance by streaming sample blocks.
+
+        The host keeps the N-by-M imputed genotype matrix. A K-by-M sample
+        block is copied to CUDA, and its score and weighted cross-product are
+        accumulated into the complete M-by-M FP32 covariance. Projection
+        cross-products are accumulated with the same TF32 products before the
+        final dense projection. This route intentionally does not mirror
+        upper-triangular blocks and is restricted to a single Gaussian null
+        without SPA or kinship blocks.
+        """
+        mode = validate_mode(self.matmul_mode if matmul_mode is None else matmul_mode)
+        if mode != "tf32":
+            raise ValueError("sample-block covariance requires native TF32")
+        if self.spectrum.blocks or self.n_pheno != 1 or self.use_spa or self.family != "gaussian":
+            raise NotImplementedError("sample-block covariance requires a single Gaussian model without SPA or kinship blocks")
+        if type(sample_block_size) is not int or sample_block_size < 1:
+            raise ValueError("sample_block_size must be a positive integer")
+        source = torch.as_tensor(genotype, dtype=torch.float32, device="cpu")
+        if source.ndim != 2 or source.shape[0] != self.n:
+            raise ValueError("genotype must be a finite samples-by-variants matrix")
+        if not bool(torch.isfinite(source).all()):
+            raise ValueError("genotype must be finite")
+        n, m = map(int, source.shape)
+        device = self.device
+        inv = self.inverse_variance.to(dtype=torch.float32, device=device)
+        residual = self.scaled_residuals.to(dtype=torch.float32, device=device)
+        precision_x = self.precision_x.to(dtype=torch.float32, device=device)
+        fixed_cov = self.fixed_effect_covariance.to(dtype=torch.float32, device=device)
+        score = torch.zeros((m,), dtype=torch.float32, device=device)
+        covariance = torch.zeros((m, m), dtype=torch.float32, device=device)
+        cross = torch.zeros((precision_x.shape[1], m), dtype=torch.float32, device=device)
+        for start in range(0, n, sample_block_size):
+            stop = min(start + sample_block_size, n)
+            block = torch.as_tensor(source[start:stop], dtype=torch.float32, device=device)
+            score.add_(matmul(block.T, residual[start:stop], mode="tf32"))
+            covariance.add_(matmul(block.T, inv[start:stop, None] * block, mode="tf32"))
+            cross.add_(matmul(precision_x[start:stop].T, block, mode="tf32"))
+            del block
+        projected = matmul(matmul(cross.T, fixed_cov, mode="tf32"), cross, mode="tf32")
+        covariance.sub_(projected)
+        covariance = (covariance + covariance.T) / 2
+        del projected, cross, source, inv, residual, precision_x, fixed_cov
+        return score, covariance
+
+
+    def score_covariance_tiled(self, genotype, *, variant_tile_size=256, matmul_mode=None):
+        """TF32 Gaussian covariance using bounded variant tiles.
+
+        genotype remains on host memory. Each N-by-B tile is copied to the
+        CUDA device, and only B-by-B products are resident while the complete
+        M-by-M covariance is assembled in host FP32 storage. This preserves
+        variant order, native TF32 products, and dense covariance/eigenspectrum
+        semantics without changing rare-variant selection. This route is
+        restricted to a single Gaussian model with diagonal precision.
+        """
+        mode = validate_mode(self.matmul_mode if matmul_mode is None else matmul_mode)
+        if mode != "tf32":
+            raise ValueError("tiled covariance requires native TF32")
+        if self.spectrum.blocks or self.n_pheno != 1 or self.use_spa or self.family != "gaussian":
+            raise NotImplementedError("tiled covariance requires a single Gaussian model without SPA or kinship blocks")
+        if type(variant_tile_size) is not int or variant_tile_size < 1:
+            raise ValueError("variant_tile_size must be a positive integer")
+        source = torch.as_tensor(genotype, dtype=torch.float32, device="cpu")
+        if source.ndim != 2 or source.shape[0] != self.n:
+            raise ValueError("genotype must be a finite samples-by-variants matrix")
+        if not bool(torch.isfinite(source).all()):
+            raise ValueError("genotype must be finite")
+        n, m = map(int, source.shape)
+        if m < 1:
+            return (torch.empty((0,), dtype=torch.float32, device=self.device),
+                    torch.empty((0, 0), dtype=torch.float32, device=self.device))
+        device = self.device
+        inv = self.inverse_variance.to(dtype=torch.float32, device=device)
+        residual = self.scaled_residuals.to(dtype=torch.float32, device=device)
+        precision_x = self.precision_x.to(dtype=torch.float32, device=device)
+        fixed_cov = self.fixed_effect_covariance.to(dtype=torch.float32, device=device)
+        score = torch.empty((m,), dtype=torch.float32, device=device)
+        covariance_host = torch.empty((m, m), dtype=torch.float32, device="cpu")
+        for start in range(0, m, variant_tile_size):
+            stop = min(start + variant_tile_size, m)
+            left = torch.as_tensor(source[:, start:stop], dtype=torch.float32, device=device)
+            score[start:stop] = matmul(left.T, residual, mode="tf32")
+            left_cross = matmul(precision_x.T, left, mode="tf32")
+            for other in range(start, m, variant_tile_size):
+                other_stop = min(other + variant_tile_size, m)
+                right = torch.as_tensor(source[:, other:other_stop], dtype=torch.float32, device=device)
+                right_cross = matmul(precision_x.T, right, mode="tf32")
+                block = (matmul(left.T, inv[:, None] * right, mode="tf32")
+                         - matmul(matmul(left_cross.T, fixed_cov, mode="tf32"),
+                                  right_cross, mode="tf32"))
+                if start == other:
+                    block = (block + block.T) / 2
+                else:
+                    reverse = (matmul(right.T, inv[:, None] * left, mode="tf32")
+                               - matmul(matmul(right_cross.T, fixed_cov, mode="tf32"), left_cross, mode="tf32"))
+                    block = (block + reverse.T) / 2
+                    del reverse
+                covariance_host[start:stop, other:other_stop].copy_(block.detach().cpu())
+                if other != start:
+                    covariance_host[other:other_stop, start:stop].copy_(block.T.detach().cpu())
+                del right, right_cross, block
+            del left, left_cross
+        covariance = covariance_host.to(device=device, dtype=torch.float32)
+        del covariance_host, source, inv, residual, precision_x, fixed_cov
+        return score, covariance
+
+
+    def score_covariance_cached(self, genotype, *, variant_tile_size=4096,
+                                panel_variant_size=None, memory_limit_gib=40,
+                                matmul_mode=None, profile=False):
+        """Return score, covariance and a bounded TF32 cache report.
+
+        The host input is an already oriented/imputed FP32 [samples, variants]
+        dosage matrix aligned to this model. Output score [variants] and dense
+        covariance [variants, variants] remain CUDA FP32. Cache selection is
+        automatic: retain original/weighted full genotypes if admitted, or
+        stream two panels. Covariance tiles default to 4096 columns; score and
+        covariate projection tiles remain 512. ``panel_variant_size`` is None
+        or a positive multiple of ``variant_tile_size``. ``memory_limit_gib``
+        bounds live allocated storage, including the resident model, and must
+        be at most 40. ``profile`` adds CUDA stream timings with one final
+        synchronization; stage intervals overlap and are not pure kernel time.
+
+        Callers choose this backend explicitly. Ordinary score_covariance,
+        legacy tiled and Single interfaces retain their existing behavior.
+        No CPU, lower-precision or alternate statistical fallback is used.
+        """
+        mode = validate_mode(self.matmul_mode if matmul_mode is None else matmul_mode)
+        from ._cached_covariance import score_covariance_cached
+        return score_covariance_cached(
+            self, genotype, variant_tile_size=variant_tile_size,
+            panel_variant_size=panel_variant_size,
+            memory_limit_gib=memory_limit_gib, matmul_mode=mode,
+            symmetry="average", profile=profile)
+
     def score_covariance(self, genotype, *, reduction="blas", max_workspace_bytes=256 * 1024**2, matmul_mode=None):
         """U=G' scaled.residuals, V=G' Sigma_i G-X projection.
 

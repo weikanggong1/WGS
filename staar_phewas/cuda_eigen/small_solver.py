@@ -10,13 +10,13 @@ class FP32SmallSpectrumSolver:
     preference is restored even when retry fails. Backend and official CUDA
     library are loaded lazily at the first selected CUDA call.
     """
-    def __init__(self,*,torch_module=None,memory_limit=20*2**30,
+    def __init__(self,*,torch_module=None,memory_limit=40*2**30,
                  expected_solver_sha256=None,expected_runtime_sha256=None,
                  _backend_factory=None):
         if torch_module is None:
             import torch as torch_module
-        if type(memory_limit) is not int or memory_limit<=0:
-            raise ValueError('memory_limit must be positive integer bytes')
+        if type(memory_limit) is not int or not 0<memory_limit<=40*2**30:
+            raise ValueError('memory_limit must be positive integer bytes <=40GiB')
         self.torch=torch_module;self.original=torch_module.linalg.eigvalsh
         self.memory_limit=memory_limit;self.expected_solver_sha256=expected_solver_sha256
         self.expected_runtime_sha256=expected_runtime_sha256
