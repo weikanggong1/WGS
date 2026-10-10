@@ -120,7 +120,7 @@ def chromosome_configuration(config: Mapping, manifest: Mapping) -> dict:
                 'statistics_execution', 'debug_json', 'matmul_mode', 'precision_control',
                 'stage_profile', 'resident_genotypes', 'tf32_split_k', 'individual_genotype_block_size',
                 'single_batch_optimization', 'individual_effective_block_size',
-                'statistics_tail_optimization', 'local_mask_reuse', 'weight_batch_optimization', 'weighted_eigensolver')
+                'statistics_tail_optimization', 'local_mask_reuse', 'weight_batch_optimization', 'weighted_eigensolver', 'maximum_mask_variants')
     if {'tf32_binned_tile_shape', 'tf32_binned_fused_small'} & config.keys():
         raise ValueError('Removed TF32 reconstruction parameters')
     expanded = {key: copy.deepcopy(config[key]) for key in selected if key in config}

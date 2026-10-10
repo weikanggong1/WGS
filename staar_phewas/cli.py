@@ -20,9 +20,33 @@ from .pipeline import PheWASPipeline, AnalysisOptions
 from .masks import NONCODING_CATEGORIES
 from .io import fit_prepared_input, save_null_model, load_null_model
 from .null_model import GaussianNullModel
+from .binary_null import BinaryNullModel
 from .r_output import write_association_output, write_association_batch
 from .compat import write_gaussian_null
 from .compat_joint import write_joint_gaussian_null
+
+
+def _bounded_pipeline_type():
+    """Keep cooperative constructor hooks when adding resident bounds.
+
+    Cache-backed entry points temporarily replace ``PheWASPipeline`` with a
+    subclass whose constructor restores and validates annotation indexes.
+    The bounded subclass must retain that constructor in its MRO.
+    """
+    from .phewas_runtime.mask_limit import LimitedMaskPipeline
+    from .pipeline import PheWASPipeline as BasePipeline
+    current = PheWASPipeline
+    if not isinstance(current, type) or not issubclass(current, BasePipeline):
+        raise TypeError("bounded pipeline wrappers must inherit PheWASPipeline")
+    if issubclass(current, LimitedMaskPipeline):
+        return current
+    if issubclass(LimitedMaskPipeline, current):
+        return LimitedMaskPipeline
+
+    class BoundedPipeline(LimitedMaskPipeline, current):
+        pass
+
+    return BoundedPipeline
 
 
 def _json_value(value):
@@ -283,13 +307,14 @@ def _run_configuration(config, *, device="cuda"):
                 fit_options["matmul_mode"] = matmul_mode
             model, index = fit_prepared_input(phenotype["input"], device=device,
                 transform=phenotype.get("transform", "none"), **fit_options)
-        if matmul_mode != "fp64" and (not isinstance(model, GaussianNullModel) or model.n_pheno != 1):
-            raise ValueError("Forced TF32 pipeline currently supports single Gaussian models")
+        if matmul_mode != "fp64" and (model.n_pheno != 1 or model.use_spa or
+                not isinstance(model, (GaussianNullModel, BinaryNullModel))):
+            raise ValueError("Forced TF32 pipeline requires a single Gaussian or non-SPA binary model")
         source_modes.append(getattr(model, "source_matmul_mode", getattr(model, "matmul_mode", "fp64")))
         model_sources.append("loaded_cache" if "model" in phenotype else "fitted_input")
         # A legacy cache defaults to FP64; explicit run mode always overrides
         # the loaded state before association and before save_model writes.
-        if isinstance(model, GaussianNullModel):
+        if isinstance(model, (GaussianNullModel, BinaryNullModel)):
             model.set_matmul_mode(matmul_mode)
         else:
             model.matmul_mode = matmul_mode
@@ -332,10 +357,23 @@ def _run_configuration(config, *, device="cuda"):
         with SeqArrayGDS(chromosome["gds"], **reader_options) as gds:
             current_rows=[_bind_gds_samples(gds,model,index,phenotype.get("sample_id_rule","auto"))
                           for model,index,phenotype in zip(models,rows,config["phenotypes"])]
-            pipeline = PheWASPipeline(gds, models, qc_path=config.get("qc_path", "annotation/filter"),
+            pipeline_type = PheWASPipeline
+            maximum_mask_variants = config.get('maximum_mask_variants')
+            if maximum_mask_variants is not None:
+                if type(maximum_mask_variants) is not int or maximum_mask_variants < 1 or len(models) != 1:
+                    raise ValueError('maximum_mask_variants requires a positive integer and one model')
+                pipeline_type = _bounded_pipeline_type()
+            elif (len(models) == 1 and isinstance(models[0], GaussianNullModel)
+                    and models[0].matmul_mode == 'tf32'
+                    and config.get('resident_genotypes', device.startswith('cuda'))):
+                # The bounded resident lifetime also applies with no mask cap.
+                # Keep standalone and shared runs on the same admission rules.
+                pipeline_type = _bounded_pipeline_type()
+            pipeline = pipeline_type(gds, models, qc_path=config.get("qc_path", "annotation/filter"),
                 annotation_catalog=catalog, annotation_names=config.get("annotation_names", []),
                 gds_sample_indices=current_rows,
                 options=AnalysisOptions(**config.get("analysis_options", {})))
+            pipeline.maximum_mask_variants = maximum_mask_variants
             pipeline.statistics_execution = statistics_execution
             pipeline.statistics_tail_optimization = tail_optimization
             pipeline.local_mask_reuse = config.get("local_mask_reuse", True)
@@ -450,6 +488,10 @@ def _run_configuration(config, *, device="cuda"):
                 reuse_report[key] = reuse_report.get(key, 0) + int(value)
             if getattr(pipeline, 'batch_diagnostics', None):
                 report.setdefault('batch_diagnostics', []).extend(pipeline.batch_diagnostics)
+            # Expose the actual long-mask panel/tile plan alongside the
+            # requested settings; association outputs remain unchanged.
+            report.setdefault('covariance_diagnostics', []).extend(
+                getattr(pipeline, 'covariance_diagnostics', []))
     for group in output_groups.values():
         kind,object_name,layout=group["signature"]
         if group['results']:

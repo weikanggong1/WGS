@@ -21,6 +21,7 @@ from .masks import (VariantAnnotations, variant_filter, coding_masks, noncoding_
                     gene_assignments, NONCODING_CATEGORIES, _strings, _chromosome)
 from .annotation_index import CandidateAnnotationIndex
 from .null_model import GaussianNullModel
+from .binary_null import BinaryNullModel
 from .statistics import staar_test
 from .multi import multi_staar_test, joint_individual_logp
 from .binary import staar_binary_spa, individual_score_test_spa
@@ -418,15 +419,23 @@ class PheWASPipeline:
             return bytes_per_element * (2 * k * m + 3 * (t * m) ** 2 + q * m + n * t * t)
         if m > options.long_mask_threshold and not individual and native and t == 1 and not getattr(model, "use_spa", False) and not getattr(getattr(model, "spectrum", None), "blocks", ()):
             if options.covariance_backend == "cached":
-                from ._cached_covariance import plan_cached_workspace
+                from ._cached_covariance import _release_unused_cuda_blocks, plan_cached_workspace
                 allocated = reserved = 0
+                free = None
                 if str(getattr(model, "device", "cpu")).startswith("cuda"):
-                    allocated = torch.cuda.memory_allocated(model.device)
-                    reserved = torch.cuda.memory_reserved(model.device)
+                    # The product backend uses reservation-based admission.
+                    # Release deleted buffers before this earlier guard too,
+                    # otherwise stale reservations can reject even its minimum
+                    # panel before the backend gets a chance to clean them up.
+                    snapshot = _release_unused_cuda_blocks(model.device)["after"]
+                    allocated = snapshot["allocated_bytes"]
+                    reserved = snapshot["reserved_bytes"]
+                    free = snapshot["free_bytes"]
                 plan = plan_cached_workspace(n, m, model.x.shape[1],
                     variant_tile_size=options.cached_variant_tile_size,
                     memory_limit_gib=options.memory_limit_gib,
-                    allocated_bytes=allocated, reserved_bytes=reserved)
+                    allocated_bytes=allocated, reserved_bytes=reserved,
+                    free_bytes=free)
                 # Genotype panels are freed before the statistical stage.
                 # Include dense masking/weighting and bounded rank workspaces.
                 spectrum = 4 * (4 * m * m + 16 * m * min(options.long_mask_rank, m) + n)
@@ -502,7 +511,7 @@ class PheWASPipeline:
         check. Raw column count affects storage admission, not test filtering.
         """
         if (not getattr(self, "resident_genotypes", False) or len(self.models) != 1
-                or not isinstance(self.models[0], GaussianNullModel)):
+                or not isinstance(self.models[0], (GaussianNullModel, BinaryNullModel))):
             return {}
         model = self.models[0]
         if (model.n_pheno != 1 or model.use_spa or model.matmul_mode != "tf32"
@@ -513,6 +522,16 @@ class PheWASPipeline:
             supported = getattr(self.gds, "_flat_reader", None) is not None
         if supported is not True:
             return {}
+        if isinstance(model, BinaryNullModel):
+            # Only the explicitly supplied ordinary diagonal, non-SPA core
+            # is admitted. Keep mixed/dense/sparse binary routes unchanged.
+            p = model.x.shape[1]
+            precision, sx, cov = model.precision, model.precision_x, model.fixed_effect_covariance
+            if (precision is None or precision.ndim != 1 or precision.shape != (model.n,)
+                    or sx is None or sx.shape != (model.n, p) or cov is None or cov.shape != (p, p)
+                    or any(value.dtype != torch.float32 or value.device != model.device
+                           or value.layout != torch.strided for value in (precision, sx, cov))):
+                return {}
         n, b = len(self.union_rows), min(len(indices), self.options.genotype_block_size)
         storage = n * len(indices) + 64 * len(indices)
         # uint8 slabs plus int64 decoder operands/codes, masks, sample indexes.
@@ -599,14 +618,26 @@ class PheWASPipeline:
         self.covariance_diagnostics.append(report)
         return score, covariance
 
+    @staticmethod
+    def _supports_long_tf32_products(model):
+        """Admit fitted diagonal single-trait cores without changing their state."""
+        if (getattr(model, "matmul_mode", "fp64") != "tf32"
+                or model.n_pheno != 1 or model.use_spa):
+            return False
+        if isinstance(model, GaussianNullModel):
+            return not model.spectrum.blocks
+        if isinstance(model, BinaryNullModel):
+            model._diagonal_tf32_covariance_state()
+            return True
+        return False
+
     def _hybrid_host_products(self, model, host):
         """Use tiled TF32 covariance only above the configured mask threshold."""
         count = int(host.shape[1])
         self._limit(model, count)
         if count > self.options.long_mask_threshold:
-            if (model.matmul_mode != "tf32" or model.n_pheno != 1 or model.use_spa
-                    or model.spectrum.blocks):
-                raise NotImplementedError("hybrid long masks require single Gaussian TF32 diagonal precision")
+            if not self._supports_long_tf32_products(model):
+                raise NotImplementedError("hybrid long masks require one non-SPA TF32 model with diagonal precision")
             counter = "hybrid_long_host_masks"
             self.local_mask_reuse_counters[counter] = self.local_mask_reuse_counters.get(counter, 0) + 1
             with self.profiler.measure("score_covariance", gpu=True):
@@ -879,9 +910,7 @@ class PheWASPipeline:
                      isinstance(model, GaussianNullModel) and not model.spectrum.blocks and
                      model.n_pheno == 1 and not model.use_spa)
             tiled = (count > self.options.long_mask_threshold and
-                     getattr(model, "matmul_mode", "fp64") == "tf32" and
-                     isinstance(model, GaussianNullModel) and not model.spectrum.blocks and
-                     model.n_pheno == 1 and not model.use_spa)
+                     self._supports_long_tf32_products(model))
             with self.profiler.measure("score_covariance", gpu=True):
                 if sampled:
                     u, v = model.score_covariance_sample_block(g, sample_block_size=self.options.sample_block_size)
@@ -1297,7 +1326,7 @@ class PheWASPipeline:
         def minor_blocks(indices):
             compatible = (getattr(self, 'single_batch_optimization', False) and self.resident_genotypes
                           and genotype_device is not None and len(self.models) == 1
-                          and isinstance(self.models[0], GaussianNullModel)
+                          and isinstance(self.models[0], (GaussianNullModel, BinaryNullModel))
                           and self.models[0].n_pheno == 1 and not self.models[0].use_spa
                           and getattr(self.models[0], 'matmul_mode', 'fp64') == 'tf32'
                           and hasattr(self.gds, 'iter_effective_minor_blocks'))
@@ -1337,107 +1366,145 @@ class PheWASPipeline:
         union_ordinal = 0
         try:
             for block in genotype_blocks:
-                keep_union = block.initial_mac() >= mac_cutoff
-                ordinals = union_ordinal + np.cumsum(keep_union) - 1
-                union_ordinal += int(keep_union.sum())
-                union_columns = np.flatnonzero(keep_union)
-                if len(union_columns) == 0:
+                state, union_ordinal = self._prepare_individual_block(
+                    block, union_ordinal, mac_cutoff=mac_cutoff)
+                if state is None:
                     continue
-                if len(union_columns) != len(block.variant_indices):
-                    block = block.select_columns(union_columns)
-                ordinals = ordinals[union_columns]
-                source_alt_af = 1 - block.union_ref_af
-                source_maf = np.where(block.union_ref_af >= source_alt_af, source_alt_af, block.union_ref_af)
-                extractable = np.isfinite(source_maf) & (source_maf > 0) & (source_maf < 1)
-                for trait, (model, rows) in enumerate(zip(self.models, self.trait_rows)):
-                    base_mode = self.options.wrapper_semantics == "base"
-                    eligible = extractable.copy()
-                    if not base_mode:
-                        eligible &= block.observed_mac(rows) >= mac_cutoff
-                    trait_columns = np.flatnonzero(eligible)
-                    if len(trait_columns) == 0:
+                for trait in range(len(self.models)):
+                    prepared = self._prepare_individual_trait(state, trait, mac_cutoff=mac_cutoff)
+                    if prepared is None:
                         continue
-                    self._limit(model, len(trait_columns), individual=True)
-                    trait_block = block if len(trait_columns) == len(block.variant_indices) else block.select_columns(trait_columns)
-                    trait_ordinals = ordinals[trait_columns]
-                    frequency = {"frequency_mode": "reference"} if base_mode else {}
-                    if isinstance(trait_block, DeviceMinorBlock):
-                        frequency["dtype"] = model.x.dtype
-                    with self.profiler.measure("genotype_trait_prepare", gpu=True):
-                        g, maf, mac, missing, is_alt = trait_block.trait_dense(rows, self.options.imputation, **frequency)
-                    if base_mode:
-                        original_alt_af = 1 - trait_block.union_ref_af
-                        original_maf = np.where(trait_block.union_ref_af >= original_alt_af, original_alt_af, trait_block.union_ref_af)
-                        allele_missing = trait_block.allele_missing_rate()
-                        base_group = np.where(original_alt_af > 0.5, 2,
-                            np.where((original_maf >= 0.01) | (allele_missing >= 0.01), 1, 0))
-                    # Retain the reference host layout only for FP64 controls;
-                    # forced TF32 can pass the already selected CUDA tensor.
-                    keep = np.ones(len(trait_columns), dtype=bool)
-                    columns = np.arange(len(trait_columns))
-                    selected = trait_block.variant_indices
-                    trait_records=[]
-                    analysis_g = (g[:, keep] if getattr(model, "matmul_mode", "fp64") == "fp64" else
-                                  torch.as_tensor(g, dtype=torch.float32, device=model.device))
-                    with self.profiler.measure("score_covariance", gpu=True):
-                        if model.n_pheno==1 and hasattr(model,"individual_score_variance"):
-                            u,variance=model.individual_score_variance(analysis_g)
-                        else:
-                            u,v=model.score_covariance(analysis_g)
-                            if model.n_pheno==1:variance=v.diagonal()
-                    with self.profiler.measure("individual_tail", gpu=True):
-                        if model.n_pheno>1:
-                            scores=u.reshape(model.n_pheno,len(columns))
-                            cov4=v.reshape(model.n_pheno,len(columns),model.n_pheno,len(columns))
-                            log_probabilities=torch.stack([joint_individual_logp(scores[:,j],cov4[:,j,:,j]) for j in range(len(columns))])
-                        else:
-                            # Preserve sqrt's IEEE values for native R output; only
-                            # the probability helper protects its division.
-                            standard_error=torch.sqrt(variance.to(torch.float64))
-                            log_probabilities=_individual_log_probabilities(u, variance)
-                            if model.use_spa:
-                                probabilities=individual_score_test_spa(torch.as_tensor(g[:,keep],dtype=torch.float64,device=model.device),
-                                    model.scaled_residuals,model.fitted_probability,model.xw,model.projection_left,
-                                    normal_pvalues=torch.exp(-log_probabilities) if self.options.spa_p_filter else None,
-                                    p_filter_cutoff=self.options.p_filter_cutoff,tol=self.options.spa_tol,max_iter=self.options.spa_max_iter)
-                    # Transfer one result block, avoiding four CUDA synchronizations
-                    # per variant. Computed values are serialized as R doubles with original row metadata.
-                    with self.profiler.measure("result_d2h", gpu=True):
-                        if model.n_pheno>1:
-                            values_cpu=torch.cat((scores,log_probabilities[None,:]),dim=0).detach().cpu().numpy()
-                        elif model.use_spa:
-                            values_cpu=probabilities.detach().cpu().numpy()
-                        else:
-                            values_cpu=torch.stack((variance,u,standard_error,log_probabilities),dim=1).detach().cpu().numpy()
-                    chrom = self.gds.read_field("chromosome", selected)
-                    ref,alt=self.gds.read_ref_alt(selected)
-                    for j, column in enumerate(columns):
-                        if model.n_pheno>1:
-                            statistic={"pvalue_log":float(values_cpu[-1,j]),"Score":values_cpu[:-1,j].tolist()}
-                        elif model.use_spa:
-                            statistic={"pvalue":float(values_cpu[j])}
-                        else:
-                            value,score,se,logp=map(float,values_cpu[j])
-                            statistic={"pvalue_log":logp,"Score":score,"Score_se":se,
-                                       "Est":0. if value==0 else score/value,"Est_se":0. if se==0 else 1/se}
-                        row = single_variant_record(chrom[j], self.position[selected[j]], ref[j], alt[j],
-                                                    original_alt_af[column] if base_mode else (maf[column] if is_alt[column] else 1-maf[column]), maf[column], model.n,
-                                                    statistic,number_phenotypes=model.n_pheno,use_spa=model.use_spa)
-                        # R appends common/high-missing groups before rare groups,
-                        # then orders by POS without renumbering data.frame rows.
-                        row["_chunk"] = int(trait_ordinals[column] // subset_variants_num)
-                        row["_common"] = bool(maf[column] >= 0.01 or
-                                              (allele_missing[column] if base_mode else missing[column] / model.n) >= 0.01)
-                        if base_mode:
-                            row["_base_group"] = int(base_group[column])
-                        trait_records.append(row)
-                    yield trait,trait_records
+                    core = self._compute_individual_core(prepared)
+                    values_cpu = self._individual_values_cpu(prepared, core)
+                    yield trait, self._individual_records_from_values(
+                        prepared, values_cpu, subset_variants_num=subset_variants_num)
         finally:
-            # Closing nested readers joins their bounded producer before
-            # the caller can release the underlying cache reader.
+            # Close nested readers before their bounded producers release the cache.
             close = getattr(genotype_blocks, "close", None)
             if close is not None:
                 close()
+
+    def _prepare_individual_block(self, block, ordinal_offset, *, mac_cutoff=20):
+        """Retain the original source-MAC selection and independent ordinals."""
+        keep_union = block.initial_mac() >= mac_cutoff
+        ordinals = ordinal_offset + np.cumsum(keep_union) - 1
+        ordinal_offset += int(keep_union.sum())
+        union_columns = np.flatnonzero(keep_union)
+        if len(union_columns) == 0:
+            return None, ordinal_offset
+        if len(union_columns) != len(block.variant_indices):
+            block = block.select_columns(union_columns)
+        source_alt_af = 1 - block.union_ref_af
+        source_maf = np.where(block.union_ref_af >= source_alt_af, source_alt_af, block.union_ref_af)
+        extractable = np.isfinite(source_maf) & (source_maf > 0) & (source_maf < 1)
+        return dict(block=block, ordinals=ordinals[union_columns], extractable=extractable), ordinal_offset
+
+    def _prepare_individual_trait(self, state, trait, *, mac_cutoff=20):
+        """Apply the existing model-specific filtering, orientation and fill."""
+        block, ordinals = state["block"], state["ordinals"]
+        model, rows = self.models[trait], self.trait_rows[trait]
+        base_mode = self.options.wrapper_semantics == "base"
+        eligible = state["extractable"].copy()
+        if not base_mode:
+            eligible &= block.observed_mac(rows) >= mac_cutoff
+        trait_columns = np.flatnonzero(eligible)
+        if len(trait_columns) == 0:
+            return None
+        self._limit(model, len(trait_columns), individual=True)
+        trait_block = block if len(trait_columns) == len(block.variant_indices) else block.select_columns(trait_columns)
+        trait_ordinals = ordinals[trait_columns]
+        frequency = {"frequency_mode": "reference"} if base_mode else {}
+        if isinstance(trait_block, DeviceMinorBlock):
+            frequency["dtype"] = model.x.dtype
+        with self.profiler.measure("genotype_trait_prepare", gpu=True):
+            g, maf, mac, missing, is_alt = trait_block.trait_dense(rows, self.options.imputation, **frequency)
+        prepared = dict(model=model, trait_ordinals=trait_ordinals, base_mode=base_mode,
+                        maf=maf, mac=mac, missing=missing, is_alt=is_alt,
+                        selected=trait_block.variant_indices)
+        if base_mode:
+            original_alt_af = 1 - trait_block.union_ref_af
+            original_maf = np.where(trait_block.union_ref_af >= original_alt_af, original_alt_af, trait_block.union_ref_af)
+            allele_missing = trait_block.allele_missing_rate()
+            base_group = np.where(original_alt_af > 0.5, 2,
+                np.where((original_maf >= 0.01) | (allele_missing >= 0.01), 1, 0))
+            prepared.update(original_alt_af=original_alt_af, allele_missing=allele_missing,
+                            base_group=base_group)
+        # Keep the established FP64 host selection layout and native FP32 G.
+        keep = np.ones(len(trait_columns), dtype=bool)
+        prepared["genotype"] = (g[:, keep] if getattr(model, "matmul_mode", "fp64") == "fp64" else
+                                torch.as_tensor(g, dtype=torch.float32, device=model.device))
+        return prepared
+
+    def _compute_individual_core(self, prepared):
+        """Compute the original Score and diagonal variance for one model."""
+        model, analysis_g = prepared["model"], prepared["genotype"]
+        with self.profiler.measure("score_covariance", gpu=True):
+            if model.n_pheno == 1 and hasattr(model, "individual_score_variance"):
+                u, variance = model.individual_score_variance(analysis_g)
+                return dict(score=u, variance=variance)
+            u, v = model.score_covariance(analysis_g)
+            return dict(score=u, covariance=v, variance=v.diagonal() if model.n_pheno == 1 else None)
+
+    def _individual_values_cpu(self, prepared, core):
+        """Preserve single-model, joint and binary tail/transfer behavior."""
+        model, u, variance = prepared["model"], core["score"], core["variance"]
+        number_variants = len(prepared["selected"])
+        with self.profiler.measure("individual_tail", gpu=True):
+            if model.n_pheno > 1:
+                scores = u.reshape(model.n_pheno, number_variants)
+                cov4 = core["covariance"].reshape(model.n_pheno, number_variants, model.n_pheno, number_variants)
+                log_probabilities = torch.stack([joint_individual_logp(scores[:, j], cov4[:, j, :, j])
+                                               for j in range(number_variants)])
+            else:
+                # sqrt's IEEE values enter native R output; only the tail
+                # helper protects its division, matching the original path.
+                standard_error = torch.sqrt(variance.to(torch.float64))
+                log_probabilities = _individual_log_probabilities(u, variance)
+                if model.use_spa:
+                    probabilities = individual_score_test_spa(
+                        torch.as_tensor(prepared["genotype"], dtype=torch.float64, device=model.device),
+                        model.scaled_residuals, model.fitted_probability, model.xw, model.projection_left,
+                        normal_pvalues=torch.exp(-log_probabilities) if self.options.spa_p_filter else None,
+                        p_filter_cutoff=self.options.p_filter_cutoff, tol=self.options.spa_tol,
+                        max_iter=self.options.spa_max_iter)
+        with self.profiler.measure("result_d2h", gpu=True):
+            if model.n_pheno > 1:
+                return torch.cat((scores, log_probabilities[None, :]), dim=0).detach().cpu().numpy()
+            if model.use_spa:
+                return probabilities.detach().cpu().numpy()
+            return torch.stack((variance, u, standard_error, log_probabilities), dim=1).detach().cpu().numpy()
+
+    def _individual_records_from_values(self, prepared, values_cpu, *, subset_variants_num=5000):
+        """Construct the original native rows and R grouping markers."""
+        model, selected = prepared["model"], prepared["selected"]
+        base_mode, maf = prepared["base_mode"], prepared["maf"]
+        missing, is_alt = prepared["missing"], prepared["is_alt"]
+        trait_ordinals = prepared["trait_ordinals"]
+        chrom = self.gds.read_field("chromosome", selected)
+        ref, alt = self.gds.read_ref_alt(selected)
+        trait_records = []
+        for j, column in enumerate(np.arange(len(selected))):
+            if model.n_pheno > 1:
+                statistic = {"pvalue_log": float(values_cpu[-1, j]), "Score": values_cpu[:-1, j].tolist()}
+            elif model.use_spa:
+                statistic = {"pvalue": float(values_cpu[j])}
+            else:
+                value, score, se, logp = map(float, values_cpu[j])
+                statistic = {"pvalue_log": logp, "Score": score, "Score_se": se,
+                             "Est": 0. if value == 0 else score / value,
+                             "Est_se": 0. if se == 0 else 1 / se}
+            row = single_variant_record(
+                chrom[j], self.position[selected[j]], ref[j], alt[j],
+                prepared["original_alt_af"][column] if base_mode else
+                    (maf[column] if is_alt[column] else 1 - maf[column]),
+                maf[column], model.n, statistic, number_phenotypes=model.n_pheno, use_spa=model.use_spa)
+            row["_chunk"] = int(trait_ordinals[column] // subset_variants_num)
+            row["_common"] = bool(maf[column] >= 0.01 or
+                                  (prepared["allele_missing"][column] if base_mode else missing[column] / model.n) >= 0.01)
+            if base_mode:
+                row["_base_group"] = int(prepared["base_group"][column])
+            trait_records.append(row)
+        return trait_records
 
     def individual(self, chromosome, start=None, end=None, *, mac_cutoff=20, variant_type="variant", subset_variants_num=5000):
         """Collect the streaming kernel and preserve the original R table metadata."""

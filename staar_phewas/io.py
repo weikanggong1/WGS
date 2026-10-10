@@ -17,7 +17,8 @@ def save_null_model(model: GaussianNullModel, path):
         fields = ("covariates", "scaled_residuals", "coefficients", "theta", "working_theta",
                   "fixed_effect_covariance", "precision", "phenotype", "fitted_values") if kind=="gaussian_joint" else (
                   "x", "scaled_residuals", "fitted_probability", "xw", "projection_left",
-                  "fixed_effect_covariance", "precision", "precision_x", "coefficients", "phenotype")
+                  "fixed_effect_covariance", "precision", "precision_x", "coefficients", "phenotype",
+                  "working_phenotype")
         values = {"model_kind": kind, "sample_ids": np.asarray(model.sample_ids,dtype=str),
                   "iterations": model.iterations, "converged": model.converged,
                   "fit_method": model.fit_method, "use_spa": model.use_spa}
@@ -32,7 +33,10 @@ def save_null_model(model: GaussianNullModel, path):
         if kind=="gaussian_joint":
             values.update(relatedness=model.relatedness,residual_covariance_singular=model.residual_covariance_singular)
             if model.phenotype_names is not None:values["phenotype_names"]=np.asarray(model.phenotype_names,dtype=str)
-        else:values["has_kinship"]=model.has_kinship
+        else:
+            values["has_kinship"]=model.has_kinship
+            values["matmul_mode"]=model.matmul_mode
+            values["source_matmul_mode"]=getattr(model,"source_matmul_mode",model.matmul_mode)
         if getattr(model,"gds_sample_ids",None) is not None:values["gds_sample_ids"]=np.asarray(model.gds_sample_ids,dtype=str)
         np.savez_compressed(path,**values)
         return
@@ -57,7 +61,7 @@ def save_null_model(model: GaussianNullModel, path):
 
 
 def load_null_model(path, *, device="cpu", matmul_mode=None):
-    """Load a fitted state; optionally convert Gaussian storage to native FP32.
+    """Load fitted state; optionally convert single-trait storage to native FP32.
 
     Without an override, historical FP64 caches retain their stored mode.
     """
@@ -67,8 +71,10 @@ def load_null_model(path, *, device="cpu", matmul_mode=None):
         # Removed reconstruction caches are only reusable via an explicit mode.
         from .tf32 import validate_mode
         kind=str(values["model_kind"]) if "model_kind" in values else "gaussian_single"
-        if kind == "gaussian_single":
+        if kind in ("gaussian_single", "binary_state"):
             selected_mode = validate_mode(selected_mode)
+        if kind == "binary_state" and selected_mode == "tf32" and bool(values["use_spa"]):
+            raise ValueError("binary SPA requires fp64; native TF32 supports use_spa=False")
         storage_dtype = torch.float32 if selected_mode == "tf32" else torch.float64
         def tensor(name, dtype=None):
             dtype = storage_dtype if dtype is None else dtype
@@ -94,8 +100,10 @@ def load_null_model(path, *, device="cpu", matmul_mode=None):
                     fitted_probability=tensor("fitted_probability"),xw=tensor("xw"),projection_left=tensor("projection_left"),
                     fixed_effect_covariance=tensor("fixed_effect_covariance"),precision=optional("precision"),
                     precision_covariates=optional("precision_x"),coefficients=optional("coefficients"),phenotype=optional("phenotype"),
-                    has_kinship=bool(values["has_kinship"]),use_spa=bool(values["use_spa"]),provenance=str(values["fit_method"]),device=device)
+                    has_kinship=bool(values["has_kinship"]),use_spa=bool(values["use_spa"]),provenance=str(values["fit_method"]),device=device,
+                    matmul_mode=selected_mode,working_phenotype=optional("working_phenotype"))
                 model.iterations=int(values["iterations"]);model.converged=bool(values["converged"])
+                model.source_matmul_mode = str(values["source_matmul_mode"]) if "source_matmul_mode" in values else stored_mode
             if "gds_sample_ids" in values:model.gds_sample_ids=values["gds_sample_ids"].astype(str)
             return model
         if kind!="gaussian_single":raise ValueError("unknown fitted model cache kind")

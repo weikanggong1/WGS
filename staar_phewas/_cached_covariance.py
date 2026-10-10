@@ -1,4 +1,4 @@
-"""Bounded cached TF32 covariance for a single Gaussian null model.
+"""Bounded cached TF32 covariance for an explicit diagonal single null model.
 
 Reuse oriented/imputed FP32 genotype panels and covariate projections within
 one call. Covariance products use the model's native TF32 implementation;
@@ -60,12 +60,18 @@ def plan_cached_workspace(n, m, q, *, variant_tile_size=4096,
                           free_bytes=None, reserve_bytes=_RESERVE):
     """Select full or two-panel CUDA storage without allocating a tensor.
 
-    Existing allocations count against the process cap. Unused allocator
-    reservations may be reused but never increase that cap. ``free_bytes``
-    adds the live device constraint, including other processes. The estimate
+    Existing allocator reservations count against the process cap, including
+    unused fragments that cannot necessarily satisfy a large allocation.
+    ``free_bytes`` adds the live device constraint, including other processes.
+    The caller may release unused blocks and remeasure before planning;
+    this pure planner never grants credit for unverified reusable fragments.
+    The estimate
     reserves validation/GEMV layouts and product temporaries. Admission is a
     preflight check; simultaneous allocations or fragmentation can still OOM.
-    The caller must retain its configured CUDA allocator cap.
+    Automatic panels may reduce the requested covariance product width to a
+    multiple of 512. Preparation remains 512 columns. Explicit panels retain
+    the requested width and must fit as specified. The caller must retain its
+    configured CUDA allocator cap.
     """
     _positive_integer(n, "samples")
     for value, name in ((m, "variants"), (q, "covariates")):
@@ -92,43 +98,103 @@ def plan_cached_workspace(n, m, q, *, variant_tile_size=4096,
         free_bytes = limit
     if type(free_bytes) is not int or free_bytes < 0:
         raise ValueError("free_bytes must be a nonnegative integer")
-    reusable = max(0, reserved_bytes - allocated_bytes)
-    available = min(limit - allocated_bytes, free_bytes + reusable) - reserve_bytes
+    budget_basis = max(allocated_bytes, reserved_bytes)
+    available = min(limit - budget_basis, free_bytes) - reserve_bytes
     if not m:
         return dict(cache_mode="empty", full_resident=False,
+                    requested_variant_tile_size=variant_tile_size,
+                    effective_variant_tile_size=variant_tile_size,
                     panel_variant_size=0, available_new_bytes=available,
+                    allocator_budget_basis_bytes=budget_basis,
+                    allocator_reservation_credit_bytes=0,
                     conservative_new_workspace_bytes=0, workspace_breakdown={})
-    full_estimate = cached_workspace_estimate(
-        n, m, q, variant_tile_size=variant_tile_size,
-        panel_variant_size=m, full_resident=True)
-    full_resident = (panel_variant_size is None
-                     and full_estimate["new_storage_bytes"] <= available)
-    if full_resident:
-        panel_size, estimate = m, full_estimate
-    else:
-        if panel_variant_size is not None:
-            panel_size = panel_variant_size
-        else:
-            fixed = cached_workspace_estimate(
-                n, m, q, variant_tile_size=variant_tile_size,
-                panel_variant_size=1)["new_storage_bytes"] - 16 * n
-            maximum = (available - fixed) // (16 * n)
-            panel_size = min(
-                ((m + variant_tile_size - 1) // variant_tile_size) * variant_tile_size,
-                (maximum // variant_tile_size) * variant_tile_size)
-            if panel_size < variant_tile_size:
-                raise MemoryError("configured budget cannot admit two original+weighted covariance panels")
+
+    def automatic_plan(tile_size):
+        full = cached_workspace_estimate(
+            n, m, q, variant_tile_size=tile_size,
+            panel_variant_size=m, full_resident=True)
+        if full["new_storage_bytes"] <= available:
+            return True, m, full
+        # Two original+weighted panels cost 16*N bytes per cached column.
+        # Keep all remaining allowances intact while changing only the
+        # product width and the corresponding panel alignment.
+        fixed = cached_workspace_estimate(
+            n, m, q, variant_tile_size=tile_size,
+            panel_variant_size=1)["new_storage_bytes"] - 16 * n
+        maximum = (available - fixed) // (16 * n)
+        panel_size = min(
+            ((m + tile_size - 1) // tile_size) * tile_size,
+            (maximum // tile_size) * tile_size)
+        if panel_size < tile_size:
+            return None
         estimate = cached_workspace_estimate(
-            n, m, q, variant_tile_size=variant_tile_size,
+            n, m, q, variant_tile_size=tile_size,
+            panel_variant_size=panel_size)
+        if estimate["new_storage_bytes"] > available:
+            return None
+        return False, panel_size, estimate
+
+    effective_tile = variant_tile_size
+    if panel_variant_size is None:
+        selected = automatic_plan(effective_tile)
+        if selected is None:
+            # Admission is monotone in the minimum panel/product width.
+            # Binary search avoids scanning an unbounded user-supplied width.
+            low, high = 1, variant_tile_size // _PREPARE_TILE - 1
+            while low <= high:
+                units = (low + high) // 2
+                candidate = automatic_plan(units * _PREPARE_TILE)
+                if candidate is None:
+                    high = units - 1
+                else:
+                    effective_tile, selected = units * _PREPARE_TILE, candidate
+                    low = units + 1
+            if selected is None:
+                raise MemoryError("configured budget cannot admit two original+weighted covariance panels at the minimum 512-column product width")
+        full_resident, panel_size, estimate = selected
+    else:
+        full_resident, panel_size = False, panel_variant_size
+        estimate = cached_workspace_estimate(
+            n, m, q, variant_tile_size=effective_tile,
             panel_variant_size=panel_size)
     if estimate["new_storage_bytes"] > available:
         raise MemoryError(f"cached covariance requires {estimate['new_storage_bytes']} new bytes; {available} available within process/live GPU budget")
     return dict(
         cache_mode="full_original_and_weighted" if full_resident else "two_original_and_weighted_panels",
         full_resident=full_resident, panel_variant_size=panel_size,
+        requested_variant_tile_size=variant_tile_size,
+        effective_variant_tile_size=effective_tile,
         available_new_bytes=available,
+        allocator_budget_basis_bytes=budget_basis,
+        allocator_reservation_credit_bytes=0,
         conservative_new_workspace_bytes=estimate["new_storage_bytes"],
         workspace_breakdown=estimate)
+
+
+def _cuda_memory_snapshot(device):
+    """Measure the selected CUDA allocator and live device without allocation."""
+    with torch.cuda.device(device):
+        free, _ = torch.cuda.mem_get_info()
+        return dict(allocated_bytes=int(torch.cuda.memory_allocated(device)),
+                    reserved_bytes=int(torch.cuda.memory_reserved(device)),
+                    free_bytes=int(free))
+
+
+def _release_unused_cuda_blocks(device):
+    """Release only unoccupied allocator blocks, retaining every live tensor.
+
+    Re-measure rather than assume that all unused reservations were released:
+    blocks containing live allocations can remain fragmented after cleanup.
+    CUDA cache cleanup is restricted to the device used by this call.
+    """
+    before = _cuda_memory_snapshot(device)
+    started = time.perf_counter()
+    with torch.cuda.device(device):
+        torch.cuda.empty_cache()
+    elapsed = time.perf_counter() - started
+    after = _cuda_memory_snapshot(device)
+    return dict(before=before, after=after, host_wall_seconds=elapsed,
+                released_bytes=max(0, before["reserved_bytes"] - after["reserved_bytes"]))
 
 
 class _Timers:
@@ -167,10 +233,15 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
     """Return ``(score, covariance, report)`` without changing a fitted model.
 
     ``genotype`` is the finite, already oriented/imputed host N-by-M FP32
-    dosage. ``variant_tile_size`` controls covariance GEMM output size;
+    dosage. ``variant_tile_size`` requests the covariance GEMM output size;
     score/covariate projections keep the original 512-column preparation.
     ``panel_variant_size`` controls cached columns, with automatic admission
-    when None. The allocated-process ceiling includes existing model tensors.
+    when None, including a smaller 512-aligned product width if needed. The
+    report records requested/effective widths; ``variant_tile_size`` in the
+    report is the effective width. Admission first releases unused CUDA cache
+    blocks and then counts all remaining allocator reservations against the
+    process ceiling, including existing model tensors. Cache cleanup also
+    precedes large panel allocations; it does not change any live tensor.
     ``symmetry='average'`` retains both TF32 directions. Other symmetry
     rules are rejected because they change the accepted covariance contract.
     ``profile=True`` adds CUDA event measurements and synchronizes once at the
@@ -195,7 +266,15 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
         raise ValueError("profile must be Boolean")
     if matmul_mode != "tf32" or getattr(model, "matmul_mode", "tf32") != "tf32":
         raise ValueError("cached covariance requires a native TF32 model")
-    if getattr(model, "family", None) != "gaussian" or getattr(model, "n_pheno", 1) != 1 or getattr(model, "use_spa", False) or model.spectrum.blocks:
+    # Binary fitted state has no kinship eigenspectrum. Admit only its explicit
+    # diagonal non-SPA protocol; retain the established Gaussian gate and state.
+    from .binary_null import BinaryNullModel
+    binary_state = isinstance(model, BinaryNullModel)
+    if binary_state:
+        inverse_variance, precision_x, residual, fixed_cov = model._diagonal_tf32_covariance_state(matmul_mode)
+        if isinstance(genotype, torch.Tensor) and genotype.requires_grad:
+            raise ValueError("cached binary genotype must be host data without gradients")
+    elif getattr(model, "family", None) != "gaussian" or getattr(model, "n_pheno", 1) != 1 or getattr(model, "use_spa", False) or model.spectrum.blocks:
         raise NotImplementedError("cached covariance requires single Gaussian diagonal precision without SPA")
     device = torch.device(model.device)
     if device.type != "cuda":
@@ -209,10 +288,11 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
     n, m = map(int, source.shape)
     source_column_major = source.stride(0) == 1 and source.stride(1) == n
     validation_host_layout_seconds = time.perf_counter() - layout_started
-    precision_x = model.precision_x
-    inverse_variance = model.inverse_variance
-    residual = model.scaled_residuals
-    fixed_cov = model.fixed_effect_covariance
+    if not binary_state:
+        precision_x = model.precision_x
+        inverse_variance = model.inverse_variance
+        residual = model.scaled_residuals
+        fixed_cov = model.fixed_effect_covariance
     for name, value in (("precision_x", precision_x), ("inverse_variance", inverse_variance),
                         ("scaled_residuals", residual), ("fixed_effect_covariance", fixed_cov)):
         if value.device != device or value.dtype != torch.float32:
@@ -222,23 +302,35 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
     module = importlib.import_module(type(model).__module__)
     mm = getattr(module, "matmul")
     limit = int(memory_limit_gib * _GIB)
-    allocated_before = torch.cuda.memory_allocated(device)
     peak_before = torch.cuda.max_memory_allocated(device)
-    reserved_before = torch.cuda.memory_reserved(device)
-    with torch.cuda.device(device):
-        free_before, _ = torch.cuda.mem_get_info()
+    initial_cleanup = _release_unused_cuda_blocks(device) if m else None
+    snapshot = initial_cleanup["after"] if initial_cleanup else _cuda_memory_snapshot(device)
+    allocated_before = snapshot["allocated_bytes"]
+    reserved_before = snapshot["reserved_bytes"]
+    free_before = snapshot["free_bytes"]
     plan = plan_cached_workspace(
         n, m, q, variant_tile_size=variant_tile_size,
         panel_variant_size=panel_variant_size, memory_limit_gib=memory_limit_gib,
         allocated_bytes=allocated_before, reserved_bytes=reserved_before,
         free_bytes=free_before)
+    effective_tile = plan["effective_variant_tile_size"]
     timers = _Timers(device, profile)
     report = dict(backend="cached_native_tf32", cache_version=1,
                   samples=n, variants=m, covariates=q, symmetry=symmetry,
-                  variant_tile_size=variant_tile_size, preparation_tile_size=_PREPARE_TILE,
+                  variant_tile_size=effective_tile,
+                  requested_variant_tile_size=variant_tile_size,
+                  effective_variant_tile_size=effective_tile,
+                  preparation_tile_size=_PREPARE_TILE,
                   memory_limit_bytes=limit, admission_reserve_bytes=_RESERVE,
                   allocated_before_bytes=allocated_before, reserved_before_bytes=reserved_before,
                   free_before_bytes=free_before, peak_before_bytes=peak_before,
+                  admission_budget_basis="remaining_cuda_allocator_reservations",
+                  pre_cleanup_allocated_bytes=(initial_cleanup["before"]["allocated_bytes"] if initial_cleanup else allocated_before),
+                  pre_cleanup_reserved_bytes=(initial_cleanup["before"]["reserved_bytes"] if initial_cleanup else reserved_before),
+                  pre_cleanup_free_bytes=(initial_cleanup["before"]["free_bytes"] if initial_cleanup else free_before),
+                  allocator_cleanup_calls=int(initial_cleanup is not None),
+                  allocator_cleanup_released_bytes=(initial_cleanup["released_bytes"] if initial_cleanup else 0),
+                  allocator_cleanup_host_wall_seconds=(initial_cleanup["host_wall_seconds"] if initial_cleanup else 0.0),
                   h2d_bytes=0, h2d_calls=0, d2h_bytes=0, d2h_calls=0,
                   covariance_d2h_bytes=0, covariance_d2h_calls=0,
                   validation_host_layout_seconds=validation_host_layout_seconds,
@@ -279,7 +371,16 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
     prepared = set()
     validated_panels = set()
 
+    def release_panel_scratch():
+        cleanup = _release_unused_cuda_blocks(device)
+        report["allocator_cleanup_calls"] += 1
+        report["allocator_cleanup_released_bytes"] += cleanup["released_bytes"]
+        report["allocator_cleanup_host_wall_seconds"] += cleanup["host_wall_seconds"]
+
     def load_panel(start, stop):
+        # Earlier product/validation/layout buffers may have left free blocks
+        # that fragment the allocator cap. Live left panels remain untouched.
+        release_panel_scratch()
         with timers.measure("genotype_h2d"):
             panel = torch.as_tensor(source[:, start:stop], dtype=torch.float32, device=device)
         report["h2d_bytes"] += 4 * n * (stop - start)
@@ -333,6 +434,10 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
             report["projection_left_product_calls"] += 1
             prepared.add(column)
             del c, raw, score_tile
+        # Allocate the large weighted panel only after releasing unoccupied
+        # validation/GEMV scratch segments; reserving their aggregate bytes
+        # does not prove that the allocator can reuse one contiguous segment.
+        release_panel_scratch()
         with timers.measure("weighted_panel_prepare"):
             weighted = inverse_variance[:, None] * panel
         report["weighted_panel_calls"] += 1
@@ -376,7 +481,7 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
         return block
 
     def product_ranges(start, stop):
-        boundaries = list(range(start, stop, variant_tile_size))
+        boundaries = list(range(start, stop, effective_tile))
         # An old 512 tail of width one must stay a GEMV/dot, even if a wider
         # cached output tile would otherwise absorb it into a TF32 MMA.
         if m % _PREPARE_TILE == 1 and start < m - 1 < stop:
@@ -411,8 +516,8 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
                 if same and outer_column < outer_row:
                     continue
                 singleton = outer_row_stop - outer_row == 1 or outer_column_stop - outer_column == 1
-                row_step = _PREPARE_TILE if singleton else variant_tile_size
-                column_step = _PREPARE_TILE if singleton else variant_tile_size
+                row_step = _PREPARE_TILE if singleton else effective_tile
+                column_step = _PREPARE_TILE if singleton else effective_tile
                 for row in range(outer_row, outer_row_stop, row_step):
                     row_stop = min(row + row_step, outer_row_stop)
                     for column in range(outer_column, outer_column_stop, column_step):

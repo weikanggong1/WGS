@@ -248,6 +248,20 @@ class PreparedProcessPool:
             self.adapter._metrics["prefetch_process_transient_peak_bytes"] = value["peak_bytes"]
         return value
 
+    def _check_executor(self):
+        """Propagate a failed child even when a request hits cache or falls back."""
+        if self._closed:
+            raise RuntimeError("CPU preparation pool is closed")
+        executor = self._executor
+        if executor is None:
+            return
+        from concurrent.futures.process import BrokenProcessPool
+        if executor._broken:
+            raise BrokenProcessPool(executor._broken)
+        processes = executor._processes
+        if processes is None or any(not child.is_alive() for child in processes.values()):
+            raise BrokenProcessPool("CPU preparation child exited unexpectedly")
+
     def _start(self):
         if self._executor is None:
             # OpenBLAS may initialize while spawn imports NumPy before the
@@ -386,6 +400,7 @@ class PreparedProcessPool:
         done = False
         try:
             while pending or not done or held is not None:
+                self._check_executor()
                 while not done and len(pending) < self.pending_limit:
                     if held is None:
                         try:

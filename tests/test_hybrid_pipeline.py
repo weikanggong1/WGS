@@ -21,10 +21,10 @@ def _dispatch_fixture(backend="cached"):
     analysis.local_mask_reuse_counters = {}
     analysis.covariance_diagnostics = []
     calls = []
-    model = SimpleNamespace(
-        n=2, n_pheno=1, use_spa=False, matmul_mode="tf32",
-        spectrum=SimpleNamespace(blocks=[]), device=torch.device("cpu"),
-        x=torch.ones((2, 1), dtype=torch.float32))
+    model = GaussianNullModel.__new__(GaussianNullModel)
+    model.x = torch.ones((2, 1), dtype=torch.float32)
+    model.spectrum = SimpleNamespace(blocks=[])
+    model.matmul_mode = "tf32"
     analysis._limit = lambda unused_model, m, **kwargs: calls.append(("limit", m))
     def ordinary(g):
         calls.append(("ordinary", g))

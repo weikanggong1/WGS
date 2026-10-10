@@ -12,6 +12,7 @@ import torch
 from .tf32 import matmul, validate_mode
 from .rint import rank_inverse_normal_tensor
 from .numerics import reference_crossprod, extended_variance, _extended_sum_pair
+from .tensor_validation import tensor_all_finite
 
 
 def _r_sum(values):
@@ -162,6 +163,7 @@ class GaussianNullModel:
         self.spectrum.eigenvalues = self.spectrum.eigenvalues.to(dtype=dtype)
         self.spectrum.blocks = [(rows, rotation.to(dtype=dtype)) for rows, rotation in self.spectrum.blocks]
         self.matmul_mode = mode
+        self._centered_single_projection_cache = None
         return self
 
     def score_covariance_sample_block(self, genotype, *, sample_block_size=8192, matmul_mode=None):
@@ -313,7 +315,7 @@ class GaussianNullModel:
         mode = validate_mode(self.matmul_mode if matmul_mode is None else matmul_mode)
         dtype = torch.float32 if mode == "tf32" else torch.float64
         g = torch.as_tensor(genotype, dtype=dtype, device=self.device)
-        if g.ndim != 2 or g.shape[0] != self.n or not bool(torch.isfinite(g).all()):
+        if g.ndim != 2 or g.shape[0] != self.n or not tensor_all_finite(g):
             raise ValueError("genotype must be a finite samples-by-variants matrix")
         if mode != "fp64" and reduction == "reference_sparse":
             raise ValueError("reference_sparse is an FP64 control; forced TF32 requires reduction=blas")
@@ -332,18 +334,44 @@ class GaussianNullModel:
         return matmul(g.T, self.scaled_residuals, mode=mode), (covariance + covariance.T) / 2
 
 
+    def _centered_single_projection_state(self):
+        """FP32 constant-direction correction for this fitted diagonal model."""
+        from .single_projection import centered_projection_state
+        return centered_projection_state(
+            self, self.inverse_variance, self.precision_x, product=matmul,
+            blocked=bool(self.spectrum.blocks))
+
     def individual_score_variance(self, genotype, *, matmul_mode=None):
         """Single-variant scores and variances without an M by M matrix.
 
         Genotypes have the same oriented, imputed [samples, variants] layout
         as score_covariance. Storage and elementwise reductions follow the selected FP32/FP64 mode;
-        matmul_mode selects explicit TF32 products or the FP64 control.
+        matmul_mode selects explicit TF32 products or the FP64 control. For
+        diagonal FP32 precision and an explicit intercept, compute the same P
+        quadratic form on centered genotypes and retain its finite-state P1
+        correction. Scores always use the original oriented genotypes.
         """
         mode = validate_mode(self.matmul_mode if matmul_mode is None else matmul_mode)
         dtype = torch.float32 if mode == "tf32" else torch.float64
         g = torch.as_tensor(genotype, dtype=dtype, device=self.device)
-        if g.ndim != 2 or g.shape[0] != self.n or not bool(torch.isfinite(g).all()):
+        if g.ndim != 2 or g.shape[0] != self.n or not tensor_all_finite(g):
             raise ValueError("genotype must be a finite samples-by-variants matrix")
+        centered_state = (self._centered_single_projection_state()
+                          if mode == "tf32" and not g.requires_grad else None)
+        if centered_state is not None:
+            score = matmul(g.T, self.scaled_residuals, mode=mode)
+            mean = g.mean(dim=0)
+            centered = g - mean[None, :]
+            weighted = self.inverse_variance[:, None] * centered
+            cross = matmul(self.precision_x.T, centered, mode=mode)
+            projected = matmul(cross.T, self.fixed_effect_covariance, mode=mode)
+            variance = ((centered * weighted).sum(dim=0)
+                        - (projected * cross.T).sum(dim=1))
+            del weighted, cross, projected
+            p_one, p_one_sum = centered_state
+            variance += (2 * mean * matmul(centered.T, p_one, mode=mode)
+                         + mean.square() * p_one_sum)
+            return score, variance
         rotated = self.spectrum.rotate(g, matmul_mode=mode)
         weighted = self.inverse_variance.to(dtype=dtype)[:, None] * rotated
         cross = matmul(self.precision_x.to(dtype=dtype).T, g, mode=mode)

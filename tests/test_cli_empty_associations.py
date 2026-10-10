@@ -2,6 +2,7 @@
 import pytest
 import rdata
 from staar_phewas import cli
+from staar_phewas.pipeline import PheWASPipeline
 from staar_phewas.r_output import write_association_batch
 from staar_phewas.results import TraitRows
 
@@ -70,14 +71,14 @@ def test_completed_empty_jobs_write_actual_native_null(tmp_path,layout,expected)
 def test_loaded_null_cli_empty_job_integration_cpu_mock(tmp_path,monkeypatch):
     """Mock CUDA/GDS boundary only; use the actual native writer and CLI audit."""
     class Model:
-        n=3; n_pheno=1; family='gaussian';matmul_mode='tf32'
+        n=3; n_pheno=1; family='gaussian';matmul_mode='tf32';use_spa=False
         def set_matmul_mode(self,mode):self.matmul_mode=mode
     class Reader:
         reader_metadata={}
         def __init__(self,*args):pass
         def __enter__(self):return self
         def __exit__(self,*args):pass
-    class Pipeline:
+    class Pipeline(PheWASPipeline):
         def __init__(self,*args,**kwargs):pass
         def ncrna(self,**kwargs):return [[]]
     monkeypatch.setattr(cli,'GaussianNullModel',Model)

@@ -188,10 +188,18 @@ def test_oversized_preparation_is_alone_and_dead_child_does_not_retry(portable, 
         assert reader._metrics["prefetch_process_pending_estimated_bytes_max"] == max(pool._estimate(v) for v in requests())
         # An unexpected CPU child exit breaks its executor visibly, including
         # future dispatch; it must never fall back and conceal the failure.
-        pid = next(iter(pool._executor._processes))
+        pid, child = next(iter(pool._executor._processes.items()))
         import signal
         os.kill(pid, signal.SIGKILL)
+        # Establish the child exit before testing reuse, rather than racing
+        # the OS and the executor's asynchronous management thread.
+        child.join(timeout=5)
+        assert not child.is_alive()
         from concurrent.futures.process import BrokenProcessPool
+        for request in (requests()[0], np.array([0])):
+            with pytest.raises(BrokenProcessPool):
+                list(reader._prepared_requests([request], samples, None))
+        pool._disabled = True
         with pytest.raises(BrokenProcessPool):
             list(reader._prepared_requests([np.array([0])], samples, None))
         assert reader._metrics.get("prefetch_process_fallback_requests", 0) == 0

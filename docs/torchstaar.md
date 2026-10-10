@@ -1,273 +1,302 @@
-> 0.5.0 的默认主入口为两份 CSV 加一个完整缓存目录，见[三输入指南](cache_only_run.md)。本页保留低级配置及原软件调用；兼容配置命令为 `torchstaar-config`，新的默认入口采用最多 8 GPU 和 40 GiB/worker。
+# Torchstaar 使用说明
 
-# Torchstaar：STAAR 的 PyTorch GPU 流程
+Torchstaar 用 PyTorch GPU 完成全基因组的 Single、gene-based coding、noncoding 和 ncRNA 关联分析，并保存可由 R 读取的原生结果。独立多表型入口 `torchstaar_phewas` 让各表型保留自己的有效样本和固定零模型，同时共享既有六状态缓存的读取、设备传输与注释准备。固定窗口和滑动窗口不在当前入口范围。
+
+本文对应已验证的 0.7.0 全部 mask 集成版本。当前冻结来源的全部 mask 共享分析与历史组合参考比较已完成；历史有限 M 独立结果及保存的长 mask 控制分别核验，当前共享与参考的 CPU 线程数及源码范围单独列明。
 
 ## 功能与流程
 
-Torchstaar 在 GPU 上计算 STAAR 的 Single、coding、noncoding 与 ncRNA 关联检验，并由 Python 写出原生 R 文件。完整染色体入口使用一个连续 Gaussian 表型；支持普通模型与已拟合的稀疏混合模型。默认原生 TF32 矩阵乘法、FP32 累加和一个 GPU 串行执行，推荐显存预算 20 GiB。
-
-各表型使用自己可用的观测，缺失表型和协变量在准备阶段剔除。缺失基因型按原规则处理。已有零模型可直接加载，不再次拟合或变换。固定窗口和滑动窗口分析不属于当前流程。
+| 入口 | 输入与模型 | 调度和计算范围 |
+|---|---|---|
+| `torchstaar.run` / `torchstaar` | 表型 CSV、协变量 CSV、完整缓存目录；逐表型拟合普通 Gaussian 零模型 | 缓存直接运行，默认最多 8 个 GPU worker、40 GiB/worker；普通与长 mask 的方法由参数选择 |
+| `torchstaar_phewas.run_configuration` / `torchstaar-phewas` | 多份已展开的独立单表型配置、完整固定模型、缓存绑定和实时证明 | 一张 GPU 上串行执行各自 TF32 核心，预算最多 20 GiB；本轮关闭 M 上限，全部 mask 对照通过 |
+| `torchstaar-config` / `torchstaar-chromosome` | 已有模型或准备好的 NPZ、原目录/注释及显式配置 | 兼容既有分析计划和原生文件编号，见[配置接口](torchstaar_configuration.md) |
 
 ```mermaid
 flowchart TD
-    A[表型、协变量与样本 ID] --> B[对齐并保留可用观测]
-    C[可选稀疏亲缘矩阵] --> B
-    B --> D[拟合或加载 Gaussian 零模型]
-    G[原 GDS：ID、QC、位置与注释] --> E[验证样本与输入绑定]
-    H[可选已有六状态缓存] --> E
-    E --> S[Single：原 MAC 筛选与有效列合批]
-    E --> M[完整有序目录：coding、noncoding、ncRNA]
-    D --> U[Score 与协方差或其对角线]
-    S --> U
-    M --> U
-    U --> T[Single 或 Burden、SKAT、ACAT-V、STAAR-O]
-    T --> O[原生 R 对象与文件]
+    subgraph A[三输入入口]
+        A1[表型 CSV：每列一个连续表型] --> A3[按 ID 对齐缓存和协变量]
+        A2[协变量 CSV：数值设计列] --> A3
+        A3 --> A4[每个表型独立删缺失；可选 rint]
+        A4 --> A5[拟合各自普通 Gaussian 零模型]
+    end
+    subgraph B[固定模型 PheWAS 入口]
+        B1[各表型独立配置及完整案例样本轴] --> B3[核对模型类型、ID、顺序和有限状态]
+        B2[固定 Gaussian 或非 SPA 二分类 NPZ] --> B3
+        B3 --> B4[保持各自 n、协变量、残差及精度状态]
+    end
+    subgraph C[只读数据供给]
+        C1[已有六状态基因型缓存] --> C3[核对完成标志、来源与样本及变异轴]
+        C2[QC、位点、功能注释与有序目录] --> C3
+        C4[PheWAS 实时 source_proof；三输入 metadata 绑定] --> C3
+        C3 --> C5[压缩帧读取、解压与 compact 或 CSR 复用]
+        C5 --> C6[CPU 到 GPU 传输原稀疏六状态]
+    end
+    A5 --> D1[绑定当前表型样本轴；沿用原单表型数据规则]
+    B4 --> D1
+    C6 --> D1
+    D1 --> S1[Single：原 reference 频率规则、MAC 筛选和有效列合批]
+    S1 --> S2[FP32 剂量与原基因型插补；当前模型独立投影]
+    S2 --> S3[TF32 Score 与方差对角线；FP32 向量计算]
+    S3 --> S4[稳定 Single 尾概率、beta 与 SE]
+    D1 --> G1[功能 mask、原频率资格与当前合格变异数]
+    G1 --> G2[M 上限和显存门控]
+    G2 --> G5[可选 M 上限超限：跳过并记录数量下界；本轮关闭]
+    G2 --> G3[合格 mask：局部并集或逐 mask 六状态解码]
+    G3 --> G4[FP32 剂量及插补；普通块或预算自适应 cached 分块]
+    G4 --> G10[各模型独立 TF32 Score 与协方差]
+    G10 --> G6[选取各 mask；按原 MAF 规则构造并批量计算权重]
+    G6 --> G7[普通 mask：完整加权谱]
+    G6 --> G8[长 mask：沿用独立单表型近似谱；记录 approximate]
+    G7 --> G9[Burden、SKAT、ACAT-V、STAAR-O 原尾概率与合并]
+    G8 --> G9
+    S4 --> N[各表型按原计划写 native Rdata 或 RDS]
+    G9 --> N
+    N --> V[验算：结构、样本字段与显著联合 logP]
+    V --> E[分析完成后 CPU 导出：原生字节复制与 CSV]
+    E --> E2[逐标量读回和 SHA 校验；各表型自己的结果目录]
+    G5 --> R[私有执行报告、阶段时间、显存与跳过记录]
+    E2 --> R
 ```
 
-| 分析 | 完整 mask 范围 |
+两个入口都沿用各自原单表型配置的频率、方向、MAC 和基因型填补规则；缺失表型不插补。三输入入口自动执行 complete-case，固定模型入口要求这些准备已经完成。缓存的共享物理轴不会变成所有表型共同完整案例；不同模型的投影和协方差分别计算。
+
+Coding 包含 `plof/plof_ds/missense/disruptive_missense/synonymous/ptv/ptv_ds`；noncoding 包含 `upstream/downstream/UTR/promoter_CAGE/promoter_DHS/enhancer_CAGE/enhancer_DHS`；ncRNA 使用独立原目录。功能注释定义 mask，统计权重由实际变异类型和配置决定。
+
+## Python 调用、输入与输出
+
+### 三输入直接运行
+
+```python
+from torchstaar import run
+
+if __name__ == "__main__":
+    analysis_report = run(
+        phenotype_csv="private/phenotypes.csv",        # ID + 每个数值表型列
+        covariate_csv="private/covariates.csv",        # ID + 数值协变量列
+        cache_directory="private/population_cache",  # 完整基因型及 metadata 目录
+        output_directory="private/analysis_results",
+        chromosomes=["21"],
+        analyses=["individual", "coding", "noncoding", "ncrna"],
+        devices=["cuda:0"],
+        workers=1,
+    )
+    print(analysis_report["counts"])
+```
+
+| 输入 | 格式和意义 |
 |---|---|
-| Coding | `plof`、`plof_ds`、`missense`、`disruptive_missense`、`synonymous`、`ptv`、`ptv_ds` |
-| Noncoding | `upstream`、`downstream`、`UTR`、`promoter_CAGE`、`promoter_DHS`、`enhancer_CAGE`、`enhancer_DHS` |
-| ncRNA | 独立 ncRNA 目录及 `ncRNA` mask |
-| Single | 原 QC、变异类型与 MAC 门槛下的所有有效变异 |
+| `phenotype_csv` | UTF-8 CSV，首列 `eid` 是唯一标准正整数文本 ID，其他列是唯一名称的数值表型；空单元格、`NA/NaN` 表示缺失 |
+| `covariate_csv` | 同样首列 `eid`，其他所有数值列进入设计；分类变量先编码为数字或哑变量；仅 ID 列表示只有截距 |
+| `cache_directory` | 完整六状态压缩缓存、`cache_dataset.json`、标准样本 ID、每条染色体的 QC/REF/ALT/位置/功能注释、gene 目录及可选 promoter 区间 |
+| 缓存样本和变异轴 | 数组保存原 ID 和顺序，metadata manifest 绑定对应基因型 manifest；只复制压缩基因型文件不足以运行四类分析 |
+| 输出目录 | 私有 `plan.private.json`、完整模型 `models/*.npz`、恢复状态 `jobs.sqlite`、原生文件和执行报告 |
 
-注释权重、Burden、SKAT、ACAT-V 及 STAAR-O 保留原公式。局部 mask 并集复用 Score/协方差，各权重在同一 mask 内批量处理；SKAT 使用完整加权谱。Single 只计算每列方差，避免完整变异×变异协方差。
+程序按 ID 对齐三输入，对每个表型删除该表型缺失或协变量缺失的样本。自动加入截距；已经提供全一截距时不重复加入。已有 GRM 或固定混合模型使用配置/PheWAS 接口，不由三输入入口自动补建。CSV 示例、完整 metadata 格式和每个超参数的默认值见[三输入指南](cache_only_run.md)。
 
-## 安装与 Python 调用
-
-安装命令见[主页](../README.md#安装与运行)。CoreArray PyGDS 需要编译器、Python/NumPy 与 lzma headers；packed reader 的构建见[专门说明](gds_packed.md)。
-
-完整配置从[通用模板](../examples/torchstaar-chromosome.json)填写，私有 `manifest` 必须提供完整有序目录。下面复用已有零模型并展开原生作业；不读取或重写个体表。
+### 固定模型独立 PheWAS
 
 ```python
 import json
 from pathlib import Path
-from torchstaar.chromosome import chromosome_configuration, run_chromosome
+from torchstaar_phewas import run_configuration
+from private_cache_binding import verified_cache_specs
 
-# 私有配置使用下表所定义的输入；每个文件及模型均已对齐。
-analysis_configuration = json.loads(Path("private/chromosome.json").read_text())
-reference_manifest = json.loads(Path(analysis_configuration["manifest"]).read_text())
-analysis_configuration.update(
-    matmul_mode="tf32",
-    resident_genotypes=True,
-    statistics_execution="serial",
-    single_batch_optimization=True,
-    individual_effective_block_size=1024,
-    individual_genotype_block_size=1024,
+# 每份 JSON 都含一个模型、该模型的样本行和同一科学作业计划。
+independent_analyses = [
+    json.loads(Path(filename).read_text())
+    for filename in ("private/trait_01.json", "private/trait_02.json")
+]
+# 全部 mask：取消运行层大小跳过，并恢复 STAAR 默认稀有变异上界。
+for independent_analysis in independent_analyses:
+    independent_analysis["maximum_mask_variants"] = None
+    independent_analysis.setdefault("analysis_options", {})["rv_num_cutoff_max"] = 1_000_000_000
+
+# 私有模块须核对当前源、完整缓存轴与实时源码证明，不返回常量绑定。
+current_cache_specs = verified_cache_specs()
+association_report = run_configuration(
+    analyses=independent_analyses,
+    cache_specs=current_cache_specs,
+    device="cuda:0",
+    device_cache_bytes=512 * 2**20,
+    compact_cache_bytes=64 * 2**20,
+    metadata_cache_bytes=256 * 2**20,
+    cpu_threads=2,  # PyTorch CPU intra-op 线程；结束后恢复调用前数量。
 )
-# 使用 model 路径时不再提供 input/transform/fit_options。
-expanded_configuration = chromosome_configuration(analysis_configuration, reference_manifest)
-Path("private/plan.json").write_text(json.dumps(expanded_configuration, indent=2))
-# 此调用使用原 GDS 路线；已有六状态缓存见后面的显式 Python 入口。
-analysis_report = run_chromosome(analysis_configuration, device="cuda:0")
-Path("private/report.json").write_text(json.dumps(analysis_report, indent=2))
+Path("private/phewas_report.json").write_text(
+    json.dumps(association_report, indent=2, allow_nan=False) + "\n"
+)
 ```
 
-### 输入格式与含义
+`private_cache_binding` 是分析者自己的证明模块；`verified_cache_specs()` 返回经过实时核对的 `{GDS 路径: CacheSpec}`。完整可实现的 `make_source_binding` 和 `source_proof` 示例见[PheWAS 指南](torchstaar_phewas.md#python-调用)。
 
-| 输入 | 格式、默认值与用途 |
+| 输入 | 格式和意义 |
 |---|---|
-| `chromosome` / `gds` | 必填染色体字符串与原生 SeqArray GDS 路径。GDS 包含样本 ID、变异位置、REF/ALT、QC 和功能注释；标记与 manifest 一致。 |
-| `phenotypes` | 必填 JSON 数组；完整染色体入口恰好一项连续 Gaussian 模型，`name` 是私有运行标签。 |
-| `phenotypes[].model` | 已拟合完整 `.npz` 零模型路径；与 `input` 二选一。保存模型身份、设计与残差/精度状态，加载不重新拟合。 |
-| `phenotypes[].input` | 新拟合使用的 prepared `.npz` 路径；至少含有限 `y_raw[N]` 与唯一字符串 `ids[N]`。所有数组保持同一有效样本顺序。 |
-| NPZ `covariates` | 可选有限、满秩 `N×C` 设计矩阵，显式包含所需截距。直接拟合省略时用截距；`prepare_input` 有协变量时会加截距。 |
-| NPZ `grm_diagonal` 与 `grm_edge_row/col/value` | 可选稀疏亲缘输入：对角长 N，非对角三数组等长。索引是模型样本轴上的零基整数；不是 GDS 绝对行号。省略亲缘输入表示普通模型。 |
-| NPZ `gds_sample_ids` / `sample_indices` | 可选实际 GDS ID 或对齐的零基整数行号，均长 N；用于模型绑定。跨染色体按实际 ID 重新查找。 |
-| `phenotypes[].sample_indices_file` | 加载旧模型时可补充上述 N 长度整数轴的 `.npy` 路径，默认省略；要求唯一、有效并与模型行对应。 |
-| `phenotypes[].sample_id_rule` | `auto`（默认）、`exact` 或 `last_underscore_token`。控制无 canonical ID 时的匹配；归一化重复 ID 拒绝。 |
-| `phenotypes[].transform` | 新拟合时 `none`（默认）或 `rint`。先剔除缺失，再在实际有效样本上变换；已有 `model` 不重新变换。 |
-| `phenotypes[].fit_options` | 新拟合的参数对象；常用 `tol=1e-5`、`maxiter=500`、`max_block_size=2048`。对照使用相同设计、亲缘矩阵和拟合规则。 |
-| `phenotypes[].save_model/output_null` | 可选私有 NPZ cache / 原生零模型 R 文件路径；默认不另写模型。加载不自动覆盖原缓存。 |
-| `manifest` | 必填私有 JSON 路径或对象：`genes_info` 是完整有序对象数组，各项含 `gene_name` 和一基闭区间 `start/end`；`ncRNA_genes` 各项含 `gene_name`。不能用注释候选索引替代完整目录。 |
-| manifest `start_loc/end_loc` | 必填一基闭区间整数，定义完整 Single 范围，须覆盖目标 GDS 染色体的全部位置；最后右端点包含在计划中。 |
-| manifest `array_offsets` | 必填对象，`coding/noncoding/ncrna/individual` 四个非负整数表示此前染色体占用批次数，延续原文件编号。 |
-| manifest 批次参数 | `coding_genes_per_batch=50`、`ncrna_genes_per_batch=100`、`individual_region_size=10000000`，均为正整数。影响原生文件分组，真实对照固定原值。 |
-| `annotation_catalog` | 注释名称到 GDS node 路径的字典或私有 JSON 路径，默认空；功能 mask 和权重需要对应的真实注释。 |
-| `annotation_names` | 权重注释名称的有序字符串列表；完整 planner 默认使用原教程的 11 项。名称与 PHRED 矩阵列一一对应。 |
-| `qc_path` | QC node 字符串。完整 planner 默认 `annotation/info/QC_label`，直接 job runner 默认 `annotation/filter`；显式填入基线节点。 |
-| `promoter_intervals_file` | 完整 planner 必填私有 TSV 路径，前三列为 chromosome/start/end，使用原参考区间约定。 |
-| `output_directory/output_prefix` | 必填输出目录字符串；前缀为非空字符串，planner 默认 `Imaging`，不能含目录部分。公开示例用通用标签，实际命名留在私有配置。 |
+| `analyses` | 非空有序 `list[dict]`；每项恰一个表型，GDS、目录、作业参数、QC 和注释设置相同，模型/样本/输出路径各自独立 |
+| 固定 Gaussian 模型 | 非 pickle NPZ，含 ID、设计 `x[n,p]`、scaled residuals、精度/亲缘与固定效应协方差；加载后不重新拟合 |
+| 固定二分类模型 | typed `binary_state` NPZ、`use_spa=false`；原0/1标签、概率、工作响应、残差、precision、precision_x及固定效应协方差分别保存 |
+| `sample_indices_file` | 可选一维 NPY，唯一、有界的零基物理行号 `[n]`，顺序与模型一致；仍核对原 ID，不能直接跨染色体套用 |
+| `cache_specs` | 对所有 GDS 显式提供完成缓存的 `CacheSpec`，包含目录、原 `expected_binding`、实时 `source_proof` 及可选完整物理轴 |
+| `source_proof` | 无参函数，重新核对当前源、SDK/源码、样本轴及缓存证明后返回原绑定；开始和结束均调用 |
+| `jobs` 与输出 | 原有序四类作业及原生输出路径；同一表型兼容 gene 作业按原 append 合并，Single 独立分段，不跨表型共用文件 |
 
-新输入对齐的 Python/CLI 及缺失规则见[输入准备](prepare.md)。本次性能对照加载既有模型和缓存；新拟合、首次转存不计入该对照。
+所有模型、样本字段、注释及作业参数详见[PheWAS 输入表](torchstaar_phewas.md#输入格式)；同一引用零模型的来源标记、非 SPA 限制和每项运行参数也在该页逐项说明。
 
 ### 运行与优化参数
 
-| 参数 | 类型、默认值与作用 |
-|---|---|
-| `device` | 字符串，完整入口默认 `cuda`；示例 `cuda:0` 指定设备，TF32 要求 CUDA。 |
-| `matmul_mode` | 生产默认 `tf32`：一次原生 TF32 MMA，FP32 累加/输出；向量运算走 FP32 GEMV/dot。无分量重建、FP64 矩阵回退或 FP16/BF16。 |
-| `statistics_execution` | 字符串，默认 `serial`；按完整有序作业执行，不启动多个并行关联作业。 |
-| `resident_genotypes` | JSON 布尔值，CUDA 配置默认开启；保留设备 uint8 剂量，随后形成 FP32 关联矩阵。 |
-| `single_batch_optimization` | **新参数**，JSON 布尔值，默认 `true`。兼容 reader 的单 Gaussian、单表型、TF32、驻留 CUDA、无 SPA 时累计有效列；`false` 使用原物理块路径。 |
-| `individual_effective_block_size` | **新参数**，正整数，默认 `1024`。MAC 通过后的每个设备块最大列数；尾块可更小。不改变原统计分组。 |
-| `individual_genotype_block_size` | 正整数，TF32 Single 默认 `8192`，示例设 `1024`。筛选前物理读取上限；缓存路线同时按压缩帧拆分，不是有效列数。 |
-| `analysis_options.genotype_block_size` | 正整数，低级默认 `128`，完整模板设 `1024`；基因分析的物理读取上限。 |
-| `analysis_options.annotation_block_size` | 正整数，默认 `250000`，注释读取与筛选块大小。 |
-| `analysis_options.memory_limit_gib` | 正、有限数值，默认 `20` GiB；pipeline 和矩阵乘法工作区预检，同时检查实际峰值。不是共享设备的资源预留。 |
-| `analysis_options.rare_maf_cutoff` | 数值，默认 `0.01`；基因检验保留严格 `0<MAF<cutoff`。 |
-| `analysis_options.rv_num_cutoff` | 正整数，默认 `2`，集合检验所需最少变异数。 |
-| `analysis_options.rv_num_cutoff_max` | 整数，默认 `10^9`；保留的稀有变异数必须严格小于该值。若只分析 `M<=5000`，用严格上界 `5001` 并检查跳过报告。 |
-| `analysis_options.rv_num_cutoff_max_prefilter` | 正整数，默认 `10^9`；原 union 预筛计数的严格上界，与最终 rare M 不同。 |
-| `analysis_options.variant_type` | 默认 `SNV`，可选 `SNV/Indel/variant`；基因 mask 的变异类型。完整 Single 作业使用 `variant`。 |
-| `analysis_options.imputation` | 字符串，默认 `mean`，另可用 `minor`；原缺失基因型处理，不填补表型 NaN。 |
-| `analysis_options.wrapper_semantics` | 低级默认 `phewas`，完整 planner 固定 `base`，复现原单表型频率/提取规则。 |
-| `mac_cutoff/subset_variants_num` | 默认 `20/5000`；Single 初始 MAC 门槛与原统计分组规模。有效列合批不重置全局分组序号。 |
-| `local_mask_reuse` | 布尔值，CLI 默认 `true`；兼容局部 mask 共享 Score/协方差，再按原索引选取。 |
-| `weight_batch_optimization` | 布尔值，CLI 默认 `true`；批量计算同一 mask 的注释权重，不截断谱。 |
-| `statistics_tail_optimization` | 布尔值，CLI 默认 `true`；原 Saddle/CCT 规则的批量与同步组织。 |
-| `weighted_eigensolver` | `auto`（默认）、`torch` 或 `cusolver_batched`；auto 对满足条件的 33–512 维 FP32 矩阵使用完整小谱接口，其他维度保留 Torch。执行报告记录实际后端与错误。 |
-| `stage_profile` | 布尔值，默认 `false`；记录 host/CUDA stream 阶段边界，会影响调度。计时不可直接相加。 |
+| 参数或阶段 | 三输入入口 | 固定模型 PheWAS |
+|---|---|---|
+| GPU 和预算 | `workers=8`，每卡1 worker；默认40 GiB/worker | 同一个 `device` 上串行核心；预算最多20 GiB |
+| 关联精度 | `matmul_mode="tf32"`，FP32矩阵存储 | `matmul_mode="tf32"`、`precision_control=false`，无分量重建 |
+| 零模型 | 新普通 Gaussian 的 `null_fit_mode="fp64"`，随后转关联状态 | 复用原固定模型；Gaussian与非SPA二分类各自保存状态 |
+| Single | MAC20、有效列1024、原分组5000；分片按完整组边界 | 同一物理块共享读取，各自筛选和原顺序，合并尾概率/回传 |
+| CPU准备与compact | 自动分配总准备进程、64 GiB共享派生磁盘预算、每worker队列2条/256 MiB | 共享CPUcompact/设备CSR/metadata LRU分别64/512/256 MiB |
+| PheWAS CPU线程 | 三输入准备进程由自身参数控制 | `cpu_threads=2` 控制 PyTorch CPU intra-op 线程；严格正整数，结束或异常后恢复原值，报告 requested/effective |
+| 普通gene谱 | 成熟完整加权谱和原尾概率 | 与独立单表型相同的小 mask 路线 |
+| 长mask | 默认 `M>5000` 使用rank512、seed1729的近似谱，结果标记`approximate=true` | 本轮 `maximum_mask_variants=null`，`analysis_options.rv_num_cutoff_max=10^9`，移除旧的两项大小限制；沿用独立核心长 mask 路线，非 SPA 长 mask 支持见本版真实控制 |
+| cached协方差分块 | `cached_variant_tile_size` 请求块宽；自动面板按预算选择实际宽度 | 实际宽度为不超过请求值的512倍数；Score和投影准备仍为512列，native TF32及双向平均保持原规则 |
+| 来源与恢复 | 样本ID/metadata/源码绑定及私有恢复计划 | 当前原GDS/物理缓存/SDK/源码证明与独立有序配置 |
 
-Single 新版先复用已验证样本轴和解码行映射，利用完整缓存的 allele counts 作安全 MAC 上界预筛，再按原队列公式计算精确计数。在 CPU compact 层保留原顺序、方向、半缺失摘要，累计最多 1024 个有效变异后生成 GPU 剂量，不另建磁盘缓存。int32 几何、live 显存与原 pipeline 工作区保护继续执行。
+两条入口的全部默认值分别见[三输入参数](cache_only_run.md#默认参数及含义)与[PheWAS 参数](torchstaar_phewas.md#运行参数)，兼容底层参数见[配置接口](torchstaar_configuration.md#运行与优化参数)。关联 TF32 与新零模型拟合的 FP64 是两个阶段；近似长谱的精度边界另见[统计与版本说明](hybrid_validation.md)。
 
-汇总中的 `single_optimization_configuration` 分别记录 `requested_batch_optimization`（请求）、`configured_tf32_batch_optimization`（配置）、`activated`（实际启用）、`actual_effective_blocks/columns`（实际批次/列数）、`individual_effective_block_size` 和 `reduction_order`。是否执行以 `activated` 和实际计数为准；请求开启不代表 reader、模型或设备满足条件。
+成熟单表型长谱核心在最终 Ritz 子空间、trace 和平方矩阶段用分块 FP64 细化，完整变异协方差矩阵仍存为 FP32，Score 与协方差沿用原 TF32/FP32 核心；此阶段不以 FP64 重算完整关联矩阵，也不重建 TF32 分量乘法。
 
-矩阵预检每次读取当前设备的 allocated/reserved。仅明确使用 native allocator、已有空闲 reserved 足以覆盖新工作区和 256 MiB 保留量、且 allocated 加新工作区不超预算时，复用本进程缓存直接通过；其他情况查询实时 CUDA free。没有复用旧 free 值，实际分配错误继续上报。
+成熟缓存协方差子函数在大样本验证中暴露了显存碎片预算问题：闲置reserved的总字节不能保证可用于新的连续大面板。当前修复在计划前于同一device调用`empty_cache()`释放可回收闲块，再重新测量allocated、reserved和设备free；准入以清理后剩余的`max(allocated,reserved)`保守扣减进程预算，不把unused reserved计为连续可用空间。修复影响面板调度与预算，不改变关联检验。
 
-### 已有六状态缓存的 Python 入口
+自动面板在上述剩余预算和实时free范围内选择布局。请求块宽无法容纳时，减小到不超过请求值的512倍数；Score和投影仍按原512列准备，保留两向native TF32产品平均和20 GiB的PheWAS预算。面板H2D之前以及加权面板分配之前再次释放已删除的准备、产品临时数组留下的闲块，保留仍存活的模型与基因型。协方差后端每次调用记录请求/实际块宽、回收次数、released bytes与host耗时；不同模型或mask可以有不同实际宽度。pipeline较早的cached工作区预检也执行同device回收与重新采样，其开销计入pipeline和作业总墙钟，不包含在后端的`allocator_cleanup_*`聚合中。最小512列布局仍无法满足预算时明确报错，不静默跳过该mask。
 
-缓存必须已经完成，物理样本轴与 GDS 严格绑定。原 GDS 仍提供 ID、QC 和注释。下面的函数接收既有验证流程生成的 `CacheSpec`，不自动选择或重新创建缓存。
+### 原生与 CSV 输出结构
 
-```python
-from pathlib import Path
-from torchstaar.cache_runtime import CacheSpec, run_cached_configuration
+Single 原 data.frame 含 `CHR/POS/REF/ALT/ALT_AF/MAF/N/pvalue/pvalue_log10/Score/Score_se/Est/Est_se`。`pvalue_log10` 保存稳定的 `−log10(P)`，小 P 比较直接采用该列。Gene 原类别 list 保留 Burden、SKAT、ACAT-V及STAAR合并值；原生 R 文件保留对象名、类型、顺序、factor和空项。
 
+三输入 Single 按完整原始组分片，并记录分片SHA、全局行号和最终factor信息；其分片factor布局与一次整染色体文件不同。固定模型 PheWAS 按原配置输出，与逐个独立配置的文件和对象结构核对。
 
-def analyze_existing_cache(expanded_configuration: dict, verified_cache_spec: CacheSpec):
-    # 示例只处理一条染色体；cache spec 由实际 source proof 提供。
-    if len(expanded_configuration["chromosomes"]) != 1:
-        raise ValueError("示例要求一条染色体")
-    source_gds = Path(expanded_configuration["chromosomes"][0]["gds"])
-    return run_cached_configuration(
-        expanded_configuration,
-        cache_specs={source_gds: verified_cache_spec},
-        device="cuda:0",
-    )
+分析结束后再运行[CPU CSV导出](torchstaar_phewas_export.md)，按私有manifest中核对的原表型名称保存：
+
+```text
+private/results/
+├── trait_01/
+│   ├── single_segment_01.Rdata
+│   ├── single_segment_01.csv
+│   ├── coding_batch_01.Rdata
+│   ├── coding_batch_01.csv
+│   └── ...
+└── trait_02/
+    └── ...
 ```
 
-`expanded_configuration` 为上面 planner 返回的 `dict`；`verified_cache_spec` 为必填 `CacheSpec`，其 `directory` 是完成缓存目录、`expected_binding` 是已核对绑定字典、`source_proof` 是每次重新检查源输入/软件的无参函数。`expected_samples=None` 为可选完整缓存样本轴；`compact_cache_bytes=64*2**20` 是 CPU 帧 LRU 字节上限。映射键为原 GDS 路径，未配置路径明确拒绝，无 genotype SDK 静默回退。完整构造与格式见[六状态缓存](sixstate_cache.md)。跨版本复用先做 producer/consumer 兼容性审查，不能修改旧 manifest 或返回固定字典伪造 proof。
+公开示意使用匿名名字；正式目录采用输入清单的原名称，各native basename保持不变，CSV为同stem。完整文件必须逐项列入manifest，包括每段Single。额外表型说明列通过确切私有 `exclude_columns` 移除；输出不新增表型标签或字段编号。CSV逐标量读回、保留已有logP；全NULL文件只写正确列头、不伪造行。原生文件保留字节一致的完整R结构。
 
-## 输出
-
-原生批次、文件编号、对象名、类型、空 `NULL`、factor 属性与行名沿用 STAAR。`layout=base` 用原单表型直接对象；`layout=phewas` 保留表型列表层。普通 job runner 的默认布局是 `phewas`，完整 planner 生成 `base`。
-
-| 分析 | 默认 R 对象与结构 |
-|---|---|
-| Gaussian null | `obj_nullmodel`，原 `glmmkin` 列表与 Matrix 类型 |
-| Coding | `results_coding`，类别命名列表；类别槽为混合 matrix 或 `NULL` |
-| Noncoding | `results_noncoding`，同原类别槽及顺序 |
-| ncRNA base | `results_ncRNA`，matrix 或 `NULL` |
-| Single base | `results_individual_analysis`，data.frame 或 `NULL` |
-
-普通 Single 保留 13 列：`CHR, POS, REF, ALT, ALT_AF, MAF, N, pvalue, pvalue_log10, Score, Score_se, Est, Est_se`。REF/ALT 为 factor，N 为 integer，其余数值保留原 R 类型。`pvalue_log10` 为正的 `−log10(P)`；微小 P 下溢时优先比较原 log 列，不把 P 人为放大。GPU 合批不改变原 `subset_variants_num` 分组、common/rare 提取顺序、factor levels、row names 或最终 POS 排序。
-
-CLI 汇总包含运行标签和输入身份信息，应保留在私有目录。公开仅发布匿名计数、误差和计时汇总，不提交逐位点/逐基因表。序列化 API 与 R 回读见[原生输出](r_native_output.md)。
-
-## 命令行与原 R
+## 命令行调用
 
 ```bash
-# 展开完整有序目录；只规划，不计算。
-torchstaar-chromosome private/chromosome.json --plan-only --report private/plan.json
-# 从原 GDS 执行全部四类分析。
-torchstaar-chromosome private/chromosome.json --device cuda:0 --report private/report.json
-# 对已展开作业执行；六状态缓存由显式 Python 包装接入。
-torchstaar-config private/plan.json --device cuda:0 --report private/report.json
+# 三输入入口，可在后面追加设备、染色体和已说明的超参数。
+torchstaar private/phenotypes.csv private/covariates.csv private/population_cache \
+  --chromosomes 21 --devices cuda:0 --workers 1 \
+  --output-directory private/analysis_results
+
+# 固定模型独立PheWAS：JSON包含独立analyses、caches与live证明函数引用。
+PYTHONPATH=private torchstaar-phewas private/phewas.json \
+  --device cuda:0 --cpu-threads 2 --report private/phewas_report.json
+
+# 完成关联与原生核对之后，单独CPU后处理。
+CUDA_VISIBLE_DEVICES="" python -m torchstaar_phewas.export_results private/native_manifest.json \
+  --results-directory private/results --report private/csv_report.json
 ```
 
-两个命令的 `config` 是私有 JSON 路径，`--device` 默认 `cuda`；完整入口的 `--report` 必填，普通入口可选。`--plan-only` 只用于完整入口。普通入口的 `--weighted-eigensolver auto|torch|cusolver_batched` 可覆盖配置后端。已有缓存的本次 benchmark 使用前面的 Python 包装；直接 CLI 读取原 GDS 的耗时不代表缓存路线。
+三输入CLI与Python参数一致，缓存metadata完整时不需要原始GDS SDK。固定模型CLI的 `caches[].source_proof` 使用 `模块:函数`，私有模块必须在PYTHONPATH中；原GDS提供只读来源与注释证明，基因型使用既有缓存。`--cpu-threads` 覆盖配置的 `shared_options.cpu_threads`；它控制 CPU 数学线程，不代表 GPU 并发数或单表型 adapter 的 `prefetch_processes`。CSV导出的 `--exclude-column` 可重复填写确切额外元数据列名。完整命令和格式见对应的[三输入](cache_only_run.md#命令行调用)、[PheWAS](torchstaar_phewas.md#命令行调用)和[CSV](torchstaar_phewas_export.md#命令行调用)指南。
 
-原 R 仅用于独立对照。使用同一已拟合对象、实际 GDS、QC、样本及注释，不重拟合来改变比较输入；下列变量由私有对照准备流程提供。
+## 原软件调用
+
+原R独立调用使用同一零模型、样本、QC、区域、功能注释及mask计划。生产关联入口不调用R。下面展示固定模型逐表型Single；coding/noncoding/ncRNA原调用见[PheWAS原R示例](torchstaar_phewas.md#原-r-独立调用)和[原配置流程](torchstaar_configuration.md#命令行与原-r)。
 
 ```r
 library(STAARpipeline)
 library(SeqArray)
-load("private/reference_null.Rdata")  # 原 fitted obj_nullmodel
 genotype_file <- seqOpen("private/chromosome.gds")
-results_individual_analysis <- Individual_Analysis(
-  chr=21L, start_loc=region_start, end_loc=region_end,
-  genofile=genotype_file, obj_nullmodel=obj_nullmodel,
-  mac_cutoff=20, subset_variants_num=5000,
-  QC_label=qc_node, variant_type="variant", geno_missing_imputation="mean")
-results_coding <- Gene_Centric_Coding(
-  chr=21L, gene_name=selected_gene, genofile=genotype_file,
-  obj_nullmodel=obj_nullmodel, category="all_categories_incl_ptv",
-  Annotation_dir="", Annotation_name_catalog=annotation_catalog,
-  Annotation_name=annotation_names, QC_label=qc_node)
-results_noncoding <- Gene_Centric_Noncoding(
-  chr=21L, gene_name=selected_gene, genofile=genotype_file,
-  obj_nullmodel=obj_nullmodel, category="all_categories",
-  Annotation_dir="", Annotation_name_catalog=annotation_catalog,
-  Annotation_name=annotation_names, QC_label=qc_node)
-results_ncRNA <- ncRNA(
-  chr=21L, gene_name=selected_ncrna, genofile=genotype_file,
-  obj_nullmodel=obj_nullmodel, Annotation_dir="",
-  Annotation_name_catalog=annotation_catalog, Annotation_name=annotation_names,
-  QC_label=qc_node)
+for (trait_index in seq_along(null_model_files)) {
+  null_model <- get(load(null_model_files[[trait_index]]))
+  single_result <- Individual_Analysis(
+    chr=21L, start_loc=region_start, end_loc=region_end,
+    genofile=genotype_file, obj_nullmodel=null_model,
+    mac_cutoff=20, subset_variants_num=5000, QC_label=qc_node,
+    variant_type="variant", geno_missing_imputation="mean")
+  # 按该表型原文件分组和对象名保存。
+}
 seqClose(genotype_file)
 ```
 
-`region_start/end` 是原作业的一基闭区间；`selected_gene/selected_ncrna` 来自完整目录；`qc_node`、`annotation_catalog/names` 与 GPU 一致。原 R 签名与版本应固定并记录，不能以单个调用代表完整染色体。入口见[原 Single](https://github.com/li-lab-genetics/STAARpipeline/blob/master/R/Individual_Analysis.R)、[原 coding](https://github.com/li-lab-genetics/STAARpipeline/blob/master/R/Gene_Centric_Coding.R)和[原 pipeline](https://github.com/li-lab-genetics/STAARpipeline)。
+`null_model_files`、`region_start/region_end`及`qc_node`均由私有原计划提供。实测gene采用 `variant_type="variant"`、两组Beta权重且PHRED权重数为0；原示例应显式设置相同变异类型、注释开关与M上限，不依赖原包不同默认值。
 
-## 真实验证与计时范围
+## 精度与耗时
 
-本版 0.4.0 的匿名真实对照为 chr21 **完整 Single**：一个固定连续 Gaussian 模型，339,013 个有效样本，扫描 13,733,596 个物理输入，原四个区间和 4 个原生输出，共 1,065,735 行。输入、模型、缓存身份和作业范围核对一致，未重新转存。测量使用 A100-SXM4-80GB、PyTorch 2.5.1/CUDA 11.8，显存预算 20 GiB。
+### 0.7.0 全部 mask 的本版结果
 
-| 时间范围 | 上一接受的 TF32 | 本版 |
-|---|---:|---:|
-| 四个 Single 作业，含读取整理与计算 | 2331.276 s | 1125.923 s |
-| 本版启动至四份原生文件输出 | — | 1183.551 s |
-| 本版 CLI 墙钟 | — | 1150.933 s |
-| 本版关联文件序列化 | — | 12.324 s |
-| 本版模型加载/转换 | — | 1.226 s |
-| 本版 GDS/pipeline 初始化 | — | 6.614 s |
+本版 13 个固定独立模型完成全部 mask，maximum_mask_variants=null，rv_num_cutoff_max 恢复原默认 10^9，跳过 0 个 mask；共 10,335 个表型作业，原生变异数（#SNV）列计数得到 39 个 M>5000 结果行，输出 234 native 和 8,803,427 行。共享入口 8,443.879 s、外层 driver 8,495.115 s。本轮复用保存的独立参考，共同 8,803,388 行、长 mask 对照补充 39 行、未覆盖 0 行；历史参考有 0 行未匹配。历史组合参考比较 9,143,830 个 P，不可比较 0 个（验收门控），显著联合 536,242 个，最大 logP 误差 1.76570982e-08，超标 0，阈值跨越 0；原生结构与非 P 诊断通过。allocated/reserved 峰值 14.430/19.811 GiB。CPU intra-op 请求/实际线程数为 8/8。历史有限 M 独立入口曾合计 16,772.722 s；其 CPU 线程数、源码及 mask 范围与当前运行不同，不据此计算本轮速度比。该时间来自既有缓存，OS page cache 和共享 GPU 负载未受控；首次转存、原 R 验算、回归、打包和 CSV 均另计。
 
-Single 作业观测比值为 2.071。上一 Single 时间来自包含基因分析的完整运行，本版是独立 Single 启动；两次运行顺序和文件系统缓存状态不同，未作隔离重复测量。首次转存、新零模型拟合、独立 R 对照和零模型另行导出不在本版范围；1183.551 秒包含本次启动及关联文件写出。
+长 mask 候选验证计划包含 91 个真实表型作业控制，覆盖 Gaussian 与非 SPA 二分类；参考为同模型同配置的独立单表型核心，显著联合最大 logP 误差 4.11766399e-10。长谱的近似标记保留，保存的独立长 mask 对照不将近似谱标作原 R 完整谱。
 
-| 本版阶段观测 | Host seconds |
+本版冻结来源的有界原 R 对照使用 STAAR 0.9.8.2、SeqArray 1.48.0，包含 13 模型，117 个 gene 调用、78 文件、206 行和 3,118 个 P，显著联合 130 个、最大误差 0.000901410848；Single 104 个位置、110 个 P，显著联合 78 个、最大误差 5.91581405e-05。这属于选定原 R 作业对照，原 R 未完成整条染色体。
+
+有界原 R 与选定长 mask 资格对照使用同一冻结来源的 2 个 CPU intra-op 线程；本次全量共享使用 8 个 CPU intra-op 线程，按要求复用历史独立结果，未重新启动全量独立分析。旧有限 M 独立参考来自较早源码，补充长 mask 参考来自本版源码；二者均为 2 线程。资格和历史计时分别保留，不作为本次 8 线程同范围速度基准。
+
+本版新冻结来源的CUDA 可见完整回归：1,595 passed、213 subtests passed、1 skipped，93.260 s；0.7.0 wheel 353,253 字节、117 个包源码文件及安装后的 namespace、PheWAS CLI、export CLI 通过。
+
+全部 native 完成后，独立 CPU 阶段验收已激活的新输出：保留 234 native 与 234 CSV（52 Single），共 8,803,427 行；当前生产者绑定、SHA/列头/格式和逐标量读回核验 1,319.498 s。114,671,291 个标量、96,988,035 个数值读回通过，P 与已有 logP 序列化误差为 0；这项计时不含先前 CSV 初次写盘、关联、回归执行或打包构建，不重新计算关联、不启用 GPU。
+
+| 本版共享阶段 | 秒 |
 |---|---:|
-| 压缩帧读取、解压、校验与复制 | 262.658 |
-| CPU compact 整理 | 631.517 |
-| 其中有效列合批，已包含在 compact 中 | 110.944 |
-| GPU uint8 materialize 的主机边界 | 92.985 |
-| 跟踪的 reader wall | 1000.922 |
-| 完整读取准备阶段 | 1043.103 |
-| trait dense、频率与缺失处理 | 24.874 |
-| Score/方差调用 | 14.874 |
-| Single 尾概率调用 | 0.828 |
-| 结果回传边界 | 15.651 |
+| Single 作业，含触发的 native 写出 | 1,372.762 |
+| coding 作业，含触发的 native 写出 | 1,141.041 |
+| noncoding 作业，含触发的 native 写出 | 4,916.520 |
+| ncRNA 作业，含触发的 native 写出 | 966.886 |
+| 注释准备 | 29.979 |
+| 模型加载 | 5.657 |
+| 原来源与注释设置 | 9.020 |
+| 原生序列化 | 124.357 |
 
-这些是嵌套或异步的观测，不能直接相加。Score/方差的 CUDA stream elapsed 为 29.240 秒，包含流上的调度边界，不是隔离纯 kernel；结果回传的 host 时间包含上游等待。reader 读取计时包含 SHA、Zstd、CSR 校验和复制，不是纯磁盘时间。读取整理仍是本次主要开销。
+读取 17,060 帧、上传 17,060 个 CSR，H2D 116,410,732,731 字节，SDK 基因型回退 0 次。各作业计时含 append/native，准备及原生分项存在嵌套，不相加得到端到端；旧独立作业在序列化前截止，阶段速度不能直接相除。
 
-| 本版验收 | 结果 |
+### 既往有限 M 验证与计时范围
+
+已完成共享来源在原345,967人缓存的子集上使用13个固定独立模型：12 Gaussian与1非SPA二分类，各35,364–340,795人，并集341,101人。每个表型保留自己的完整案例，13表型交集5,254人，未填补表型NaN或重新转存。
+
+该历史测量的 `variant_type=variant` 同时纳入SNV和Indel，gene采用Beta(1,25)与Beta(1,1)，实际PHRED权重数为0。chr21四类有序计划共10,335表型作业，计算各表型`M<5000` mask，输出234native和8,803,388行。共享与独立TF32的原生结构、非P字段及9,143,284个P全部比较；显著联合536,166个，最大`|Δ(-log10 P)|=0`。
+
+| 13固定模型的记录 | 已完成旧来源（M<5000） | 0.7.0全部 mask 版本 |
+|---|---:|---:|
+| 独立分析入口合计，含原生输出 | 16,772.722 s | 复用保存的参考；本轮未重跑 |
+| 共享分析入口，含原生输出 | 6,091.267 s | 8,443.879 s |
+| 最大显著联合logP误差 | 0 | 1.76570982e-08 |
+| 输出native/行 | 234 / 8,803,388 | 234 / 8,803,427 |
+| 分离的CPU CSV后处理 | 544.193 s | 1,319.498 s |
+
+旧来源入口时间比为2.754，allocated/reserved峰值14.413/19.791 GiB。入口从模型加载计时至原生文件完成，含读取、注释准备和计算；首次转存、R验证、CPU回归、打包和CSV导出另计。新cached分块的闲块回收、重新采样、预算选择、准备、面板传输与协方差计算包含在对应作业时间中；诊断中的`wall_seconds`、回收host耗时与host/CUDA阶段存在嵌套和重叠，不能另加到端到端时间。OS page cache与共享GPU负载未受控。作业分项存在不同序列化边界和嵌套，完整表格及实际读取/传输计数见[PheWAS验证记录](torchstaar_phewas.md#验证与近期记录)。
+
+已完成旧来源的官方R有界对照复用相同固定模型：117个gene函数调用、78gene文件、206行及3,118个P，显著联合最大误差0.000901411；104个Single位置、110个P，显著联合最大误差0.0000591581。此前有限 M 集成候选重新完成这组独立验算：13模型、gene显著联合130个、Single显著联合78个，最大误差分别为0.000901411和0.0000591581，均小于0.001。计数和误差与旧来源相同，各自源码和调用另行核验。它是选定普通 mask 和位置的原R对照；本版新增全 mask 支持后的普通及长 mask 控制见上述当前结果。
+
+原生关联与对照完成后，CPU导出234CSV（52Single），保留各234native，标量读回与源/目标SHA通过，P和已有logP的序列化误差为0。CSV是独立格式转换，不进入关联时间。输出结构示意如上，无需发布个人标签、具体位点或基因表格即可核对流程。
+
+此前有限 M 集成候选在 `CUDA_VISIBLE_DEVICES=0` 的完整回归完成1,443 passed、213 subtests passed、1 skipped，59.23 s；该候选0.7.0 wheel为348,863字节，117个包源码文件及安装后的namespace、PheWAS CLI和CSV export CLI核对通过。这些数量绑定此前冻结来源。新增全 mask 支持后的源码、完整回归、安装、长 mask 控制、真实全量 GPU 对照和 CPU CSV 后处理见上述当前结果；旧有限 M 耗时不用于计算新全 mask 速度比。
+
+## 近期版本与 benchmark 记录
+
+| 版本或来源 | 已有证据与本轮范围 |
 |---|---|
-| 与上一 TF32 的全部原生结构/元数据 | 4 个文件通过；键及行顺序、列类型、factor 属性、row names 一致，AF/MAF/N 精确一致 |
-| 全量 P 有效性 | 1,065,735 个可比较 P；显著联合 55,377 项 |
-| 全量 `abs(delta −log10(P))` | 最大 `7.0916163e-6`；显著最大同值，0 项跨越 0.05 |
-| 官方 R 的同模型有界 Single | 28 个 P、2 个显著项；显著最大误差 `2.3897789e-6` |
-| GPU allocated / reserved 峰值 | 5.137 / 8.287 GiB |
-| 实际 Single 计算批次 | 13,413 → 1,042，输出行数不变 |
-| 实际矩阵运算 | 2,084 次经 PTX 验证的 TF32 GEMM、1,042 次 FP32 GEMV；无分量重建或 FP64 GEMM 回退 |
+| 0.4.0 Single | 已接受单表型chr21 Single与缓存协方差阶段记录，完整字段与时间见[版本历史](hybrid_validation.md#已有真实验证与本版范围) |
+| 0.5.0三输入与共享验证来源 | 三输入重构与独立PheWAS分别记录；上述13固定模型全chr21小mask计划已完成，原R是有界范围 |
+| 0.6.0单表型主线 | compact复用与CPU多进程准备；339,013人选定四类作业两组候选44,600个P/logP误差0；时间和冷热边界见[0.6.0记录](hybrid_validation.md#060样本-compact-复用与-cpu-预取) |
+| 0.7.0全 mask 集成版本 | 基于`dbda0dc`合并成熟单表型核心、独立PheWAS与CSV，关闭 M 上限并覆盖长 mask；CPU准备池健康状态与异常传播、cached wrapper预取及索引恢复hook修复属于生命周期与输入准备；成熟cached子函数的显存碎片预算bug修复为同device回收闲块后重测、保守扣除剩余reserved，并记录回收开销；面板仍按预算自适应512倍数产品宽度，原512列准备、native TF32与双向平均保留，检验公式不变；全部 mask 共享、历史组合参考、Gaussian/非 SPA 长 mask 控制、回归及安装通过 |
 
-显著联合定义为两版任一 `P<0.05`，比较现有 log 输出，目标误差小于 0.001。全量数值参考是上一接受的 TF32 结果；本版没有重算全染色体官方 R。上述 Single 耗时不覆盖 coding、noncoding 或 ncRNA，不能表述为四类完整 pipeline 的新耗时。回归与合成数据契约验证代码边界，不能替代真实 benchmark。 发布回归有 779 项测试与 162 项子测试通过、1 项跳过；另有 5 项公开入口测试、wheel 构建与安装检查通过。公开缓存入口在同一大样本模型的 400 kb 区域实际输出 13,126 行并启用 13 个有效批次。机器可读记录见[匿名汇总](../benchmarks/torchstaar_single_chr21_2026-10-09.json)。
+机器可读匿名记录：[已完成共享旧来源](../benchmarks/torchstaar_phewas_chr21_previous_source.json)、[0.7.0候选状态](../benchmarks/torchstaar_phewas_chr21_merged_0_7_0.json)。三输入旧benchmark保留在[原版本历史](hybrid_validation.md)，配置Single细节保留在[配置指南](torchstaar_configuration.md#真实验证与计时范围)，不重复发布同一历史报告。
 
-## 近期版本记录
+## 参考文献和原始实现
 
-| 版本/范围 | 记录 |
-|---|---|
-| 上一接受的 TF32，固定模型的全量 Single | 同输入输出 1,065,735 行，Single 作业 2331.276 秒；作为本轮全量数值参考。 |
-| 0.4.0 局部 400 kb，预热后的 Single | 339,013 个有效样本、13,126 行；上一 TF32 23.262 秒，本版 11.975 秒，715 个显著联合项的最大 log 误差 `2.91094e-6`。仅局部 job 观测。 |
-| 0.4.0 全量 Single | 1125.923 秒作业墙钟、1183.551 秒本次端到端；严格原生对照及有界官方 R 通过，精度见上表。 |
+- [STAAR](https://github.com/li-lab-genetics/STAAR)：Score、Burden、SKAT、ACAT与原尾概率。
+- [STAARpipeline](https://github.com/li-lab-genetics/STAARpipeline)：独立Single、coding、noncoding与ncRNA原实现；[STAARpipelinePheWAS](https://github.com/li-lab-genetics/STAARpipelinePheWAS)提供原多表型提取流程。
+- Li X et al. *Nature Genetics* 52, 969–983 (2020). [DOI](https://doi.org/10.1038/s41588-020-0676-4)。
+- Li Z et al. *Nature Methods* 19, 1599–1611 (2022). [DOI](https://doi.org/10.1038/s41592-022-01640-x)。
+- Liu Y, Xie J. *JASA* 115, 393–402 (2020). [DOI](https://doi.org/10.1080/01621459.2018.1554485)。
+- [GMMAT](https://github.com/hanchenphd/GMMAT)、[SeqArray](https://github.com/zhengxwen/SeqArray)、[rdata](https://github.com/vnmabus/rdata)：模型、GDS和原生对象格式。
 
-完整生产 TF32 入口目前限单个连续 Gaussian 模型。多个独立表型、联合多表型和二分类保留独立 API/显式 FP64 对照接口，见[独立多表型](phewas_multiple.md)、[联合模型](multi.md)、[二分类模型](binary_null.md)；本版 Single 优化与 benchmark 不覆盖这些接口。不同样本、注释、模型和读取路线需分别验证。
-
-## 参考
-
-- [STAAR](https://github.com/li-lab-genetics/STAAR)：Score、Burden、SKAT、ACAT、Saddle 与注释权重。
-- [STAARpipeline](https://github.com/li-lab-genetics/STAARpipeline)、[STAARpipelinePheWAS](https://github.com/li-lab-genetics/STAARpipelinePheWAS)：四类分析和逐表型样本提取；原软件包/参考版本在私有对照中固定。
-- [GMMAT](https://github.com/hanchenphd/GMMAT)、[CoreArray PyGDS](https://github.com/CoreArray/pygds)、[SeqArray](https://github.com/zhengxwen/SeqArray)、[rdata](https://github.com/vnmabus/rdata)：零模型、输入与原生序列化。
-- Li X et al. Dynamic incorporation of multiple in silico functional annotations empowers rare variant association analysis of large whole-genome sequencing studies at scale. *Nature Genetics* 52, 969–983 (2020). [DOI](https://doi.org/10.1038/s41588-020-0676-4)。
-- Li Z et al. A framework for detecting noncoding rare-variant associations of large-scale whole-genome sequencing studies. *Nature Methods* 19, 1599–1611 (2022). [DOI](https://doi.org/10.1038/s41592-022-01640-x)。
-- Liu Y, Xie J. Cauchy combination test: a powerful test with analytic p-value calculation under arbitrary dependency structures. *JASA* 115, 393–402 (2020). [DOI](https://doi.org/10.1080/01621459.2018.1554485)。
-
-源码为 GPL-3.0-only。输入注释、目录与外部资源从原作者取得；包不附带研究数据或第三方数据库。专门 API：[准备](prepare.md)、[零模型](null_model.md)、[统计](statistics.md)、[GDS](gds.md)、[缓存](sixstate_cache.md)、[原生输出](r_native_output.md)。
+源码遵循GPL-3.0-only。个体输入、模型、运行路径、真实标签及具体结果保留私有；公开仅包含通用接口、匿名计数、配置和测量值。

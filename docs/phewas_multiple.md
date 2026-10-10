@@ -1,71 +1,30 @@
-# 多个独立表型的 PheWAS
+# 多个独立表型的接口
 
-`PheWASPipeline` 支持多个独立 Gaussian 零模型。每个表型保留自己的完整案例、协变量和 GRM 拟合；读取所有模型的样本并集后，在每个模型样本中重新计算频率和插补值。这与一个模型同时估计相关表型协方差的 [联合 MultiSTAAR](multi.md) 有不同统计含义。
-
-```mermaid
-flowchart LR
-    A[各表型完整案例与 GRM] --> B[分别拟合 Gaussian null]
-    B --> C[以实际 GDS ID 构造样本并集]
-    C --> D[共享分块基因型与全局 minor 方向]
-    D --> E[各表型重新计算 MAF 与缺失插补]
-    E --> F[各自 STAAR 与单变异统计]
-    F --> G[按表型顺序保存原生 Rdata]
-```
-
-每个输入 NPZ 至少包含 `y_raw[n]`、`ids[n]`，可包含 `covariates[n,p]`、`grm_diagonal[n]` 和零基 `sample_indices[n]`。不同模型允许不同 `n`，个体顺序须与设计矩阵和 GRM 一致。共同个体只在 GDS 并集中读取一次。跨染色体使用实际 GDS ID 重新匹配，不能把上一条染色体的物理行号直接套用。
+生产入口为 [`torchstaar_phewas.run_configuration`](torchstaar_phewas.md)。它接收多个已展开的单表型 Torchstaar 配置，复用同一已验证六状态缓存、CPU–GPU 传输和注释准备；每个表型保持自己的完整案例、频率、等位基因方向、零模型及原生输出，目标与分别运行单表型流程一致。不同样本数和 NaN 位置按各表型处理，不取共同完整案例，不插补缺失表型。
 
 ```python
 import json
 from pathlib import Path
-from torchstaar.gds import SeqArrayGDS
-from torchstaar.io import fit_prepared_input
-from torchstaar.pipeline import PheWASPipeline
+from torchstaar_phewas import run_configuration
 
-# 所有个体数据和产物存放在私有目录。
-annotation_catalog = json.loads(Path("annotation_catalog.json").read_text())
-gene_start, gene_end = 200000, 230000  # 示例一基闭区间；实际区域来自私有完整目录
-model_one, rows_one = fit_prepared_input("trait_one.npz", device="cuda", transform="rint")
-model_two, rows_two = fit_prepared_input("trait_two.npz", device="cuda", transform="rint")
-with SeqArrayGDS("chromosome.gds") as gds:
-    pipeline = PheWASPipeline(
-        gds, [model_one, model_two],
-        gds_sample_indices=[rows_one, rows_two],
-        qc_path="annotation/info/QC_label",
-        annotation_catalog=annotation_catalog,  # 功能注释名 -> 原 GDS 节点
-        annotation_names=["CADD", "aPC.LocalDiversity"],
-    )
-    results = pipeline.coding(
-        chromosome="22", gene_name="GENE_B", start=gene_start, end=gene_end,
-        category="all_categories",
-    )
+# cache_specs 来自当前真实源绑定、缓存物理轴和实时证明函数。
+# 完整示例见 torchstaar_phewas.md，不能用常量证明跳过检查。
+analyses = [json.loads(Path(filename).read_text()) for filename in (
+    "private/trait_01_analysis.json", "private/trait_02_analysis.json"
+)]
+report = run_configuration(analyses, cache_specs=cache_specs, device="cuda:0")
 ```
 
-`results` 的各类别包含按 `[model_one, model_two]` 排列的结果；某个模型未达到稀有变异数下限时保留原版空项。所有模型共用 union 的 minor allele 方向，随后按各自完整案例计算 MAF；不会为每个模型再次翻转等位基因。参数、各分析输入和正式输出详见 [pipeline](torchstaar.md)。
+命令行为 `torchstaar-phewas private/phewas.json --device cuda:0 --report private/report.json`。当前支持独立单 Gaussian 与完整 prefitted 非 SPA 二分类状态，使用原生 TF32/FP32。全部输入、参数、输出、mask 上限、实时证明、原 R 调用及本轮验证状态见[完整说明](torchstaar_phewas.md)。
 
-多个独立模型使用低级API或显式FP64对照配置 `matmul_mode="fp64"`、`precision_control=true`，命令为 `torchstaar analysis.json --device cuda`；当前TF32完整染色体入口为单Gaussian模型。`phenotypes` 数组中每一项对应一个独立模型：
+## 与原低级接口的关系
 
-```json
-{
-  "phenotypes": [
-    {"name": "trait_one", "input": "trait_one.npz", "transform": "rint", "save_model": "null_one.npz"},
-    {"name": "trait_two", "input": "trait_two.npz", "transform": "rint", "save_model": "null_two.npz"}
-  ],
-  "qc_path": "annotation/info/QC_label",
-  "annotation_catalog": "annotation_catalog.json",
-  "annotation_names": ["CADD", "aPC.LocalDiversity"],
-  "chromosomes": [{"name": "22", "gds": "chromosome.gds", "jobs": [{
-    "kind": "coding", "arguments": {"gene_name": "GENE_B", "start": 200000, "end": 230000},
-    "output": "coding_results.Rdata"
-  }]}]
-}
-```
+| 接口 | 统计语义与用途 |
+|---|---|
+| `torchstaar_phewas.run_configuration` | 独立单表型 `base` 语义，各表型有自己的样本方向和输出文件，共享原始缓存读写与设备传输 |
+| `torchstaar.pipeline.PheWASPipeline` 直接传多个模型 | 保留原低级 PheWAS 并集提取语义，不同模型共用该并集的 minor 方向；它不是本轮独立单表型等价性的验收入口 |
+| [联合 MultiSTAAR](multi.md) | 一个模型联合估计相关表型及其协方差，统计假设与输出不同，不由独立 PheWAS 自动代替 |
 
-无需 `joint_mode`；多个独立模型的 `n_pheno` 各为 1。每个 model cache 保存自己的样本顺序。正式关联输出使用 Rdata/RDS；多个 genomic job 指向同一输出文件时，coding/noncoding 按原版 append 保留重复类别名。`debug_output` 仅在 `debug_json=true` 时额外保存同一次计算的私有 JSON。
+0.4.0 单表型 benchmark 保留在[配置指南](torchstaar_configuration.md#真实验证与计时范围)，不能推导新 PheWAS 的时间或精度。已完成共享来源的 13 固定表型 chr21 四类计划共有 234 native 与 8,803,388 行，共享 6,091.267 s、独立合计 16,772.722 s，显著联合最大 logP 误差为 0。该配置使用 `variant_type=variant`，纳入 SNV 和 Indel、两组 Beta 权重，实际 PHRED 权重数为 0。0.7.0 基于 `dbda0dc` 合并后关闭 M 上限覆盖全部 mask；全部 mask 共享、保存的独立参考与长 mask 补充、完整回归和安装已通过。本版 13 个固定独立模型完成全部 mask，maximum_mask_variants=null，rv_num_cutoff_max 恢复原默认 10^9，跳过 0 个 mask；共 10,335 个表型作业，原生变异数（#SNV）列计数得到 39 个 M>5000 结果行，输出 234 native 和 8,803,427 行。共享入口 8,443.879 s、外层 driver 8,495.115 s。本轮复用保存的独立参考，共同 8,803,388 行、长 mask 对照补充 39 行、未覆盖 0 行；历史参考有 0 行未匹配。历史组合参考比较 9,143,830 个 P，不可比较 0 个（验收门控），显著联合 536,242 个，最大 logP 误差 1.76570982e-08，超标 0，阈值跨越 0；原生结构与非 P 诊断通过。allocated/reserved 峰值 14.430/19.811 GiB。CPU intra-op 请求/实际线程数为 8/8。历史有限 M 独立入口曾合计 16,772.722 s；其 CPU 线程数、源码及 mask 范围与当前运行不同，不据此计算本轮速度比。该时间来自既有缓存，OS page cache 和共享 GPU 负载未受控；首次转存、原 R 验算、回归、打包和 CSV 均另计。此前有限 M 候选的回归和有界原 R 对照保留在来源记录中，不替代全部 mask 验证。完整方法与范围见[当前指南](torchstaar_phewas.md#验证与近期记录)。
 
-原版 R 对应调用为 `Gene_Centric_Coding_PheWAS(..., obj_nullmodel_list=list(null_one, null_two))` 和 `Individual_Analysis_PheWAS`。原模型分别由 `STAARpipeline::fit_nullmodel(y~1, data=..., kins=..., id="id")` 拟合。
-
-## 当前范围
-
-多个独立模型各自保留可用观测；缺失位置不同不取全体表型共同交集，不插补 NaN。并集方向与各模型频率仍按原提取规则计算。完整染色体强制 TF32 入口目前限单个连续 Gaussian 模型；本文为独立模型 API/显式 FP64 对照用法，不属于本版 Single 优化与完整 benchmark。当前精度和计时只见 [主指南](torchstaar.md#真实验证与计时范围)，不从单模型结果推导多表型速度。
-
-参考：[STAARpipelinePheWAS](https://github.com/li-lab-genetics/STAARpipelinePheWAS)、[原 STAARpipeline](https://github.com/li-lab-genetics/STAARpipeline)。
+参考：[STAARpipelinePheWAS](https://github.com/li-lab-genetics/STAARpipelinePheWAS)、[STAARpipeline](https://github.com/li-lab-genetics/STAARpipeline)。

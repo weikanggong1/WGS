@@ -33,7 +33,7 @@ class MemoryBudgetContracts(unittest.TestCase):
         self.assertEqual(solver.memory_limit,40*GIB)
         self.assertIsNone(solver.backend)
         solver.close()
-        self.assertEqual(FP32SmallSpectrumSolver(torch_module=t).memory_limit,20*GIB)
+        self.assertEqual(FP32SmallSpectrumSolver(torch_module=t).memory_limit,40*GIB)
 
     def test_positive_integer_budget_validation_rejects_bool_float_zero_negative(self):
         for value in (False,True,0,-1,40.0,'40',None):
