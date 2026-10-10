@@ -25,6 +25,10 @@ dist/
 *.log
 *.private.json
 *.private.jsonl
+*.private.py
+*.private.sh
+*.private.txt
+*.private.xml
 *.sqlite
 *.sqlite-*
 .cohort_compact_v1/

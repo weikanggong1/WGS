@@ -26,7 +26,7 @@ def library_sha(path):
 def available_bytes(allocated, reserved, free, *, limit=PROCESS_LIMIT, reserve=RESERVE_BYTES):
     if any(type(x) is not int or x < 0 for x in (allocated, reserved, free, limit, reserve)):
         raise ValueError('memory snapshot must contain nonnegative integer bytes')
-    if limit == 0 or limit > PROCESS_LIMIT: raise ValueError('process limit must be in (0,40 GiB]')
+    if limit == 0: raise ValueError('process limit must be positive')
     return max(0, min(limit - allocated, free + max(0, reserved - allocated) - reserve))
 
 
@@ -229,4 +229,3 @@ class BatchedEigenBackend:
             scientific_gate_scope='external real-data original-software comparison, recorded by run report',
             timing_scope='host wall includes synchronization from info/finite/sorted validation; not pure GPU kernel time',
             memory_scope='fresh free/process guards for cloned column-major input/output/info and solver workspace; not a reservation or proof of hidden internal scratch limit')
-

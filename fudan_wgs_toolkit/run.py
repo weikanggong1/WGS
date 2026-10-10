@@ -16,6 +16,16 @@ from .identity import sample_keys, validate_sample_pairs, pairs_from_keys
 
 _MISSING = {"", "na", "nan", "null", "none", "n/a"}
 _KINDS = ("individual", "coding", "noncoding", "ncrna")
+class _WorkflowDefaultString(str):
+    """Preserve the modern public default while detecting explicit overrides."""
+
+
+class _WorkflowDefaultFloat(float):
+    """A numeric default with an identity reserved for workflow selection."""
+
+
+_DEFAULT_MEMORY_LIMIT = _WorkflowDefaultFloat(20.)
+_DEFAULT_GENE_VARIANT = _WorkflowDefaultString("SNV")
 
 
 def _sha256(path):
@@ -29,7 +39,7 @@ def _sha256(path):
 def _implementation_sha256():
     root = Path(__file__).parent
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*.py")):
+    for path in sorted((*root.rglob("*.py"), *root.rglob("*.cpp"))):
         digest.update(str(path.relative_to(root)).encode())
         digest.update(bytes.fromhex(_sha256(path)))
     return digest.hexdigest()
@@ -331,13 +341,14 @@ def _jobs(entry, analyses, output, *, single_mac_cutoff, single_group_variants, 
 
 def run_WGS_all(phenotype_csv, covariate_csv, prepared_directory, *, output_directory,
                 chromosomes=None, analyses=_KINDS, device="cuda:0", cpu_threads=8,
-                memory_limit_gib=20.0, phenotype_families=None, phenotype_covariates=None,
+                memory_limit_gib=_DEFAULT_MEMORY_LIMIT, phenotype_families=None, phenotype_covariates=None,
                 transform="none", null_fit_mode="fp64",
-                gene_variant_type="SNV",
+                gene_variant_type=_DEFAULT_GENE_VARIANT,
                 covariance_block_size=4096, long_mask_threshold=5000, long_mask_rank=512, seed=1729,
                 single_mac_cutoff=20, single_group_variants=5000, single_region_size=10_000_000,
                 individual_effective_block_size=1024, device_cache_bytes=512*2**20,
-                compact_cache_bytes=64*2**20, metadata_cache_bytes=256*2**20, resume=False):
+                compact_cache_bytes=64*2**20, metadata_cache_bytes=256*2**20, resume=False,
+                gpu_ids=None, trait_batch_size=16, continuous_transform="paper"):
     """Run four association classes with independent complete cases per phenotype.
 
     CSVs contain exact string FID/IID pairs and numeric measurements. Ordinary
@@ -348,7 +359,80 @@ def run_WGS_all(phenotype_csv, covariate_csv, prepared_directory, *, output_dire
     Final CSVs are saved under output_directory/<phenotype>/, with private model
     NPZs and JSON provenance. resume reuses a completed identical verified run;
     an interrupted or changed run requires a fresh output directory.
+
+    An existing ``cache_dataset.json`` population cache instead selects the
+    GRM-bound mixed PheWAS workflow. It preserves its exact sample axis and
+    covariate profiles, shares each genetic block across phenotype tiles, and
+    streams every result to CSV.gz. Genetic data preparation is never invoked.
+    This workflow uses ``gpu_ids``, ``trait_batch_size`` and
+    ``continuous_transform``; its CUDA workspace follows available memory.
+    Modern prepared datasets default to a 20 GiB cap and SNV gene masks;
+    population caches use live GPU memory and their established variant masks.
+    Options belonging to the modern workflow cannot silently change the bound
+    mixed-workflow settings: unsupported overrides raise before any work starts.
     """
+    if (Path(prepared_directory)/"cache_dataset.json").is_file():
+        if (Path(prepared_directory)/"dataset.json").exists():
+            raise ValueError("prepared directory contains ambiguous old and new dataset roots")
+        if tuple(dict.fromkeys(analyses)) != _KINDS:
+            raise ValueError("the mixed PheWAS population-cache workflow requires all four analyses")
+        if cpu_threads != 8:
+            raise ValueError("mixed PheWAS workers require eight assigned CPUs each")
+        if resume:
+            raise ValueError("mixed PheWAS uses immutable model and output receipts; choose a fresh run directory")
+        if phenotype_families is not None or phenotype_covariates is not None:
+            raise ValueError("mixed PheWAS families and covariates are bound by the cache profile sidecars")
+        if null_fit_mode != "fp64" or transform != "none":
+            raise ValueError("mixed PheWAS uses FP64 null fitting and continuous_transform for preprocessing")
+        if memory_limit_gib is not _DEFAULT_MEMORY_LIMIT and memory_limit_gib is not None:
+            raise ValueError("memory_limit_gib is not supported by the live-memory mixed PheWAS workflow")
+        if gene_variant_type is not _DEFAULT_GENE_VARIANT and gene_variant_type != "variant":
+            raise ValueError("mixed PheWAS gene_variant_type must retain the bound variant masks")
+        fixed_options = dict(covariance_block_size=(covariance_block_size,4096),
+            long_mask_threshold=(long_mask_threshold,5000),long_mask_rank=(long_mask_rank,512),
+            seed=(seed,1729),single_mac_cutoff=(single_mac_cutoff,20),
+            single_group_variants=(single_group_variants,5000),single_region_size=(single_region_size,10_000_000),
+            individual_effective_block_size=(individual_effective_block_size,1024),
+            device_cache_bytes=(device_cache_bytes,512*2**20),compact_cache_bytes=(compact_cache_bytes,64*2**20),
+            metadata_cache_bytes=(metadata_cache_bytes,256*2**20))
+        changed = [name for name,(value,expected) in fixed_options.items()
+                   if type(value) is not int or value != expected]
+        if changed:
+            raise ValueError("mixed PheWAS does not support these modern-workflow overrides: " + ", ".join(changed))
+        if type(trait_batch_size) is not int or trait_batch_size<1:
+            raise ValueError("trait_batch_size must be a positive integer")
+        if continuous_transform not in ("paper","none","rint"):
+            raise ValueError("continuous_transform must be paper, none or rint")
+        if gpu_ids is None:
+            selected = torch.device(device)
+            if selected.type != "cuda":
+                raise ValueError("mixed PheWAS requires CUDA devices")
+            gpu_ids = (0 if selected.index is None else selected.index,)
+        from .phewas_run import run_phewas
+        started=time.perf_counter()
+        workers=run_phewas(phenotype_csv,covariate_csv,prepared_directory,
+            output_directory=output_directory,gpu_ids=gpu_ids,chromosomes=chromosomes,
+            trait_batch_size=trait_batch_size,continuous_transform=continuous_transform)
+        if not isinstance(workers,list) or len(workers)!=len(gpu_ids):
+            raise RuntimeError("mixed PheWAS returned incomplete worker reports")
+        rows={kind:0 for kind in _KINDS}
+        for worker in workers:
+            counts=worker.get("association_rows",{})
+            if any(type(counts.get(kind)) is not int or counts[kind]<0 for kind in _KINDS):
+                raise RuntimeError("mixed PheWAS worker report has invalid association row counts")
+            for kind in _KINDS:rows[kind]+=counts[kind]
+        report=dict(completed=True,schema_version=1,workflow="population_cache_mixed_phewas",
+            eligible_association_tests=sum(rows.values()),association_rows=rows,workers=workers,
+            end_to_end_seconds=time.perf_counter()-started,output_directory=str(Path(output_directory).resolve()))
+        Path(output_directory).mkdir(parents=True,exist_ok=True,mode=0o700)
+        _json_write(Path(output_directory)/"report.private.json",report)
+        return report
+    if gpu_ids is not None:
+        raise ValueError("gpu_ids applies to the GRM-bound population-cache PheWAS workflow")
+    if trait_batch_size != 16 or type(trait_batch_size) is not int or continuous_transform != "paper":
+        raise ValueError("trait_batch_size and continuous_transform apply to the mixed population-cache workflow")
+    if memory_limit_gib is _DEFAULT_MEMORY_LIMIT:memory_limit_gib=20.0
+    if gene_variant_type is _DEFAULT_GENE_VARIANT:gene_variant_type="SNV"
     if type(cpu_threads) is not int or cpu_threads < 1:
         raise ValueError("cpu_threads must be a positive integer")
     if type(resume) is not bool:
@@ -518,13 +602,17 @@ def main(argv=None):
     parser.add_argument("--chromosomes",nargs="+")
     parser.add_argument("--analyses",nargs="+",choices=_KINDS,default=_KINDS)
     parser.add_argument("--device",default="cuda:0")
+    parser.add_argument("--gpu-ids",type=int,nargs="+",
+                        help="local CUDA device IDs for an existing GRM-bound population cache")
+    parser.add_argument("--trait-batch-size",type=positive_integer,default=16)
+    parser.add_argument("--continuous-transform",choices=("paper","none","rint"),default="paper")
     parser.add_argument("--cpu-threads",type=positive_integer,default=8)
-    parser.add_argument("--memory-limit-gib",type=float,default=20.)
+    parser.add_argument("--memory-limit-gib",type=float,default=_DEFAULT_MEMORY_LIMIT)
     parser.add_argument("--phenotype-families",help="JSON file mapping phenotype names to gaussian or binomial")
     parser.add_argument("--phenotype-covariates",help="JSON file mapping phenotype names to selected covariate column names")
     parser.add_argument("--transform",choices=("none","rint"),default="none")
     parser.add_argument("--null-fit-mode",choices=("fp64","tf32"),default="fp64")
-    parser.add_argument("--gene-variant-type", choices=("SNV", "Indel", "variant"), default="SNV")
+    parser.add_argument("--gene-variant-type", choices=("SNV", "Indel", "variant"), default=_DEFAULT_GENE_VARIANT)
     for name,default in (("covariance-block-size",4096),("long-mask-threshold",5000),("long-mask-rank",512),
         ("seed",1729),("single-mac-cutoff",20),("single-group-variants",5000),("single-region-size",10_000_000),
         ("individual-effective-block-size",1024),("device-cache-bytes",512*2**20),

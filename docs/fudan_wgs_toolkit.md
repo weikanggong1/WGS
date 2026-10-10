@@ -4,7 +4,9 @@
 
 ## 1. 功能与流程
 
-`prepare_WGS_data` 从原始 PLINK BED/BIM/FAM 和独立下载的功能注释构建可校验的遗传数据。`run_WGS_all` 在一张 GPU 上完成单变异、coding、noncoding 和 ncRNA 关联分析。传入多个表型列时，它们共享遗传数据读取、CPU 缓存、注释索引和 CPU–GPU 传输；各表型仍独立筛选完整样本、拟合零模型、计算频率和检验结果。
+`prepare_WGS_data` 从原始 PLINK BED/BIM/FAM 和独立下载的功能注释构建可校验的遗传数据。`run_WGS_all` 消费表型 CSV、协变量 CSV 和已完成遗传目录，完成单变异、coding、noncoding 和 ncRNA 关联分析。传入多个表型列时，它们共享遗传数据读取、CPU 缓存、注释索引和 CPU–GPU 传输；各表型仍独立筛选完整样本、拟合零模型、计算频率和检验结果。
+
+本页的原始 PLINK 示例生成 `dataset.json`，使用一张 GPU 和普通零模型。已有 `cache_dataset.json` 则选择 GRM 绑定的混合模型路线，保留原数字身份轴和 profile，可指定本机多个 GPU；输入格式、全部 CSV 输出及专用 CLI 见 [缓存兼容与 PheWAS 调用](phewas_cache_compatibility.md)。部署计划复用已拟合模型时，还需满足 [模型来源与复用规则](phewas_model_reuse.md)。
 
 遗传矩阵计算使用原生 TF32/FP32 运算，不通过拆分乘法重建 FP64。零模型拟合、部分谱校正和稳定尾概率仍保留 FP64，以控制数值误差；这不改变基因型矩阵乘法路径。精度用显著结果的 `−log10(P)` 差异评估，目标为 0.001。该目标不是对所有数据、注释版本和模型的精度保证。
 
@@ -253,7 +255,7 @@ print(association_report["completed"])
 | --- | --- | --- |
 | phenotype_csv | 必填 | FID/IID 加一个或多个数值表型列 |
 | covariate_csv | 必填 | FID/IID 加数值协变量列；可仅有身份双列以拟合截距模型 |
-| prepared_directory | 必填 | prepare_WGS_data 已完成的根目录 |
+| prepared_directory | 必填 | 已完成遗传根目录；dataset.json 为本页普通模型路线，cache_dataset.json 为混合 PheWAS 路线 |
 | output_directory | 必填 | 新结果目录，每个表型一个子目录 |
 | chromosomes | None | 分析的染色体；None 为准备数据中的全部常染色体 |
 | analyses | 四类全部 | individual、coding、noncoding、ncrna 的任意非空组合 |
@@ -277,8 +279,13 @@ print(association_report["completed"])
 | compact_cache_bytes | 67108864 | CPU 紧凑状态缓存容量，单位字节；0 禁用留存 |
 | metadata_cache_bytes | 268435456 | CPU 注释元数据缓存容量，单位字节，正整数 |
 | resume | False | 仅复用已完成、全部输入及代码校验和相同且文件未变化的结果；不恢复中途关联 run |
+| gpu_ids | None | 混合 PheWAS 使用的本机不同 CUDA 编号，例如 [0, 1]；None 使用 device；普通模型路线不接受此参数 |
+| trait_batch_size | 16 | 混合 PheWAS 中每个遗传块的表型批次大小，正整数；不限制总表型数 |
+| continuous_transform | paper | 混合 PheWAS 连续表型处理：paper 为协变量残差、RINT 和原标准差恢复，rint 为直接 RINT，none 为保留单位 |
 
-这些预算约束包管理的工作区；CUDA 上下文、其他用户进程及文件系统缓存不在包内显存计数中。运行报告记录实际分配和保留峰值，而不是把参数值当成实测峰值。
+上表除最后三项外的模型和计算参数说明针对普通模型路线。混合 PheWAS 的模型族、协变量、mask 和统计设置由缓存及计划绑定，要求全部四类分析；不支持的非默认覆盖会在启动前报错。该路线按实际 GPU 可用内存准入，memory_limit_gib 仅接受默认选择或 Python 的 None，不应用普通路线的 20 GiB 上限。
+
+普通路线的预算约束包管理的工作区；CUDA 上下文、其他用户进程及文件系统缓存不在包内显存计数中。运行报告记录实际分配和保留峰值，而不是把参数值当成实测峰值。
 
 多染色体准备使用独立 Python 进程；在独立脚本中，把调用放进 `if __name__ == "__main__":`，避免进程启动时重复执行顶层代码。命令行入口已经包含此保护。`max_frames` 为显式检查点调试参数，转换阶段采用串行调度来保持全局精确帧上限；普通完整准备默认并行。转换先完成所有输入、样本轴和注释的检查，再写基因型；主进程只在全部染色体完成后提交数据集完成标记。
 
@@ -363,6 +370,7 @@ Score 和协方差分别为 `u = Gᵀr`、`V = GᵀPG`。Single 只求需要的�
 | 版本 | 更新 |
 | --- | --- |
 | 0.8.0 | 改为 Fudan WGS Toolkit；prepare_WGS_data 原始 PLINK + 独立注释入口，默认多 CPU 并行；run_WGS_all 单/多表型统一入口；常量精度的原生 TF32 协方差归一化；严格 FID/IID；直接 CSV；删除退休读取器、非 Python 实现、旧导出和旧文档 |
+| 0.8.0 后续更新 | 增加已完成数字身份缓存的混合 PheWAS 入口、已有模型来源验证和 GPU Single 批处理；修正二分类混合模型边界与恢复路径；真实局部验证见缓存兼容说明 |
 | 0.7.0 | 整合共享多表型与完整 mask 路径；CPU 预算 8；大 mask 使用 FastSKAT；该版输入和导出接口已经被 0.8.0 替代 |
 
 ## 9. 参考文献与数据格式

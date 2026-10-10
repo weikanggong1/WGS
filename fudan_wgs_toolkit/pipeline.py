@@ -113,8 +113,6 @@ class AnalysisOptions:
             raise ValueError("wrapper_semantics must be phewas or base")
         if type(self.long_mask_threshold) is not int or self.long_mask_threshold < 1:
             raise ValueError("long_mask_threshold must be a positive integer")
-        if self.memory_limit_gib > 40:
-            raise ValueError("memory_limit_gib must not exceed 40 GiB")
         if self.covariance_backend not in ("cached", "legacy"):
             raise ValueError("covariance_backend must be cached or legacy")
         if type(self.cached_variant_tile_size) is not int or self.cached_variant_tile_size < 1 or self.cached_variant_tile_size % 512:

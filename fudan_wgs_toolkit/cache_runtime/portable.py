@@ -269,7 +269,10 @@ def export_metadata(reader, container_directory, output_directory, field_paths, 
 class PortableMetadataReader:
     """Read aligned fields lazily from a completed metadata directory."""
     sample_axis_kind = "prepared_population"
-    def __init__(self, metadata_directory, container_directory, *, verify_checksums=True):
+    def __init__(self, metadata_directory, container_directory, *, verify_checksums=True,
+                 legacy_numeric=False):
+        if type(legacy_numeric) is not bool:
+            raise ValueError("legacy_numeric must be an explicit boolean")
         self.directory = Path(metadata_directory).resolve()
         self._closed = False
         self._arrays, self._identities, self._validated_offsets = {}, {}, set()
@@ -306,6 +309,13 @@ class PortableMetadataReader:
                                           where="prepared sample pairs")
             if pairs.shape[0] != self.n_samples or not np.array_equal(samples, sample_keys(pairs)):
                 raise ValueError("prepared FID/IID pairs differ from sample keys")
+        elif legacy_numeric and self.manifest["sample_identifier_format"] == "positive_decimal_int64":
+            # Explicit PheWAS compatibility only: preserve the completed older
+            # cache's exact participant IDs; never manufacture FID/IID pairs.
+            if samples.dtype != np.int64 or np.any(samples <= 0):
+                raise ValueError("legacy portable sample identifiers must be positive int64")
+            if "sample_pairs" in self.manifest:
+                raise ValueError("legacy metadata cannot also declare a FID/IID sample axis")
         else:
             raise ValueError("prepared metadata requires explicit FID/IID sample pairs")
         if len(np.unique(samples)) != self.n_samples:

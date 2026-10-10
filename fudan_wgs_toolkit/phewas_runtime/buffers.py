@@ -22,6 +22,11 @@ class EffectiveBuffer:
             self.parts.append(block)
             self.count += block.shape[1]
 
+    def clear(self):
+        """Release owned dosage after cancellation; never close its reader."""
+        self.parts.clear()
+        self.count = 0
+
     def take(self, *, tail=False):
         count = min(self.count, self.block_size)
         if count == 0 or (count < self.block_size and not tail):

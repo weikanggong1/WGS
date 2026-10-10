@@ -231,7 +231,9 @@ def test_equal_ordered_sample_copies_share_gpu_axis_but_reverse_order_does_not(t
         reversed_view = broker.reader_view(selected[::-1].copy())
         assert reversed_view._axis is not original_axis
         assert broker.metrics['bound_sample_axes'] == 2
-        np.testing.assert_array_equal(reversed_view._axis.device_rows.cpu().numpy(), selected[::-1])
+        # Sample row vectors are now admitted lazily into a bounded LRU, so
+        # 1000 different complete-case cohorts never stay resident on CUDA.
+        np.testing.assert_array_equal(broker._device_rows(reversed_view._axis).cpu().numpy(), selected[::-1])
         source = broker.read_states(columns)
         for axis in (view._axis, reversed_view._axis):
             actual = broker.trait_block(source, axis.samples.copy())

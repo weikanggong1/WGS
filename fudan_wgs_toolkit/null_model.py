@@ -174,6 +174,8 @@ class GaussianNullModel:
     fitted_values: torch.Tensor | None = None
     working_phenotype: torch.Tensor | None = None
     matmul_mode: str = "fp64"
+    variance_normalization: str = "none"
+    phenotype_scale: float = 1.0
 
     @property
     def n(self):
@@ -486,7 +488,8 @@ class GaussianNullModel:
 
 def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_diagonal=None,
                       edge_rows=(), edge_cols=(), edge_values=(), device="cpu", tol=1e-5,
-                      maxiter=500, max_block_size=2048, trace_callback=None, matmul_mode="fp64"):
+                      maxiter=500, max_block_size=2048, trace_callback=None, matmul_mode="fp64",
+                      variance_normalization="none"):
     """Fit intercept/covariate Gaussian null model using GMMAT AI REML.
 
     covariates must explicitly contain an intercept if one is wanted. None
@@ -494,6 +497,12 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
     removal, phenotype transformation, or kinship threshold takes place.
     With no kinship, reproduces fit_nullmodel(kins=NULL)'s sparse Gaussian
     object and chi-square association calibration.
+
+    ``variance_normalization="unit"`` fits the same covariance model after
+    dividing y by its sample SD, so the AI variance-boundary tolerance is in
+    relative units. Every returned fitted tensor retains the original y units.
+    The default ``"none"`` preserves the established absolute-unit AI path.
+    Trace callbacks explicitly report their units and the phenotype scale.
     """
     validate_mode(matmul_mode)
     def mm(a, b):
@@ -506,6 +515,34 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
     if y.ndim != 1 or not bool(torch.isfinite(y).all()):
         raise ValueError("phenotype must be a finite vector")
     n = len(y)
+    if variance_normalization not in ("none", "unit"):
+        raise ValueError("variance_normalization must be none or unit")
+    original_y = y
+    phenotype_scale = 1.0
+    if variance_normalization == "unit":
+        physical_variance = extended_variance(y) if matmul_mode == "fp64" else y.var(correction=1)
+        if not bool(torch.isfinite(physical_variance)) or float(physical_variance) <= 0:
+            raise ValueError("phenotype has zero or nonfinite variance")
+        phenotype_scale = float(torch.sqrt(physical_variance))
+        y = y / phenotype_scale
+
+    def finish(model):
+        model.variance_normalization = variance_normalization
+        model.phenotype_scale = phenotype_scale
+        if variance_normalization == "unit":
+            squared_scale = phenotype_scale * phenotype_scale
+            # This is a change of fitting coordinates, not a variance floor.
+            model.scaled_residuals = model.scaled_residuals / phenotype_scale
+            model.coefficients = model.coefficients * phenotype_scale
+            model.theta = model.theta * squared_scale
+            model.precision_theta = model.precision_theta * squared_scale
+            model.fixed_effect_covariance = model.fixed_effect_covariance * squared_scale
+            model.inverse_variance = model.inverse_variance / squared_scale
+            model.precision_x = model.precision_x / squared_scale
+            model.phenotype = original_y
+            model.fitted_values = model.fitted_values * phenotype_scale
+            model.working_phenotype = model.working_phenotype * phenotype_scale
+        return model
     x = torch.ones((n, 1), dtype=y.dtype, device=device) if covariates is None else torch.as_tensor(covariates, dtype=y.dtype, device=device)
     if x.ndim != 2 or x.shape[0] != n or not bool(torch.isfinite(x).all()) or x.shape[1] >= n:
         raise ValueError("covariates must be a finite full-rank samples-by-columns matrix")
@@ -525,8 +562,8 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
         kin = KinshipSpectrum.from_sparse(np.zeros(n), device=device, dtype=dtype)
         inv = torch.ones_like(y) / dispersion
         cov = torch.cholesky_inverse(torch.linalg.cholesky(mm(x.T, inv[:, None] * x)))
-        return GaussianNullModel(ids, x, residual / dispersion, alpha0, torch.stack((dispersion, dispersion * 0)),
-                                 torch.stack((dispersion, dispersion * 0)), cov, kin, inv, inv[:, None] * x, 0, True, phenotype=y, has_kinship=False, fitted_values=mm(x, alpha0), working_phenotype=y, matmul_mode=matmul_mode)
+        return finish(GaussianNullModel(ids, x, residual / dispersion, alpha0, torch.stack((dispersion, dispersion * 0)),
+                                 torch.stack((dispersion, dispersion * 0)), cov, kin, inv, inv[:, None] * x, 0, True, phenotype=y, has_kinship=False, fitted_values=mm(x, alpha0), working_phenotype=y, matmul_mode=matmul_mode))
     if len(kinship_diagonal) != n:
         raise ValueError("kinship diagonal does not match phenotype")
     kin = KinshipSpectrum.from_sparse(kinship_diagonal, edge_rows, edge_cols, edge_values, device=device, max_block_size=max_block_size, dtype=dtype)
@@ -553,6 +590,7 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
     fixed = torch.zeros(2, dtype=torch.bool, device=device)
     converged = False
     for _refit in range(4):
+        converged = False
         free = torch.nonzero(~fixed, as_tuple=True)[0]
         tau = torch.zeros(2, dtype=y.dtype, device=device)
         # R cov.c keeps centered products and the final division in extended
@@ -610,7 +648,10 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
                     "tau": tau.clone(), "Y_old": old_y, "Y": yr, "PY": py,
                     "inverse_variance": inv, "cov": cov, "alpha": alpha,
                     "score": all_scores if len(free) else None,
-                    "AI": all_ai if len(free) else None, "eta": eta})
+                    "AI": all_ai if len(free) else None, "eta": eta,
+                    "variance_normalization": variance_normalization,
+                    "phenotype_scale": phenotype_scale,
+                    "trace_units": "unit_variance" if variance_normalization == "unit" else "original"})
             change = max(float((abs(alpha - alpha_prev) / (abs(alpha) + abs(alpha_prev) + tol)).max()),
                          float((abs(tau - old) / (abs(tau) + abs(old) + tol)).max())) * 2
             alpha_prev = alpha
@@ -627,9 +668,12 @@ def fit_gaussian_null(phenotype, *, sample_ids=None, covariates=None, kinship_di
         raise ArithmeticError("variance boundary refits did not stabilize")
     if not converged:
         raise ArithmeticError("AI REML did not converge; no implicit alternative optimizer is used")
-    if float(tau[0]) <= 0:
-        raise ValueError("zero residual dispersion cannot produce GMMAT scaled residuals")
     # eta=y-old_dispersion*P_old*y; returned residual divides by final tau.
-    scaled = (y - eta) / tau[0]
+    # At a legitimate sigma=0 boundary with positive-definite tau*K, both
+    # residual and sigma vanish. Their continuous limit is P*y, already
+    # available from the same fitted precision; no ordinary-model refit or
+    # positive variance clamp is needed. state() still rejects singular V.
+    scaled = (kin.rotate(py, inverse=True, matmul_mode=matmul_mode)
+              if float(tau[0]) == 0 else (y - eta) / tau[0])
     precision_x = kin.rotate(sx, inverse=True, matmul_mode=matmul_mode)
-    return GaussianNullModel(ids, x, scaled, alpha, tau, old, cov, kin, inv, precision_x, total_iterations, converged, phenotype=y, fitted_values=eta, working_phenotype=working_y, matmul_mode=matmul_mode)
+    return finish(GaussianNullModel(ids, x, scaled, alpha, tau, old, cov, kin, inv, precision_x, total_iterations, converged, phenotype=y, fitted_values=eta, working_phenotype=working_y, matmul_mode=matmul_mode))

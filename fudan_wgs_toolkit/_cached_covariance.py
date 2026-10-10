@@ -86,8 +86,8 @@ def plan_cached_workspace(n, m, q, *, variant_tile_size=4096,
             raise ValueError("panel_variant_size must be a multiple of variant_tile_size")
     if (isinstance(memory_limit_gib, bool)
             or not isinstance(memory_limit_gib, (int, float))
-            or not math.isfinite(memory_limit_gib) or not 0 < memory_limit_gib <= 40):
-        raise ValueError("memory_limit_gib must be finite and in (0, 40]")
+            or not math.isfinite(memory_limit_gib) or not 0 < memory_limit_gib):
+        raise ValueError("memory_limit_gib must be positive and finite")
     for value, name in ((allocated_bytes, "allocated_bytes"),
                         (reserved_bytes, "reserved_bytes"),
                         (reserve_bytes, "reserve_bytes")):
@@ -258,8 +258,8 @@ def score_covariance_cached(model, genotype, *, variant_tile_size=4096,
         _positive_integer(panel_variant_size, "panel_variant_size")
         if panel_variant_size % variant_tile_size:
             raise ValueError("panel_variant_size must be a multiple of variant_tile_size")
-    if isinstance(memory_limit_gib, bool) or not isinstance(memory_limit_gib, (int, float)) or not math.isfinite(memory_limit_gib) or not 0 < memory_limit_gib <= 40:
-        raise ValueError("memory_limit_gib must be finite and in (0, 40]")
+    if isinstance(memory_limit_gib, bool) or not isinstance(memory_limit_gib, (int, float)) or not math.isfinite(memory_limit_gib) or not 0 < memory_limit_gib:
+        raise ValueError("memory_limit_gib must be positive and finite")
     if symmetry != "average":
         raise ValueError("cached covariance only admits symmetry=average")
     if type(profile) is not bool:

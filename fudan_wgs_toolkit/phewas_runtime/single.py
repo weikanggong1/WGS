@@ -11,17 +11,22 @@ import torch
 
 from ..genotype_device import DeviceMinorBlock
 from ..pipeline import _individual_log_probabilities
+from .shared_state import _SingleAxisBinding
 
 
 _METRICS = dict(calls=0, active_trait_blocks=0, computed_trait_blocks=0,
                 pointwise_tail_batches=0, result_transfer_batches=0,
-                result_transfer_values=0, maximum_batch_variants=0)
+                result_transfer_values=0, maximum_batch_variants=0,
+                shared_genotype_batches=0, shared_genotype_traits=0,
+                phenotype_score_gemm_calls=0, original_variance_calls=0,
+                dense_genotype_h2d_bytes=0, dense_genotype_d2h_bytes=0)
 
 
 def execution_metadata(*, reset=False):
     """Return aggregate counts without model or variant identifiers."""
     result = dict(_METRICS,
-                  genotype_core="independent singleton row/K order",
+                  genotype_core=("exact-cohort native TF32 phenotype-score GEMM with fitted per-trait variance"
+                                 if _METRICS['shared_genotype_batches'] else "independent singleton row/K order"),
                   tail_dtype="float64 scalar stability",
                   core_storage_dtype="float32",
                   covariance_shared=False, union_sample_padding=False)
@@ -145,3 +150,170 @@ def process_single_batches(pipelines, blocks, ordinal_offsets, chromosome,
             prepared, values_cpu[offset:stop], subset_variants_num=subset_variants_num)
         offset = stop
     return outputs, ordinals
+
+
+def _variance_from_shared_genotype(model, genotype, centered, mean):
+    """Keep the existing finite-state Single variance, omitting its score GEMV.
+
+    The shared score is computed separately by native TF32 GEMM. Centering and
+    the fitted P1 correction retain the mature per-model diagonal formula;
+    neither weights nor covariance are borrowed from another phenotype.
+    """
+    from ..tf32 import matmul
+    state_method = getattr(model, '_centered_single_projection_state', None)
+    state = None if state_method is None else state_method()
+    if state is not None:
+        precision = (model.inverse_variance if model.family == 'gaussian'
+                     else model.precision)
+        weighted = precision[:, None] * centered
+        cross = matmul(model.precision_x.T, centered, mode='tf32')
+        projected = matmul(cross.T, model.fixed_effect_covariance, mode='tf32')
+        variance = ((centered * weighted).sum(dim=0)
+                    - (projected * cross.T).sum(dim=1))
+        del weighted, cross, projected
+        p_one, p_one_sum = state
+        variance += (2 * mean * matmul(centered.T, p_one, mode='tf32')
+                     + mean.square() * p_one_sum)
+        return variance
+    if model.family == 'gaussian' and hasattr(model, 'spectrum'):
+        rotated = model.spectrum.rotate(genotype, matmul_mode='tf32')
+        weighted = model.inverse_variance[:, None] * rotated
+        cross = matmul(model.precision_x.T, genotype, mode='tf32')
+    elif model.family == 'binomial' and hasattr(model, '_fitted_projection'):
+        weighted, cross = model._fitted_projection(genotype, 'tf32')
+        rotated = genotype
+    else:
+        # Third-party models may expose only the validated single-trait API.
+        # Count this original computation honestly rather than inventing a
+        # projection from incomplete fitted state.
+        return model.individual_score_variance(genotype, matmul_mode='tf32')[1]
+    projected = matmul(cross.T, model.fixed_effect_covariance, mode='tf32')
+    return ((rotated * weighted).sum(dim=0)
+            - (projected * cross.T).sum(dim=1))
+
+
+def process_single_shared_genotype(pipelines, block, ordinal_offset, chromosome,
+                                  mac_cutoff=20, subset_variants_num=5000,
+                                  *, prepared_state=None, binary_correction=None):
+    """Compute a bounded phenotype tile while retaining one exact-cohort G.
+
+    All pipelines must use precisely the same ordered sample axis and genotype
+    preprocessing. Scores are G.T @ R, where R contains one fitted residual
+    per phenotype. Unlike the original GEMV reference, tiles wider than one
+    execute native TF32 MMA. This changed score arithmetic is reported; real
+    numerical validation is required and no equality claim is inferred.
+    Returns rows per supplied phenotype and the shared new eligible ordinal.
+    """
+    from ..tf32 import matmul
+    pipelines = list(pipelines)
+    if not pipelines:
+        raise ValueError('a nonempty phenotype tile is required')
+    ordinal_offset = _integer(ordinal_offset, 'ordinal_offset')
+    subset_variants_num = _integer(subset_variants_num, 'subset_variants_num', positive=True)
+    first = pipelines[0]
+    first_binding = getattr(first, '_single_axis_binding', None)
+    models = []
+    for pipeline in pipelines:
+        if len(pipeline.models) != 1 or len(pipeline.trait_rows) != 1:
+            raise ValueError('shared genotype requires singleton aligned sample axes')
+        binding = getattr(pipeline, '_single_axis_binding', None)
+        if binding is not None or first_binding is not None:
+            if (not isinstance(binding, _SingleAxisBinding)
+                    or not isinstance(first_binding, _SingleAxisBinding)
+                    or binding.axis is not first_binding.axis
+                    or binding.broker is not first_binding.broker):
+                raise ValueError('shared genotype requires the same verified sample-axis binding')
+            binding.validate(pipeline.genotype, pipeline.union_rows, pipeline.trait_rows[0], pipeline.models[0].n)
+            aligned_rows = True
+        else:
+            # Independent public callers retain the complete value/order check.
+            aligned_rows = np.array_equal(pipeline.trait_rows[0], np.arange(pipeline.models[0].n))
+        if (len(pipeline.models) != 1 or pipeline.options.wrapper_semantics != 'base'
+                or (binding is None and not np.array_equal(pipeline.union_rows, first.union_rows))
+                or pipeline.options.imputation != first.options.imputation):
+            raise ValueError('shared genotype requires identical ordered cohorts and imputation')
+        model = pipeline.models[0]
+        if (model.n_pheno != 1 or model.use_spa or model.family not in ('gaussian', 'binomial')
+                or getattr(model, 'matmul_mode', None) != 'tf32'
+                or model.x.dtype != torch.float32 or model.n != len(first.union_rows)
+                or torch.device(model.device) != torch.device(first.models[0].device)
+                or not aligned_rows):
+            raise ValueError('shared genotype requires aligned native non-SPA singleton models')
+        residual = model.scaled_residuals
+        if residual.shape != (model.n,) or residual.dtype != torch.float32 or residual.device != model.x.device:
+            raise ValueError('fitted residual must be aligned native FP32')
+        models.append(model)
+    if prepared_state is None:
+        state, new_ordinal = first._prepare_individual_block(block, ordinal_offset, mac_cutoff=mac_cutoff)
+        if state is None:
+            return [[] for _ in pipelines], new_ordinal
+        prepared = first._prepare_individual_trait(state, 0, mac_cutoff=mac_cutoff)
+    else:
+        prepared, new_ordinal = prepared_state
+    if prepared is None:
+        return [[] for _ in pipelines], new_ordinal
+    genotype = prepared['genotype']
+    if genotype.dtype != torch.float32 or genotype.shape[0] != models[0].n:
+        raise RuntimeError('shared dosage must retain the native cohort shape and dtype')
+    with first.profiler.measure('phewas_phenotype_score_gemm', gpu=True):
+        residuals = torch.stack([model.scaled_residuals for model in models], dim=1)
+        scores = matmul(genotype.T, residuals, mode='tf32')
+    _METRICS['phenotype_score_gemm_calls'] += 1
+    _METRICS['shared_genotype_batches'] += 1
+    _METRICS['shared_genotype_traits'] += len(models)
+    mean = genotype.mean(dim=0)
+    centered = genotype - mean[None, :]
+    values, corrected = [], set()
+    correction_fields = ('pvalues', 'pvalue_log10', 'pvalue_log', 'normal_pvalues',
+                         'normal_pvalue_log10', 'spa_selected', 'spa_zero_log_unverified')
+    flag_fields = ('used_bisection', 'failed', 'iterations', 'iteration_limit')
+    for index, model in enumerate(models):
+        with first.profiler.measure('phewas_individual_variance', gpu=True):
+            variance = _variance_from_shared_genotype(model, genotype, centered, mean)
+        score = scores[:, index]
+        logp = _individual_log_probabilities(score, variance)
+        if model.family == 'binomial' and binary_correction is not None:
+            # The callback owns the bounded FP64 sidecar lifetime. Its formal
+            # corrected P/logP replace the output; normal scores remain intact.
+            correction = binary_correction(index, model, genotype, score, variance)
+            if correction.get('normal_only', True):
+                raise RuntimeError('formal binary Single requires the fitted FP64 SPA sidecar')
+            fields = [correction[name] for name in correction_fields]
+            fields += [getattr(correction['spa'], name) for name in flag_fields]
+            if any(value.shape != score.shape or value.device != score.device for value in fields):
+                raise RuntimeError('binary Single correction must retain all original columns/device')
+            corrected.add(index)
+        else:
+            fields = [torch.zeros_like(logp)]*(len(correction_fields)+len(flag_fields))
+        values.append(torch.stack((variance, score, torch.sqrt(variance.to(torch.float64)), logp,
+                                   *fields), dim=1))
+        _METRICS['original_variance_calls'] += 1
+    with first.profiler.measure('phewas_result_d2h', gpu=True):
+        host = torch.stack(values).detach().cpu().numpy()
+    _METRICS['result_transfer_batches'] += 1
+    _METRICS['result_transfer_values'] += host.size
+    _METRICS['pointwise_tail_batches'] += 1
+    _METRICS['maximum_batch_variants'] = max(_METRICS['maximum_batch_variants'], scores.numel())
+    result = []
+    for index, (pipeline, model) in enumerate(zip(pipelines, models)):
+        record_state = dict(prepared, model=model)
+        record_state.pop('genotype')
+        rows = pipeline._individual_records_from_values(record_state, host[index, :, :4],
+            subset_variants_num=subset_variants_num)
+        if index in corrected:
+            arrays = {name: host[index, :, 4+j] for j, name in
+                      enumerate((*correction_fields, *flag_fields))}
+            for j, row in enumerate(rows):
+                row.update(pvalue=float(arrays['pvalues'][j]),
+                    pvalue_log10=float(arrays['pvalue_log10'][j]),
+                    pvalue_log=float(arrays['pvalue_log'][j]),
+                    normal_pvalue=float(arrays['normal_pvalues'][j]),
+                    normal_pvalue_log10=float(arrays['normal_pvalue_log10'][j]),
+                    spa_selected=bool(arrays['spa_selected'][j]),
+                    spa_failed=bool(arrays['failed'][j]),
+                    spa_used_bisection=bool(arrays['used_bisection'][j]),
+                    spa_iterations=int(arrays['iterations'][j]),
+                    spa_iteration_limit=bool(arrays['iteration_limit'][j]),
+                    spa_zero_log_unverified=bool(arrays['spa_zero_log_unverified'][j]))
+        result.append(rows)
+    return result, new_ordinal

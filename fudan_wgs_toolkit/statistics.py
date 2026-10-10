@@ -519,7 +519,7 @@ def _native_weight_relations(rows, *, scratch_limit=64 * 2**20):
         available = tf32._product_workspace_availability(
             allocated=torch.cuda.memory_allocated(rows.device),
             reserved=torch.cuda.memory_reserved(rows.device), free=free,
-            limit=min(40 * 2**30, tf32._memory_limit_bytes),
+            limit=int(tf32._memory_limit_bytes),
             reserve=tf32._memory_reserve_bytes)["available_bytes"]
         budget = min(budget, available - persistent_bytes)
     bytes_per_row = 17 * number_weights * number_variants + 9 * number_weights
@@ -612,18 +612,22 @@ def _liu_hutchinson_pvalues(q_values, covariance, skat_weights, *, rank=512,
         raise ValueError("Liu approximation requires positive rank and at least four probes")
     if covariance.is_cuda:
         from . import tf32
-        limit_bytes = min(40 * 2**30, int(tf32._memory_limit_bytes))
+        limit_bytes = int(tf32._memory_limit_bytes)
         allocated = int(torch.cuda.memory_allocated(covariance.device))
+        reserved = int(torch.cuda.memory_reserved(covariance.device))
+        free_bytes, _ = torch.cuda.mem_get_info(covariance.device)
         # v is already resident.  Account for the temporary and final
         # weighted matrices, LOBPCG basis/work vectors, and probes before
         # allocating a second M-by-M object.
         estimate_bytes = (8 * m * m + 20 * m * k + 4 * m * p +
                           int(tf32._memory_reserve_bytes))
-        if allocated + estimate_bytes > limit_bytes:
+        if (allocated + estimate_bytes > limit_bytes
+                or estimate_bytes > int(free_bytes) + max(0, reserved-allocated)):
             _liu_failure(index=0, m=m, rank=k, probes=p, seed=seed,
-                         reason="estimated CUDA workspace exceeds configured 40 GiB limit",
+                         reason="estimated CUDA workspace exceeds configured or live memory",
                          allocated_bytes=allocated, estimated_bytes=estimate_bytes,
-                         limit_bytes=limit_bytes)
+                         limit_bytes=limit_bytes, live_free_bytes=int(free_bytes),
+                         reusable_reserved_bytes=max(0, reserved-allocated))
     generator = torch.Generator(device=device)
     generator.manual_seed(int(seed))
     z = torch.randint(0, 2, (m, p), generator=generator, device=device,
@@ -919,14 +923,18 @@ def _fastskat_hybrid_pvalues(q_values, covariance, skat_weights, *, rank=512,
         raise ValueError("FastSKAT hybrid requires a positive rank")
     if covariance.is_cuda:
         from . import tf32
-        limit_bytes = min(40 * 2**30, int(tf32._memory_limit_bytes))
+        limit_bytes = int(tf32._memory_limit_bytes)
         allocated = int(torch.cuda.memory_allocated(covariance.device))
+        reserved = int(torch.cuda.memory_reserved(covariance.device))
+        free_bytes, _ = torch.cuda.mem_get_info(covariance.device)
         estimate_bytes = 8 * m * m + 24 * m * k + int(tf32._memory_reserve_bytes)
-        if allocated + estimate_bytes > limit_bytes:
+        if (allocated + estimate_bytes > limit_bytes
+                or estimate_bytes > int(free_bytes) + max(0, reserved-allocated)):
             _fastskat_failure(index=0, m=m, rank=k, seed=seed,
-                              reason="estimated CUDA workspace exceeds configured 40 GiB limit",
+                              reason="estimated CUDA workspace exceeds configured or live memory",
                               allocated_bytes=allocated, estimated_bytes=estimate_bytes,
-                              limit_bytes=limit_bytes)
+                              limit_bytes=limit_bytes, live_free_bytes=int(free_bytes),
+                              reusable_reserved_bytes=max(0, reserved-allocated))
     from ._fastskat_numerics import refine_spectrum_and_moments
     from .precision_audit import explicit_fp64_spectral_refinement
     generator = torch.Generator(device=device)

@@ -6,9 +6,12 @@ or gene statistic receives a DeviceMinorBlock. CPU mode is a small contract
 oracle; production CUDA uses bounded Triton count/scatter kernels.
 """
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import math
 import time
+import hashlib
+import os
 
 import numpy as np
 import torch
@@ -23,6 +26,33 @@ _KERNELS = None
 def _immutable(values):
     a = np.asarray(values, dtype=np.int64)
     return np.frombuffer(a.tobytes(), dtype=np.int64)
+
+
+def _array_geometry(value):
+    return (id(value), value.dtype.str, value.shape, value.strides,
+            value.__array_interface__['data'][0], bool(value.flags.writeable))
+
+
+def _readonly_source(value):
+    """Prove immutable backing, rather than trusting a reversible readonly flag.
+
+    A read-only mmap additionally binds its inode/geometry/change timestamps.
+    Ordinary readonly views of writable NumPy storage are deliberately excluded.
+    """
+    if not isinstance(value, np.ndarray) or value.flags.writeable:
+        return None
+    current, seen = value, set()
+    while isinstance(current, np.ndarray):
+        if id(current) in seen or current.flags.writeable:
+            return None
+        seen.add(id(current))
+        if isinstance(current, np.memmap) and current.mode == 'r':
+            status = os.stat(current.filename)
+            return ('readonly-mmap', os.fspath(current.filename), current.offset,
+                    status.st_dev, status.st_ino, status.st_size,
+                    status.st_mtime_ns, status.st_ctime_ns)
+        current = current.base
+    return ('immutable-bytes', id(current)) if isinstance(current, bytes) else None
 
 
 def _stamp(tensor):
@@ -101,6 +131,30 @@ class _Axis:
     samples: np.ndarray
     cache_rows: np.ndarray
     device_rows: object
+    identity_rows: object = None
+    single_binding: object = None
+
+
+@dataclass(frozen=True)
+class _SingleAxisBinding:
+    """Private proof constructed from this broker's validated immutable axis."""
+    broker: object
+    axis: object
+    seal: object
+    sample_geometry: object
+    identity_geometry: object
+
+    def validate(self, reader, samples, identity, n):
+        broker, axis = self.broker, self.axis
+        if (broker._closed or reader._closed or reader._broker is not broker
+                or reader._axis is not axis or broker._seal is not self.seal
+                or broker._axes_by_object.get(id(axis.samples)) is not axis
+                or samples is not axis.samples or identity is not axis.identity_rows
+                or n != len(axis.samples)
+                or _array_geometry(samples) != self.sample_geometry
+                or _array_geometry(identity) != self.identity_geometry):
+            raise ValueError('verified Single sample-axis binding was altered')
+        return axis
 
 
 @dataclass(frozen=True)
@@ -121,14 +175,21 @@ class SharedStateBroker:
     This object never writes cache files and never falls back to SDK genotypes.
     """
     def __init__(self, original_reader, container, *, device='cuda:0',
-                 memory_limit_gib=20, device_cache_bytes=512 * 2**20,
-                 compact_cache_bytes=64 * 2**20, own_reader=False, own_container=True):
+                 memory_limit_gib=None, device_cache_bytes=512 * 2**20,
+                 compact_cache_bytes=64 * 2**20, own_reader=False, own_container=True,
+                 portable_axis=False, memory_reserve_bytes=256 * 2**20,
+                 sample_axis_cache_bytes=64 * 2**20):
         if not isinstance(container, store.Container) or not container.complete:
             raise ValueError('a complete verified six-state Container is required')
-        if (not isinstance(memory_limit_gib, (int, float)) or isinstance(memory_limit_gib, bool)
-                or not math.isfinite(memory_limit_gib) or not 0 < memory_limit_gib <= 20):
-            raise ValueError('memory_limit_gib must be finite and in (0, 20]')
-        for value in (device_cache_bytes, compact_cache_bytes):
+        if memory_limit_gib is not None and (not isinstance(memory_limit_gib, (int, float))
+                or isinstance(memory_limit_gib, bool) or not math.isfinite(memory_limit_gib)
+                or memory_limit_gib <= 0):
+            raise ValueError('memory_limit_gib must be positive finite or None')
+        if type(memory_reserve_bytes) is not int or memory_reserve_bytes < 0:
+            raise ValueError('memory_reserve_bytes must be a nonnegative integer')
+        if type(portable_axis) is not bool:
+            raise ValueError('portable_axis must be boolean')
+        for value in (device_cache_bytes, compact_cache_bytes, sample_axis_cache_bytes):
             if type(value) is not int or value < 0:
                 raise ValueError('shared cache capacities must be nonnegative integers')
         self.device = torch.device(device)
@@ -140,14 +201,28 @@ class SharedStateBroker:
             self.device = torch.device('cuda', torch.cuda.current_device())
         self._reader, self._container = original_reader, container
         self._own_reader, self._own_container = own_reader, own_container
-        self._limit = int(memory_limit_gib * 2**30)
+        self._limit = None if memory_limit_gib is None else int(memory_limit_gib * 2**30)
+        self._reserve = memory_reserve_bytes
         self._device_capacity, self._compact_capacity = device_cache_bytes, compact_cache_bytes
         self._sources, self._device_sources = OrderedDict(), OrderedDict()
         self._source_bytes = self._device_bytes = 0
         self._closed, self._seal, self._axes = False, object(), []
-        # Portable metadata exposes logical rows of the prepared population.
-        # Original source FAM rows remain exclusively in the container proof.
-        logical_axis = getattr(original_reader, 'sample_axis_kind', None) == 'prepared_population'
+        self._axes_by_object, self._axes_by_digest, self._axis_aliases = {}, {}, {}
+        self._device_axes, self._device_axis_bytes = OrderedDict(), 0
+        self._axis_capacity = sample_axis_cache_bytes
+        self._identity_rows = None
+        self._workspace_admission = None
+        if portable_axis:
+            # Explicit legacy opt-in still proves the physical Container rows.
+            manifest = getattr(original_reader, 'manifest', None)
+            if not isinstance(manifest, dict) or not hasattr(original_reader, '_array'):
+                raise ValueError('portable axis requires verified portable metadata')
+            source_rows = original_reader._array(manifest['source_sample_rows'])
+            if not np.array_equal(source_rows, container.samples):
+                raise ValueError('portable source sample rows differ from physical cache')
+        # Portable metadata exposes logical prepared-population rows. Original
+        # source rows remain in the immutable container/metadata binding proof.
+        logical_axis = portable_axis or getattr(original_reader, 'sample_axis_kind', None) == 'prepared_population'
         self.samples = _immutable(np.arange(container.manifest['n'], dtype=np.int64)
                                   if logical_axis else container.samples)
         self._starts = np.asarray(container.index['start'], dtype=np.int64)
@@ -171,7 +246,10 @@ class SharedStateBroker:
             requested_variants=0, bound_rejected_variants=0, returned_raw_variants=0,
             trait_block_calls=0, trait_count_calls=0, returned_trait_variants=0,
             bound_sample_axes=0, sample_axis_reuse_calls=0, sample_axis_validation_calls=0,
+            sample_axis_digest_calls=0, sample_axis_immutable_alias_hits=0,
             compact_bytes_highwater=0, gpu_csr_bytes_highwater=0,
+            sample_axis_device_bytes_highwater=0, sample_axis_device_uploads=0,
+            sample_axis_device_evictions=0,
             raw_slab_bytes_highwater=0, memory_required_bytes_highwater=0,
             frame_read_validate_seconds=0., csr_upload_host_seconds=0.,
             raw_materialize_host_seconds=0., trait_count_host_seconds=0.,
@@ -198,7 +276,10 @@ class SharedStateBroker:
             gpu_csr_cache_limit_bytes=self._device_capacity,
             current_compact_cache_bytes=self._source_bytes,
             current_gpu_csr_cache_bytes=self._device_bytes,
+            sample_axis_cache_limit_bytes=self._axis_capacity,
+            current_sample_axis_device_bytes=self._device_axis_bytes,
             memory_limit_bytes=self._limit, genotype_sdk_fallback_count=0,
+            live_memory_reserve_bytes=self._reserve,
             timer_contract='host times include enqueue; summary D2H includes wait/copy; stages may overlap')
 
     def _evict_device(self):
@@ -206,20 +287,48 @@ class SharedStateBroker:
         self._device_bytes -= size
         self._metrics['gpu_csr_evictions'] += 1
 
+    def release_device_cache(self):
+        """Retire only owned cached CSR references; active slabs remain valid."""
+        released = self._device_bytes
+        while self._device_sources:
+            self._evict_device()
+        return released
+
+    @contextmanager
+    def workspace_guard(self, admission):
+        """Coordinate a job's fitted-state bank with existing incremental guards."""
+        if admission is not None and not callable(admission):
+            raise TypeError('workspace admission must be callable or None')
+        previous = self._workspace_admission
+        self._workspace_admission = admission
+        try:
+            yield
+        finally:
+            self._workspace_admission = previous
+
     def _guard(self, required):
         self._metrics['memory_required_bytes_highwater'] = max(
             self._metrics['memory_required_bytes_highwater'], required)
-        if required > self._limit:
+        if self._limit is not None and required > self._limit:
             raise MemoryError('shared six-state workspace exceeds configured memory budget')
         if self.device.type == 'cuda':
+            if self._workspace_admission is not None:
+                self._workspace_admission(required, phase='shared_genotype_or_covariance')
             # Own LRU entries may be evicted; independent model allocations are
-            # never removed or precision-adjusted to satisfy this guard.
-            while self._device_sources and torch.cuda.memory_allocated(self.device) + required > self._limit:
+            # only retired through the explicitly installed owner callback.
+            while self._device_sources:
+                allocated = torch.cuda.memory_allocated(self.device)
+                unused = max(0, torch.cuda.memory_reserved(self.device)-allocated)
+                free, _ = torch.cuda.mem_get_info(self.device)
+                if ((self._limit is None or allocated+required <= self._limit)
+                        and required <= max(0, free+unused-self._reserve)):
+                    break
                 self._evict_device()
             allocated = torch.cuda.memory_allocated(self.device)
             unused = torch.cuda.memory_reserved(self.device) - allocated
             free, _ = torch.cuda.mem_get_info(self.device)
-            if allocated + required > self._limit or required > free + unused:
+            if ((self._limit is not None and allocated + required > self._limit)
+                    or required > max(0, free + unused - self._reserve)):
                 raise MemoryError('shared six-state workspace exceeds live CUDA budget')
 
     def _source(self, frame):
@@ -367,7 +476,9 @@ class SharedStateBroker:
         return RawStateBlock(states, self.samples, _immutable(selected), self._seal, _stamp(states))
 
     def _axis(self, samples):
-        candidate = np.asarray(samples)
+        # Preserve the source mmap/array object so its admitted identity can be
+        # checked without constructing a new ndarray wrapper on every call.
+        candidate = samples if isinstance(samples, np.ndarray) else np.asarray(samples)
         if candidate.ndim != 1 or candidate.dtype.kind not in 'iu':
             raise ValueError('sample_indices must be a one-dimensional integer array')
         # Integer comparison must never pass through floating point. In
@@ -376,20 +487,33 @@ class SharedStateBroker:
         if candidate.dtype.kind == 'u' and np.any(candidate > np.uint64(np.iinfo(np.int64).max)):
             raise IndexError('sample_indices exceeds the canonical integer dimension')
         candidate_values = candidate.astype(np.int64, copy=False)
-        for axis in self._axes:
-            if samples is axis.samples:
-                if (candidate.dtype != np.int64 or candidate.shape != axis.cache_rows.shape
-                        or candidate.flags.writeable):
-                    raise ValueError('immutable sample binding metadata was altered')
-                self._metrics['sample_axis_reuse_calls'] += 1
-                return axis
-            # Pipeline construction may create an equal ordered copy. Its
-            # integer dtype, full shape and every value prove the same already
-            # validated axis; identity or shape alone never grants admission.
-            if (candidate_values.shape == axis.samples.shape
-                    and np.array_equal(candidate_values, axis.samples)):
-                self._metrics['sample_axis_reuse_calls'] += 1
-                return axis
+        alias = self._axis_aliases.get(id(candidate))
+        if alias is not None:
+            source, axis, geometry, backing = alias
+            if (source is not candidate or _array_geometry(candidate) != geometry
+                    or _readonly_source(candidate) != backing):
+                raise ValueError('verified readonly sample source binding was altered')
+            self._metrics['sample_axis_reuse_calls'] += 1
+            self._metrics['sample_axis_immutable_alias_hits'] += 1
+            return axis
+        axis = self._axes_by_object.get(id(samples))
+        if axis is not None and samples is axis.samples:
+            if (candidate.dtype != np.int64 or candidate.shape != axis.cache_rows.shape
+                    or candidate.flags.writeable):
+                raise ValueError('immutable sample binding metadata was altered')
+            self._metrics['sample_axis_reuse_calls'] += 1
+            return axis
+        # Different complete-case cohorts must not incur a quadratic scan of
+        # every prior N-row axis. The digest only locates a candidate: equality
+        # still proves all values before reusing its validated immutable axis.
+        source_binding = _readonly_source(candidate)
+        digest = (len(candidate_values), hashlib.sha256(candidate_values.tobytes()).digest())
+        self._metrics['sample_axis_digest_calls'] += 1
+        axis = self._axes_by_digest.get(digest)
+        if axis is not None and np.array_equal(candidate_values, axis.samples):
+            self._remember_axis_alias(candidate, axis, source_binding)
+            self._metrics['sample_axis_reuse_calls'] += 1
+            return axis
         self._metrics['sample_axis_validation_calls'] += 1
         selected = _indices(samples, self._reader.n_samples, 'sample_indices')
         positions = np.searchsorted(self._sorted_samples, selected)
@@ -398,10 +522,43 @@ class SharedStateBroker:
             raise ValueError('phenotype samples are outside the physical cache binding')
         rows = _immutable(self._sample_sort[positions])
         self._guard(rows.nbytes + 64 * 2**20)
-        axis = _Axis(samples, _immutable(selected), rows, self._indices_to_device(rows))
+        axis = _Axis(samples, _immutable(selected), rows, None)
         self._axes.append(axis)
+        self._axes_by_object[id(axis.samples)] = axis
+        self._axes_by_digest[digest] = axis
+        self._remember_axis_alias(candidate, axis, source_binding)
         self._metrics['bound_sample_axes'] += 1
         return axis
+
+    def _remember_axis_alias(self, candidate, axis, source_binding):
+        backing = _readonly_source(candidate)
+        if backing != source_binding:
+            raise ValueError('readonly sample source changed while its axis was verified')
+        if backing is not None:
+            # Keep the source object alive: id reuse cannot validate another array.
+            self._axis_aliases[id(candidate)] = (candidate, axis, _array_geometry(candidate), backing)
+
+    def _device_rows(self, axis):
+        key = id(axis)
+        if key in self._device_axes:
+            self._device_axes.move_to_end(key)
+            return axis.device_rows
+        size = axis.cache_rows.nbytes
+        # A single oversized axis is allowed; there is no all-cohort device
+        # residency. The current cohort's immutable index survives its tile.
+        while self._device_axes and self._device_axis_bytes+size > self._axis_capacity:
+            _, old = self._device_axes.popitem(last=False)
+            self._device_axis_bytes -= old.cache_rows.nbytes
+            old.device_rows = None
+            self._metrics['sample_axis_device_evictions'] += 1
+        self._guard(size + 64*2**20)
+        axis.device_rows = self._indices_to_device(axis.cache_rows)
+        self._device_axes[key] = axis
+        self._device_axis_bytes += size
+        self._metrics['sample_axis_device_uploads'] += 1
+        self._metrics['sample_axis_device_bytes_highwater'] = max(
+            self._metrics['sample_axis_device_bytes_highwater'], self._device_axis_bytes)
+        return axis.device_rows
 
     def _validate_raw(self, raw):
         if (not isinstance(raw, RawStateBlock) or raw._seal is not self._seal
@@ -418,6 +575,7 @@ class SharedStateBroker:
         if not m:
             return torch.empty((4, 0), dtype=torch.int64, device=self.device)
         started = time.perf_counter()
+        device_rows = self._device_rows(axis)
         if self.device.type == 'cuda':
             _, count, _ = _kernels()
             tiles = triton.cdiv(n, 1024)
@@ -426,7 +584,7 @@ class SharedStateBroker:
             partial = torch.empty((m, tiles, 4), dtype=torch.int64, device=self.device)
             if tiles:
                 with torch.cuda.device(self.device):
-                    count[(tiles, m)](raw.states, axis.device_rows, partial, m, n, tiles, BLOCK=1024)
+                    count[(tiles, m)](raw.states, device_rows, partial, m, n, tiles, BLOCK=1024)
             result = partial.sum(1).T.contiguous()
             del partial
         else:
@@ -438,7 +596,7 @@ class SharedStateBroker:
                 end = min(begin + 128, m)
                 if guard_counts:
                     self._guard(40 * n * (end-begin) + 64 * 2**20)
-                s = raw.states[:, begin:end].index_select(0, axis.device_rows).to(torch.int64)
+                s = raw.states[:, begin:end].index_select(0, device_rows).to(torch.int64)
                 values = torch.stack((ref[s].sum(0), called[s].sum(0),
                     torch.where(s < 3, 2-s, 0).sum(0), (s >= 3).sum(0)))
                 result[:, begin:end] = values
@@ -526,10 +684,10 @@ class SharedStateBroker:
             if self.device.type == 'cuda':
                 _, _, materialize = _kernels()
                 with torch.cuda.device(self.device):
-                    materialize[(triton.cdiv(n*m, 256),)](raw_block.states, axis.device_rows,
+                    materialize[(triton.cdiv(n*m, 256),)](raw_block.states, self._device_rows(axis),
                         c, flip, dosage, raw_block.shape[1], m, n, BLOCK=256)
             else:
-                s = raw_block.states.index_select(0, axis.device_rows).index_select(1, c)
+                s = raw_block.states.index_select(0, self._device_rows(axis)).index_select(1, c)
                 dosage[:] = torch.where(s < 3, torch.where(flip[None, :], s, 2-s), 3)
         result = DeviceMinorBlock(dosage, axis.samples, raw_block.variant_indices[columns],
             af, initial_mac, missing_rate, reference_ac, called_alleles)
@@ -552,6 +710,12 @@ class SharedStateBroker:
         self._sources.clear()
         self._device_sources.clear()
         self._axes.clear()
+        self._axes_by_object.clear()
+        self._axes_by_digest.clear()
+        self._axis_aliases.clear()
+        self._device_axes.clear()
+        self._device_axis_bytes = 0
+        self._identity_rows = None
         self._source_bytes = self._device_bytes = 0
         try:
             if self._own_container:
@@ -580,6 +744,23 @@ class SharedTraitReader:
 
     def close(self):
         self._closed = True
+
+    def _single_axis_binding(self):
+        self._broker._check_open()
+        if self._closed:
+            raise RuntimeError('shared trait reader is closed')
+        axis = self._axis
+        if axis.identity_rows is None:
+            # Every singleton's local rows are 0..N-1. All cohort identities are
+            # views of one immutable population-sized rowmap, never N*traits.
+            if self._broker._identity_rows is None:
+                self._broker._identity_rows = _immutable(np.arange(len(self._broker.samples), dtype=np.int64))
+            axis.identity_rows = self._broker._identity_rows[:len(axis.samples)]
+        if axis.single_binding is None:
+            axis.single_binding = _SingleAxisBinding(self._broker, axis, self._broker._seal,
+                _array_geometry(axis.samples), _array_geometry(axis.identity_rows))
+        axis.single_binding.validate(self, axis.samples, axis.identity_rows, len(axis.samples))
+        return axis.single_binding
 
     @property
     def reader_metadata(self):

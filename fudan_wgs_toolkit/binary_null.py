@@ -1,8 +1,9 @@
 """Ordinary logistic IRLS and explicit prefitted binary association state.
 
 SPDX-License-Identifier: GPL-3.0-only
-IRLS follows the binomial identity used by R's stats::glm; this module
-does not fit a binary mixed model or replace a supplied GRM implicitly.
+IRLS follows the binomial identity used by R's stats::glm.
+The mixed fitter below implements one explicitly supplied block-sparse GRM;
+it never replaces that GRM with an ordinary model implicitly.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ import torch
 from .statistics import score_covariance
 from .tf32 import matmul, validate_mode
 from .tensor_validation import tensor_all_finite
+from .precision_audit import explicit_binary_fitted_projection_fp64
 
 
 @dataclass
@@ -319,6 +321,325 @@ def binary_prefitted_state(*, sample_ids, covariates, residual, fitted_probabili
                            matmul_mode=mode,working_phenotype=working)
 
 
+def _compact_fitted_arrays(*, covariates, residual, fitted_probability,
+                           fixed_effect_covariance, precision,
+                           null_fit_source_sha256, verified_fit_source_sha256,
+                           device):
+    binding = null_fit_source_sha256
+    if (not isinstance(binding, str) or len(binding) != 64
+            or binding != verified_fit_source_sha256
+            or any(ch not in "0123456789abcdef" for ch in binding)):
+        raise ValueError("compact binary state requires the same verified fitted-source SHA256")
+    def source_tensor(value, name):
+        if isinstance(value, torch.Tensor):
+            if value.dtype != torch.float64 or value.requires_grad:
+                raise ValueError(f"compact binary {name} must be original FP64 source without gradients")
+            return value.to(device=device)
+        array = np.asarray(value)
+        if array.dtype != np.float64:
+            raise ValueError(f"compact binary {name} must be original FP64 source")
+        return torch.as_tensor(array, dtype=torch.float64, device=device)
+    x = source_tensor(covariates, "covariates")
+    r = source_tensor(residual, "residual")
+    mu = source_tensor(fitted_probability, "fitted_probability")
+    cov = source_tensor(fixed_effect_covariance, "fixed_effect_covariance")
+    inverse = source_tensor(precision, "precision")
+    if (x.ndim != 2 or x.shape[0] < 1 or x.shape[1] < 1 or r.shape != (x.shape[0],)
+            or mu.shape != r.shape or cov.shape != (x.shape[1], x.shape[1])):
+        raise ValueError("compact binary arrays must retain the fitted sample/design shape")
+    if not (inverse.ndim == 1 or (inverse.ndim == 2 and inverse.layout != torch.strided)):
+        raise ValueError("compact binary precision must be diagonal or sparse; dense N-by-N is refused")
+    finite_precision = inverse if inverse.layout == torch.strided else inverse.to_sparse_coo().coalesce().values()
+    if (not all(bool(torch.isfinite(value).all()) for value in (x, r, mu, cov, finite_precision))
+            or bool(((mu <= 0) | (mu >= 1)).any())):
+        raise ValueError("compact binary fitted arrays must be finite with probabilities strictly in (0,1)")
+    if inverse.ndim == 1:
+        if inverse.shape != r.shape or bool((inverse <= 0).any()):
+            raise ValueError("compact binary diagonal precision must be aligned and positive")
+        sx = inverse[:, None] * x
+        method = "FP64_diagonal_source_precision"
+    elif inverse.ndim == 2 and inverse.layout != torch.strided:
+        if inverse.shape != (x.shape[0], x.shape[0]):
+            raise ValueError("compact binary sparse precision has the wrong shape")
+        inverse = inverse.to_sparse_coo().coalesce()
+        with explicit_binary_fitted_projection_fp64():
+            sx = torch.sparse.mm(inverse, x)
+        method = "FP64_sparse_source_precision"
+    else:
+        raise ValueError("compact binary precision must be diagonal or sparse; dense N-by-N is refused")
+    return x, r, mu, cov, inverse, sx, binding, method
+
+
+def compact_spa_state_from_fitted_arrays(*, sample_ids, covariates, residual,
+                                       fitted_probability, fixed_effect_covariance,
+                                       precision, null_fit_source_sha256,
+                                       verified_fit_source_sha256, device="cpu",
+                                       coefficients=None, phenotype=None,
+                                       has_kinship=False, iterations=0,
+                                       provenance="verified_fitted_binary_state"):
+    """Rebuild only the FP64 SPA projection from verified source fitted arrays.
+
+    The caller must verify the immutable source receipts and array SHA values
+    before calling, and supply the common fitted-state SHA of the normal bank
+    as ``verified_fit_source_sha256``. Matching hashes here bind that admission;
+    this array-only function cannot authenticate files that it does not read.
+
+    ``covariates`` is the original FP64 X, never an upcast normal FP32 matrix.
+    Sigma_i and the supplied covariance are retained at their original finite
+    fit tolerance: SX=Sigma_i X, xw=SX.T, and left=X cov. No refit, inversion of
+    X'Sigma_iX, working-response reconstruction or dense N-by-N allocation is
+    performed. A shared source X can remain resident across sidecars.
+
+    Diagonal SX is the original elementwise product. Sparse SX uses FP64 sparse
+    multiplication; its summation order may differ from the fitter's small
+    dense family products, and real SPA validation must record that difference.
+    """
+    x, r, mu, cov, inverse, sx, binding, method = _compact_fitted_arrays(
+        covariates=covariates, residual=residual, fitted_probability=fitted_probability,
+        fixed_effect_covariance=fixed_effect_covariance, precision=precision,
+        null_fit_source_sha256=null_fit_source_sha256,
+        verified_fit_source_sha256=verified_fit_source_sha256, device=device)
+    with explicit_binary_fitted_projection_fp64():
+        left = x @ cov
+    model = binary_prefitted_state(sample_ids=sample_ids, covariates=x,
+        residual=r, fitted_probability=mu, xw=sx.T, projection_left=left,
+        fixed_effect_covariance=cov, precision=inverse, precision_covariates=sx,
+        coefficients=coefficients, phenotype=phenotype, has_kinship=has_kinship,
+        use_spa=True, device=device, provenance=provenance, matmul_mode="fp64")
+    model.null_fit_source_sha256 = binding
+    model.iterations = int(iterations)
+    model.spa_projection_reconstructed = True
+    model.spa_projection_method = method
+    return model
+
+
+def compact_binary_normal_from_fitted_arrays(*, sample_ids, covariates, residual,
+                                            fitted_probability, fixed_effect_covariance,
+                                            precision, null_fit_source_sha256,
+                                            verified_fit_source_sha256, device="cpu",
+                                            coefficients=None, has_kinship=False, iterations=0,
+                                            provenance="verified_fitted_binary_state",
+                                            association_mode="tf32"):
+    """Create a temporary normal association tile from the FP64 source bank.
+
+    Original SX=Sigma_i X is reconstructed in FP64, then the supplied fitted
+    arrays are cast to the requested association mode. No FP64 left projection,
+    labels or working response is materialized; normal association does not use
+    them. The repository can release the whole temporary tile afterwards.
+    Sparse summation can change final ulps before casting, and is reported rather
+    than asserted to be universally bitwise equal to a pre-saved normal bank.
+    Source receipt/array verification is the caller's responsibility as for the
+    compact SPA helper. The same fitted-state SHA is retained on the output.
+    """
+    mode = validate_mode(association_mode)
+    x, r, mu, cov, inverse, sx, binding, method = _compact_fitted_arrays(
+        covariates=covariates, residual=residual, fitted_probability=fitted_probability,
+        fixed_effect_covariance=fixed_effect_covariance, precision=precision,
+        null_fit_source_sha256=null_fit_source_sha256,
+        verified_fit_source_sha256=verified_fit_source_sha256, device=device)
+    ids = np.asarray(sample_ids, dtype=str)
+    if ids.shape != (x.shape[0],) or len(np.unique(ids)) != len(ids) or np.any(ids == ""):
+        raise ValueError("compact binary sample IDs must be unique and aligned")
+    dtype = torch.float32 if mode == "tf32" else torch.float64
+    beta = None
+    if coefficients is not None:
+        beta = torch.as_tensor(coefficients, device=device)
+        if (beta.dtype != torch.float64 or beta.shape != (x.shape[1],)
+                or not bool(torch.isfinite(beta).all())):
+            raise ValueError("compact binary coefficients must retain their original FP64 fitted shape")
+        beta = beta.to(dtype=dtype)
+    x, r, mu, cov, inverse, sx = (value.to(dtype=dtype) for value in (x, r, mu, cov, inverse, sx))
+    model = BinaryNullModel(ids, x, r, mu, sx.T, None, cov, precision=inverse,
+        precision_x=sx, coefficients=beta, iterations=int(iterations), has_kinship=has_kinship,
+        use_spa=False, fit_method=provenance, matmul_mode=mode)
+    model.null_fit_source_sha256 = binding
+    model.source_matmul_mode = "fp64"
+    model.normal_projection_reconstructed = True
+    model.normal_projection_method = method + "_cast_" + mode
+    return model
+
+
+class ImmutableFittedBinarySource:
+    """Validate a receipt-bound FP64 bank entry once, then derive normal/SPA tiles.
+
+    The constructor accepts the same verified array mapping as the compact
+    helpers. File receipts must already have been authenticated by the caller;
+    this object binds that admission to the common fitted-state SHA. It never
+    accepts a boolean ``trusted`` shortcut. NumPy inputs are copied once so a
+    mutable external array cannot silently change the admitted tensors. Existing
+    Torch sources, including a shared GPU X, retain their original storage.
+
+    Source tensors must remain immutable while this object is alive. Each
+    derivation checks storage, geometry and Torch mutation versions in constant
+    time per source array. Full finite-value and sample-ID checks occur only at
+    admission. Mutation through unsupported ``.data`` writes is prohibited by
+    this ownership contract, as it bypasses Torch's own version mechanism.
+    """
+    __slots__ = ("_ids", "_tensors", "_stamps", "_binding", "_method",
+                 "_has_kinship", "_iterations", "_provenance", "_sealed")
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_sealed", False):
+            raise AttributeError("fitted binary source is immutable")
+        object.__setattr__(self, name, value)
+
+    @staticmethod
+    def _owned_array(value):
+        if value is None or isinstance(value, torch.Tensor):
+            return value
+        array = np.asarray(value)
+        if array.dtype != np.float64:
+            raise ValueError("immutable binary source must retain original FP64 arrays")
+        # torch.tensor owns its CPU storage; np.asarray/as_tensor would leave
+        # untracked writes through the caller's NumPy allocation possible.
+        return torch.tensor(array)
+
+    @staticmethod
+    def _stamp(value):
+        if value is None:
+            return None
+        try:
+            version = value._version
+        except RuntimeError as error:
+            raise ValueError("immutable fitted source requires mutation-tracked tensors") from error
+        base = (id(value), tuple(value.shape), value.dtype, value.device,
+                value.layout, value.requires_grad, version)
+        if value.layout == torch.strided:
+            return base + (value.data_ptr(), tuple(value.stride()), value.storage_offset())
+        indices, values = value.indices(), value.values()
+        return base + (indices.data_ptr(), indices._version,
+                       values.data_ptr(), values._version, value.is_coalesced())
+
+    def __init__(self, *, sample_ids, covariates, residual, fitted_probability,
+                 fixed_effect_covariance, precision, null_fit_source_sha256,
+                 verified_fit_source_sha256, device="cpu", coefficients=None,
+                 phenotype=None, has_kinship=False, iterations=0,
+                 provenance="verified_fitted_binary_state"):
+        arrays = {name: self._owned_array(value) for name, value in (
+            ("covariates", covariates), ("residual", residual),
+            ("fitted_probability", fitted_probability),
+            ("fixed_effect_covariance", fixed_effect_covariance),
+            ("precision", precision))}
+        x, r, mu, cov, inverse, sx, binding, method = _compact_fitted_arrays(
+            **arrays, null_fit_source_sha256=null_fit_source_sha256,
+            verified_fit_source_sha256=verified_fit_source_sha256, device=device)
+        if not tensor_all_finite(sx):
+            raise ValueError("reconstructed binary fitted projection is not finite")
+        del sx
+        with explicit_binary_fitted_projection_fp64():
+            left = x @ cov
+        if not tensor_all_finite(left):
+            raise ValueError("reconstructed binary SPA projection is not finite")
+        del left
+        ids = np.asarray(sample_ids, dtype=str)
+        if ids.shape != (x.shape[0],) or len(np.unique(ids)) != len(ids) or np.any(ids == ""):
+            raise ValueError("immutable binary sample IDs must be unique and aligned")
+        # A bytes-backed array cannot be made writable via setflags(True).
+        self._ids = np.frombuffer(ids.tobytes(), dtype=ids.dtype)
+        beta, y = None, None
+        if coefficients is not None:
+            beta = self._owned_array(coefficients).to(device=device)
+            if (beta.dtype != torch.float64 or beta.requires_grad
+                    or beta.shape != (x.shape[1],) or not tensor_all_finite(beta)):
+                raise ValueError("immutable binary coefficients must retain their FP64 fitted shape")
+        if phenotype is not None:
+            y = self._owned_array(phenotype).to(device=device)
+            if (y.dtype != torch.float64 or y.requires_grad or y.shape != r.shape
+                    or not tensor_all_finite(y) or bool(((y != 0) & (y != 1)).any())):
+                raise ValueError("immutable binary labels must be aligned FP64 0/1")
+        if type(iterations) is not int or iterations < 0:
+            raise ValueError("immutable binary iteration count must be nonnegative")
+        self._tensors = (x, r, mu, cov, inverse, beta, y)
+        self._stamps = tuple(self._stamp(value) for value in self._tensors)
+        self._binding, self._method = binding, method
+        self._has_kinship, self._iterations = bool(has_kinship), iterations
+        self._provenance = str(provenance)
+        self._sealed = True
+
+    @property
+    def device(self):
+        return self._tensors[0].device
+
+    @property
+    def sample_ids(self):
+        return self._ids
+
+    @property
+    def null_fit_source_sha256(self):
+        return self._binding
+
+    def _projection(self):
+        if tuple(self._stamp(value) for value in self._tensors) != self._stamps:
+            raise ValueError("immutable binary fitted source was mutated")
+        x, r, mu, cov, inverse, beta, y = self._tensors
+        with explicit_binary_fitted_projection_fp64():
+            sx = (inverse[:, None] * x if inverse.ndim == 1
+                  else torch.sparse.mm(inverse, x))
+        return x, r, mu, cov, inverse, sx, beta, y
+
+    def normal(self, *, association_mode="tf32"):
+        """Derive one temporary normal state from the admitted original FP64 fit."""
+        mode = validate_mode(association_mode)
+        x, r, mu, cov, inverse, sx, beta, _ = self._projection()
+        dtype = torch.float32 if mode == "tf32" else torch.float64
+        x, r, mu, cov, inverse, sx = (v.to(dtype=dtype)
+                                     for v in (x, r, mu, cov, inverse, sx))
+        beta = None if beta is None else beta.to(dtype=dtype)
+        model = BinaryNullModel(self._ids, x, r, mu, sx.T, None, cov,
+            precision=inverse, precision_x=sx, coefficients=beta,
+            iterations=self._iterations, has_kinship=self._has_kinship,
+            use_spa=False, fit_method=self._provenance, matmul_mode=mode)
+        model.null_fit_source_sha256 = self._binding
+        model.source_matmul_mode = "fp64"
+        model.normal_projection_reconstructed = True
+        model.normal_projection_method = self._method + "_cast_" + mode
+        model.fitted_source_validation = "immutable_once_with_tensor_version_guard"
+        return model
+
+    def spa(self):
+        """Derive an FP64 SPA projection only when selected tests need it."""
+        x, r, mu, cov, inverse, sx, beta, y = self._projection()
+        with explicit_binary_fitted_projection_fp64():
+            left = x @ cov
+        model = BinaryNullModel(self._ids, x, r, mu, sx.T, left, cov,
+            precision=inverse, precision_x=sx, coefficients=beta, phenotype=y,
+            iterations=self._iterations, has_kinship=self._has_kinship,
+            use_spa=True, fit_method=self._provenance, matmul_mode="fp64")
+        model.null_fit_source_sha256 = self._binding
+        model.spa_projection_reconstructed = True
+        model.spa_projection_method = self._method
+        model.fitted_source_validation = "immutable_once_with_tensor_version_guard"
+        return model
+
+
+def _binomial_logit_state(eta):
+    """R binomial(logit) means, derivative and working weights in FP64.
+
+    R's logit link is numerically bounded outside [-30, 30], and its
+    ``mu.eta`` is evaluated independently of ``mu * (1 - mu)``.  Using a
+    plain sigmoid can round a finite positive predictor to exactly one,
+    incorrectly turning a valid PQL update into a zero working weight.
+    These are the stats logit-link boundary conventions, not an eta clip or
+    a change to the mixed-model likelihood/variance-component equations.
+    https://github.com/wch/r-source/blob/trunk/src/library/stats/src/family.c
+    """
+    if eta.dtype != torch.float64 or not bool(torch.isfinite(eta).all()):
+        raise ArithmeticError("binomial logit predictor must be finite FP64")
+    epsilon = torch.finfo(torch.float64).eps
+    exponential = torch.exp(eta.clamp(min=-30., max=30.))
+    mu = exponential / (1 + exponential)
+    derivative = exponential / (1 + exponential).square()
+    lower, upper = eta < -30., eta > 30.
+    mu = torch.where(lower, epsilon / (1 + epsilon), mu)
+    mu = torch.where(upper, (1 / epsilon) / (1 + 1 / epsilon), mu)
+    derivative = torch.where(lower | upper, epsilon, derivative)
+    weights = derivative.square() / (mu * (1 - mu))
+    if (not bool(torch.isfinite(weights).all())
+            or bool((weights <= 0).any())):
+        raise ArithmeticError("binomial logit working weights are not finite positive")
+    return mu, derivative, weights
+
+
 def fit_logistic_null(phenotype,covariates=None,*,sample_ids=None,device="cuda",
                       use_spa=True,maxiter=100,tol=1e-8):
     """Float64 GPU binomial IRLS, with stable likelihood step halving."""
@@ -334,12 +655,13 @@ def fit_logistic_null(phenotype,covariates=None,*,sample_ids=None,device="cuda",
     beta=torch.zeros(x.shape[1],dtype=y.dtype,device=y.device)
     # stats::binomial initialization for an unweighted 0/1 response.
     eta=torch.logit((y+.5)/2)
+    boundary_peak = 0
+    eta_abs_peak = float(eta.abs().max())
     def loss(z):return (torch.nn.functional.softplus(z)-y*z).sum()
     current_loss=loss(eta)
     for iteration in range(1,maxiter+1):
-        mu=torch.sigmoid(eta);w=mu*(1-mu)
-        if bool((w<=0).any()):raise ArithmeticError("logistic fit saturated; possible separation")
-        z=eta+(y-mu)/w
+        mu,mu_eta,w=_binomial_logit_state(eta)
+        z=eta+(y-mu)/mu_eta
         sqrtw=torch.sqrt(w)
         candidate=torch.linalg.lstsq(x*sqrtw[:,None],z*sqrtw,driver="gels").solution
         delta=candidate-beta
@@ -351,13 +673,421 @@ def fit_logistic_null(phenotype,covariates=None,*,sample_ids=None,device="cuda",
         else:raise ArithmeticError("logistic IRLS step halving did not find a finite likelihood improvement")
         change=float((next_loss-current_loss).abs()/(.05+next_loss.abs()))
         beta,eta,current_loss=candidate,next_eta,next_loss
+        boundary_peak = max(boundary_peak, int((eta.abs()>30).sum()))
+        eta_abs_peak = max(eta_abs_peak, float(eta.abs().max()))
         if change<tol:break
     else:raise ArithmeticError("logistic IRLS did not converge")
-    mu=torch.sigmoid(eta);w=mu*(1-mu)
-    if bool((w<=0).any()):raise ArithmeticError("logistic fit saturated; possible separation")
+    mu,mu_eta,w=_binomial_logit_state(eta)
+    signed_eta = (2*y-1)*eta
+    if bool((signed_eta >= 0).all()) and bool((signed_eta > 0).any()):
+        # The returned finite vector itself is a separating direction.  Link
+        # boundaries prevent an arithmetic zero; they do not identify an MLE
+        # when the unpenalized fixed-effects design admits separation.
+        raise ArithmeticError("logistic fixed-effects design admits separation; finite initialization is not identifiable")
     cov=torch.linalg.inv(x.T@(w[:,None]*x))
     model=binary_prefitted_state(sample_ids=ids,covariates=x,residual=y-mu,fitted_probability=mu,
         xw=(x*w[:,None]).T,projection_left=x@cov,fixed_effect_covariance=cov,
+        precision=w,precision_covariates=x*w[:,None],
         coefficients=beta,phenotype=y,device=device,use_spa=use_spa,provenance="ordinary_logistic_IRLS")
     model.iterations=iteration
+    model.linear_predictors=eta
+    model.binomial_link_boundary_count=int((eta.abs()>30).sum())
+    model.binomial_link_method="R_stats_logit_linkinv_mu_eta"
+    model.binomial_link_boundary_peak_count=boundary_peak
+    model.binomial_link_eta_abs_peak=eta_abs_peak
+    return model
+
+
+class _BlockKinship:
+    """Validated PSD kinship, with no dense samples-by-samples allocation."""
+    def __init__(self, diagonal, edge_rows, edge_cols, edge_values, *, device,
+                 max_block_size):
+        from .null_model import KinshipSpectrum
+        spectrum = KinshipSpectrum.from_sparse(
+            diagonal, edge_rows, edge_cols, edge_values, device=device,
+            max_block_size=max_block_size, dtype=torch.float64)
+        self.diagonal = torch.tensor(np.asarray(diagonal), dtype=torch.float64, device=device)
+        self.blocks = []
+        self.grouped = torch.zeros(len(self.diagonal), dtype=torch.bool, device=device)
+        for rows, rotation in spectrum.blocks:
+            values = spectrum.eigenvalues[rows]
+            matrix = (rotation * values[None, :]) @ rotation.T
+            self.blocks.append((rows, (matrix + matrix.T) / 2))
+            self.grouped[rows] = True
+        self.mean_diagonal = self.diagonal.mean()
+        if not bool(torch.isfinite(self.mean_diagonal)) or float(self.mean_diagonal) <= 0:
+            raise ValueError("mixed binary GRM must have positive mean diagonal")
+
+    def apply(self, value):
+        result = self.diagonal.reshape((-1,) + (1,) * (value.ndim - 1)) * value
+        for rows, matrix in self.blocks:
+            result[rows] = matrix @ value[rows]
+        return result
+
+
+class _BlockPrecision:
+    """Inverse of diag(1/W)+tau*K, retaining only disjoint family blocks."""
+    def __init__(self, kinship, weights, tau, *, compute_logdet=False):
+        self.diagonal = 1 / (1 / weights + tau * kinship.diagonal)
+        self.blocks = []
+        self.kinship = kinship
+        self.logdet = None
+        if compute_logdet:
+            self.logdet = -torch.log(self.diagonal[~kinship.grouped]).sum()
+        for rows, matrix in kinship.blocks:
+            covariance = torch.diag(1 / weights[rows]) + tau * matrix
+            factor = torch.linalg.cholesky(covariance)
+            inverse = torch.cholesky_inverse(factor)
+            inverse = (inverse + inverse.T) / 2
+            self.blocks.append((rows, inverse))
+            self.diagonal[rows] = inverse.diagonal()
+            if compute_logdet:
+                self.logdet = self.logdet + 2 * torch.log(factor.diagonal()).sum()
+
+    def apply(self, value):
+        result = self.diagonal.reshape((-1,) + (1,) * (value.ndim - 1)) * value
+        for rows, inverse in self.blocks:
+            result[rows] = inverse @ value[rows]
+        return result
+
+    def trace_kinship(self):
+        value = (self.diagonal[~self.kinship.grouped]
+                 * self.kinship.diagonal[~self.kinship.grouped]).sum()
+        for (_, inverse), (_, matrix) in zip(self.blocks, self.kinship.blocks):
+            value = value + (inverse * matrix.T).sum()
+        return value
+
+    def sparse_tensor(self):
+        """COO N-by-N shape, O(N+sum family_size**2) stored entries."""
+        if not self.blocks:
+            return self.diagonal.clone()
+        rows = torch.nonzero(~self.kinship.grouped, as_tuple=True)[0]
+        indices = [torch.stack((rows, rows))]
+        values = [self.diagonal[rows]]
+        for family_rows, inverse in self.blocks:
+            size = len(family_rows)
+            indices.append(torch.stack((family_rows.repeat_interleave(size),
+                                        family_rows.repeat(size))))
+            values.append(inverse.reshape(-1))
+        return torch.sparse_coo_tensor(
+            torch.cat(indices, dim=1), torch.cat(values),
+            (len(self.diagonal), len(self.diagonal)),
+            device=self.diagonal.device).coalesce()
+
+
+class _MixedAINonconvergence(ArithmeticError):
+    """A failed AI trajectory, eligible for recovery with the same mixed model."""
+
+
+def _block_binomial_reml(kinship, working, weights, x, tau):
+    """Fixed-dispersion REML objective and GLS state for one PQL working fit.
+
+    This is twice the negative restricted Gaussian log likelihood, up to
+    constants. Binomial dispersion stays one: the quadratic term is not
+    replaced by a profiled-dispersion ``(n-p)*log(quadratic)`` term.
+    Only singleton vectors, independent family blocks, and a p-by-p system
+    are allocated. The supplied PSD kinship is retained without the whitened
+    eigenvalue truncation used by GMMAT's dense Brent implementation.
+
+    Objective: GMMAT src/fitglmm.cpp:236-280,374-445.
+    https://github.com/hanchenphd/GMMAT/blob/master/src/fitglmm.cpp
+    """
+    tau = torch.as_tensor(tau, dtype=working.dtype, device=working.device)
+    inverse = _BlockPrecision(kinship, weights, tau, compute_logdet=True)
+    sx = inverse.apply(x)
+    gram = x.T @ sx
+    factor = torch.linalg.cholesky((gram + gram.T) / 2)
+    covariance = torch.cholesky_inverse(factor)
+    coefficients = covariance @ (sx.T @ working)
+    # Evaluate the residual quadratic directly, avoiding subtraction of two
+    # large quadratics when the fixed effects explain much of working Y.
+    residual = working - x @ coefficients
+    py = inverse.apply(residual)
+    objective = (inverse.logdet + 2 * torch.log(factor.diagonal()).sum()
+                 + (residual * py).sum())
+    if not bool(torch.isfinite(objective)):
+        raise ArithmeticError("mixed logistic Brent REML objective is nonfinite")
+    return objective, (inverse, sx, covariance, coefficients, py)
+
+
+def _block_binomial_brent_step(kinship, working, weights, x, tol):
+    """Optimize tau on GMMAT's ten log intervals, with dispersion fixed one."""
+    from scipy.optimize import minimize_scalar
+    import math
+
+    # These are GMMAT's glmmkin defaults, not a case-count-dependent bound.
+    # R/glmmkin.R:0,533 and src/fitglmm.cpp:424-438 search log(tau).
+    lower, upper, regions = 1e-5, 1e5, 10
+    left, width = math.log(lower), math.log(upper / lower) / regions
+
+    def objective(log_tau):
+        value, _ = _block_binomial_reml(
+            kinship, working, weights, x, math.exp(log_tau))
+        return float(value)
+
+    best = None
+    for region in range(regions):
+        bounds = (left + region * width, left + (region + 1) * width)
+        result = minimize_scalar(objective, bounds=bounds, method="bounded",
+                                 options={"xatol": tol})
+        if (not result.success or not math.isfinite(result.fun)
+                or not math.isfinite(result.x)):
+            raise ArithmeticError("mixed logistic Brent variance search did not converge")
+        if best is None or result.fun < best.fun:
+            best = result
+    tau = torch.as_tensor(math.exp(best.x), dtype=working.dtype,
+                          device=working.device)
+    objective_value, fitted = _block_binomial_reml(
+        kinship, working, weights, x, tau)
+    return tau, objective_value, fitted
+
+
+def _fit_logistic_block_brent(y, x, ordinary, kinship, *, maxiter, tol,
+                              trace_callback=None):
+    """Restart original fit0 and recover the same single-GRM PQL model.
+
+    This follows GMMAT's AI-to-Brent wrapper and explicit zero-boundary refit
+    (R/glmmkin.R:236-246,533-592). The optimizer changes; y, X, K and fixed
+    binomial dispersion do not. Nonconvergence remains an error.
+    """
+    total_iterations = 0
+    boundary_peak = ordinary.binomial_link_boundary_peak_count
+    eta_abs_peak = ordinary.binomial_link_eta_abs_peak
+    tau_peak = 1.
+    fixed_boundary = False
+    for refit in range(2):
+        coefficients_previous = ordinary.coefficients.clone()
+        eta = x @ coefficients_previous
+        mu, mu_eta, weights = _binomial_logit_state(eta)
+        working = eta + (y - mu) / mu_eta
+        tau = torch.tensor(0. if fixed_boundary else 1., dtype=y.dtype,
+                           device=y.device)
+        converged = False
+        for iteration in range(1, maxiter + 1):
+            total_iterations += 1
+            old_tau = tau.clone()
+            old_working, old_weights = working, weights
+            if fixed_boundary:
+                objective, fitted = _block_binomial_reml(
+                    kinship, working, weights, x, tau)
+            else:
+                tau, objective, fitted = _block_binomial_brent_step(
+                    kinship, working, weights, x, tol)
+            inverse, sx, covariance, coefficients, py = fitted
+            eta = working - py / weights
+            mu, mu_eta, weights = _binomial_logit_state(eta)
+            working = eta + (y - mu) / mu_eta
+            if not bool(torch.isfinite(working).all()):
+                raise ArithmeticError("mixed logistic Brent working response is nonfinite")
+            boundary_peak = max(boundary_peak, int((eta.abs() > 30).sum()))
+            eta_abs_peak = max(eta_abs_peak, float(eta.abs().max()))
+            tau_peak = max(tau_peak, float(tau))
+            change = 2 * max(
+                float(((coefficients - coefficients_previous).abs()
+                       / (coefficients.abs() + coefficients_previous.abs() + tol)).max()),
+                float((tau - old_tau).abs() / (tau.abs() + old_tau.abs() + tol)))
+            if trace_callback is not None:
+                trace_callback(dict(optimizer="Brent", refit=refit,
+                    iteration=iteration, tau_old=old_tau, tau=tau.clone(),
+                    Y_old=old_working, Y=working, weights_old=old_weights,
+                    weights=weights, alpha=coefficients, cov=covariance, PY=py,
+                    objective=objective, eta=eta, change=change,
+                    link_boundary_count=int((eta.abs() > 30).sum())))
+            coefficients_previous = coefficients
+            if change < tol and iteration < maxiter:
+                converged = True
+                break
+        if not converged:
+            raise ArithmeticError("mixed logistic Brent PQL did not converge; no model fallback is used")
+        if not fixed_boundary and float(tau) < 1.01 * tol:
+            fixed_boundary = True
+            continue
+        return dict(inverse=inverse, sx=sx, covariance=covariance,
+            coefficients=coefficients, py=py, eta=eta, mu=mu, weights=weights,
+            working=working, tau=tau, old_tau=tau.clone(),
+            total_iterations=total_iterations, boundary_peak=boundary_peak,
+            eta_abs_peak=eta_abs_peak, tau_peak=tau_peak,
+            fixed_boundary=fixed_boundary, converged=True)
+    raise ArithmeticError("mixed logistic Brent boundary refit did not converge")
+
+
+def fit_logistic_mixed_null(phenotype, covariates=None, *, sample_ids=None,
+                            kinship_diagonal, edge_rows=(), edge_cols=(),
+                            edge_values=(), device="cpu", use_spa=True,
+                            maxiter=500, tol=1e-5, max_block_size=2048,
+                            trace_callback=None):
+    """Fit one logistic mixed null using GMMAT's PQL/AI REML equations.
+
+    The aligned PSD GRM is diagonal plus disjoint small family blocks. The
+    binomial dispersion is fixed at one; the single random-effect variance is
+    fitted by one EM initialization and average-information updates. Negative
+    updates are step-halved and a zero-variance boundary is refitted explicitly.
+    An AI trajectory that does not converge is restarted from the original
+    fixed-effect fit using bounded Brent REML optimization of the same GRM,
+    following GMMAT's single-GRM recovery. Failed recovery or separation raises.
+    The recovery uses exact family-block log determinants, without a dense
+    N-by-N matrix or GMMAT Brent's whitened-eigenvalue truncation.
+
+    Fitting and the SPA projection state use FP64. The returned precision is a
+    diagonal vector or sparse COO, never a dense N-by-N matrix. Genotype products
+    may subsequently use the independent non-SPA TF32 state. Equations and the
+    finite-tolerance return convention follow GMMAT R/glmmkin.R:278-418,655-702,
+    https://github.com/hanchenphd/GMMAT/blob/master/R/glmmkin.R.
+    """
+    if not 0 < tol < 1 or type(maxiter) is not int or maxiter < 2:
+        raise ValueError("invalid mixed logistic tolerance or iteration limit")
+    if type(max_block_size) is not int or max_block_size < 1:
+        raise ValueError("max_block_size must be a positive integer")
+    ordinary = fit_logistic_null(phenotype, covariates, sample_ids=sample_ids,
+                                device=device, use_spa=use_spa,
+                                maxiter=maxiter, tol=min(tol, 1e-8))
+    y, x, ids = ordinary.phenotype, ordinary.x, ordinary.sample_ids
+    if len(kinship_diagonal) != len(y):
+        raise ValueError("kinship diagonal does not match the aligned phenotype")
+    kinship = _BlockKinship(kinship_diagonal, edge_rows, edge_cols, edge_values,
+                           device=device, max_block_size=max_block_size)
+    n = len(y)
+
+    def state(working, weights, tau):
+        inverse = _BlockPrecision(kinship, weights, tau)
+        sx = inverse.apply(x)
+        gram = x.T @ sx
+        covariance = torch.cholesky_inverse(torch.linalg.cholesky((gram + gram.T) / 2))
+        coefficients = covariance @ (sx.T @ working)
+        py = inverse.apply(working) - sx @ coefficients
+        sx_cov = sx @ covariance
+        return inverse, sx, covariance, coefficients, py, sx_cov
+
+    def derivative(inverse, sx, py, sx_cov, working):
+        apy = kinship.apply(py)
+        papy = inverse.apply(apy) - sx @ (sx_cov.T @ apy)
+        trace_pk = inverse.trace_kinship() - (sx * kinship.apply(sx_cov)).sum()
+        score = (working * papy).sum() - trace_pk
+        information = (py * kinship.apply(papy)).sum()
+        return score, information
+
+    total_iterations = 0
+    boundary_peak = ordinary.binomial_link_boundary_peak_count
+    eta_abs_peak = ordinary.binomial_link_eta_abs_peak
+    tau_peak = 0.
+    fixed_boundary = False
+    converged = False
+    mixed_optimizer = "AI"
+    recovery_reason = None
+    brent_iterations = 0
+    try:
+        for refit in range(2):
+            coefficients_previous = ordinary.coefficients.clone()
+            eta = x @ coefficients_previous
+            mu, mu_eta, weights = _binomial_logit_state(eta)
+            working = eta + (y - mu) / mu_eta
+            tau = working.var(correction=1) / (2 * kinship.mean_diagonal)
+            tau_peak = max(tau_peak, float(tau))
+            if fixed_boundary:
+                tau = torch.zeros_like(tau)
+            else:
+                inverse, sx, covariance, coefficients, py, sx_cov = state(working, weights, tau)
+                score, _ = derivative(inverse, sx, py, sx_cov, working)
+                tau = torch.clamp(tau + tau.square() * score / n, min=0)
+            for iteration in range(1, maxiter + 1):
+                total_iterations += 1
+                old_tau = tau.clone()
+                old_working, old_weights = working, weights
+                inverse, sx, covariance, coefficients, py, sx_cov = state(working, weights, old_tau)
+                score, information = derivative(inverse, sx, py, sx_cov, working)
+                if not fixed_boundary:
+                    if not bool(torch.isfinite(information)) or float(information) <= 0:
+                        raise _MixedAINonconvergence("AI information is nonpositive")
+                    delta = score / information
+                    for _ in range(2048):
+                        tau = old_tau + delta
+                        if float(tau) < tol and float(old_tau) < tol:
+                            tau = torch.zeros_like(tau)
+                        if float(tau) >= 0:
+                            break
+                        delta = delta / 2
+                    else:
+                        raise _MixedAINonconvergence("AI step left the variance parameter space")
+                    if float(tau) < tol:
+                        tau = torch.zeros_like(tau)
+                eta = working - py / weights
+                mu, mu_eta, weights = _binomial_logit_state(eta)
+                boundary_peak = max(boundary_peak, int((eta.abs() > 30).sum()))
+                eta_abs_peak = max(eta_abs_peak, float(eta.abs().max()))
+                tau_peak = max(tau_peak, float(tau))
+                working = eta + (y - mu) / mu_eta
+                if not bool(torch.isfinite(working).all()):
+                    raise _MixedAINonconvergence("AI working response is nonfinite")
+                change = 2 * max(
+                    float(((coefficients - coefficients_previous).abs()
+                           / (coefficients.abs() + coefficients_previous.abs() + tol)).max()),
+                    float((tau - old_tau).abs() / (tau.abs() + old_tau.abs() + tol)))
+                if trace_callback is not None:
+                    trace_callback(dict(refit=refit, iteration=iteration,
+                        tau_old=old_tau, tau=tau.clone(), Y_old=old_working,
+                        Y=working, weights_old=old_weights, weights=weights,
+                        alpha=coefficients, cov=covariance, PY=py,
+                        score=score, AI=information, eta=eta, change=change,
+                        link_boundary_count=int((eta.abs() > 30).sum())))
+                coefficients_previous = coefficients
+                if change < tol and iteration < maxiter:
+                    converged = True
+                    break
+                if not bool(torch.isfinite(tau)) or float(tau) > tol ** -2:
+                    break
+            if not converged:
+                raise _MixedAINonconvergence("AI REML did not converge")
+            if not fixed_boundary and float(tau) < 1.01 * tol:
+                fixed_boundary = True
+                converged = False
+                continue
+            break
+    except _MixedAINonconvergence as error:
+        recovery_reason = str(error)
+        ai_iterations = total_iterations
+        recovered = _fit_logistic_block_brent(
+            y, x, ordinary, kinship, maxiter=maxiter, tol=tol,
+            trace_callback=trace_callback)
+        inverse, sx = recovered['inverse'], recovered['sx']
+        covariance, coefficients = recovered['covariance'], recovered['coefficients']
+        eta, mu, weights = recovered['eta'], recovered['mu'], recovered['weights']
+        working, tau, old_tau = recovered['working'], recovered['tau'], recovered['old_tau']
+        fixed_boundary, converged = recovered['fixed_boundary'], recovered['converged']
+        boundary_peak = max(boundary_peak, recovered['boundary_peak'])
+        eta_abs_peak = max(eta_abs_peak, recovered['eta_abs_peak'])
+        tau_peak = max(tau_peak, recovered['tau_peak'])
+        brent_iterations = recovered['total_iterations']
+        total_iterations += brent_iterations
+        mixed_optimizer = "Brent"
+    else:
+        ai_iterations = total_iterations
+    # GMMAT returns Sigma_i/cov from its final pre-update state, while mu and
+    # residual use the updated predictor. Keep that finite-tolerance convention.
+    model = binary_prefitted_state(
+        sample_ids=ids, covariates=x, residual=y-mu, fitted_probability=mu,
+        xw=sx.T, projection_left=x @ covariance,
+        fixed_effect_covariance=covariance, precision=inverse.sparse_tensor(),
+        precision_covariates=sx, coefficients=coefficients, phenotype=y,
+        has_kinship=True, use_spa=use_spa, device=device,
+        provenance=("logistic_block_sparse_GMMAT_PQL_AI_REML" if mixed_optimizer == "AI"
+                    else "logistic_block_sparse_GMMAT_PQL_Brent_REML"),
+        matmul_mode="fp64", working_phenotype=working)
+    model.iterations = total_iterations
+    model.converged = converged
+    model.theta = torch.stack((torch.ones_like(tau), tau))
+    model.precision_theta = torch.stack((torch.ones_like(old_tau), old_tau))
+    model.linear_predictors = eta
+    model.boundary_refit = fixed_boundary
+    model.binomial_link_boundary_count = int((eta.abs() > 30).sum())
+    model.binomial_link_method = "R_stats_logit_linkinv_mu_eta"
+    model.binomial_link_boundary_peak_count = boundary_peak
+    model.binomial_link_eta_abs_peak = eta_abs_peak
+    model.variance_component_peak = tau_peak
+    model.kinship_block_sizes = tuple(len(rows) for rows, _ in kinship.blocks)
+    model.mixed_optimizer = mixed_optimizer
+    model.mixed_ai_recovery_reason = recovery_reason
+    model.mixed_ai_iterations = ai_iterations
+    model.mixed_brent_iterations = brent_iterations
+    model.mixed_optimizer_search_bounds = (1e-5, 1e5) if mixed_optimizer == "Brent" else None
+    model.mixed_optimizer_search_regions = 10 if mixed_optimizer == "Brent" else None
     return model
