@@ -1,5 +1,7 @@
 # Torchstaar
 
+# 本工具尚在开发验证阶段，多数函数未达到原软件精度，切不可作为真实分析使用的标准化工具
+
 Torchstaar 用 PyTorch GPU 完成 Single、coding、noncoding 和 ncRNA 关联分析。新版入口只接收两份 CSV 和一个已转存的缓存目录，按 `eid` 对齐样本，为每个表型列拟合独立 Gaussian 零模型，再运行全部缓存染色体。关联分析不需要原始 GDS、PyGDS 或 R。
 
 ```python
