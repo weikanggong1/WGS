@@ -6,11 +6,11 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-import staar_phewas.tensor_validation as validation
-import staar_phewas.null_model as gaussian_module
-import staar_phewas.binary_null as binary_module
-from staar_phewas.null_model import GaussianNullModel, KinshipSpectrum
-from staar_phewas.binary_null import BinaryNullModel
+import fudan_wgs_toolkit.tensor_validation as validation
+import fudan_wgs_toolkit.null_model as gaussian_module
+import fudan_wgs_toolkit.binary_null as binary_module
+from fudan_wgs_toolkit.null_model import GaussianNullModel, KinshipSpectrum
+from fudan_wgs_toolkit.binary_null import BinaryNullModel
 
 
 def matrix_view(layout, *, dtype=torch.float32):

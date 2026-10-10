@@ -4,9 +4,9 @@ from types import SimpleNamespace
 from unittest import mock
 import unittest
 
-from staar_phewas.cuda_eigen import _backend as backend
-from staar_phewas.cuda_eigen.small_solver import FP32SmallSpectrumSolver
-from staar_phewas import _weighted_spectra as weighted, tf32
+from fudan_wgs_toolkit.cuda_eigen import _backend as backend
+from fudan_wgs_toolkit.cuda_eigen.small_solver import FP32SmallSpectrumSolver
+from fudan_wgs_toolkit import _weighted_spectra as weighted, tf32
 from test_cuda_eigen_backend import API, Torch, Tensor
 
 GIB=2**30

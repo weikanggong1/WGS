@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.cache_runtime.portable import PortableCachedGDS
-from staar_phewas.null_model import GaussianNullModel
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
+from fudan_wgs_toolkit.cache_runtime.portable import PortableGenotypeReader
+from fudan_wgs_toolkit.null_model import GaussianNullModel
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline
 from test_cache_portable import portable
 
 
@@ -20,7 +20,7 @@ def analysis_fixture(reader, monkeypatch, *, free_bytes=2**30,
     model.n_pheno, model.use_spa = 1, False
     analysis = PheWASPipeline.__new__(PheWASPipeline)
     analysis.models = [model]
-    analysis.gds = reader
+    analysis.genotype = reader
     analysis.options = AnalysisOptions(memory_limit_gib=.5)
     analysis.resident_genotypes = True
     analysis.union_rows = np.arange(100)
@@ -33,7 +33,7 @@ def analysis_fixture(reader, monkeypatch, *, free_bytes=2**30,
 
 def test_actual_portable_reader_dispatches_gene_resident_without_sdk(portable,monkeypatch):
     _, cache, _, _, _, _ = portable
-    with PortableCachedGDS(cache,device="cuda:0") as reader:
+    with PortableGenotypeReader(cache,device="cuda:0") as reader:
         assert getattr(reader,"_flat_reader",None) is None
         analysis = analysis_fixture(reader,monkeypatch)
         analysis.union_rows = np.arange(reader.n_samples)
@@ -50,7 +50,7 @@ def test_actual_portable_reader_dispatches_gene_resident_without_sdk(portable,mo
         assert calls[0][1] == dict(device=torch.device("cuda:0"),resident=True)
         assert calls[0][2] is masks and calls[0][3] is True
         assert analysis.local_mask_reuse_counters["resident_gene_families"] == 1
-        assert reader.reader_metadata["original_gds_required"] is False
+        assert reader.reader_metadata["original_genotype_required"] is False
 
 
 @pytest.mark.parametrize("reader,expected",[

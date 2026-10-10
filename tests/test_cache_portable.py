@@ -7,9 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from staar_phewas.cache_runtime import sparse_codec_fast, sparse_decode, store
-from staar_phewas.cache_runtime.portable import (
-    PortableCachedGDS, PortableMetadataReader, canonical_numeric_ids, export_metadata)
+from fudan_wgs_toolkit.cache_runtime import sparse_codec_fast, sparse_decode, store
+from fudan_wgs_toolkit.cache_runtime.portable import (
+    PortableGenotypeReader, PortableMetadataReader, export_metadata)
+from fudan_wgs_toolkit.identity import sample_keys, validate_sample_pairs
 
 
 class NativeMetadataFixture:
@@ -38,7 +39,10 @@ class NativeMetadataFixture:
         }
 
     def sample_ids(self):
-        return np.asarray(["%d_%d" % (101 + i, 101 + i) for i in range(8)])
+        return sample_keys(self.sample_pairs())
+
+    def sample_pairs(self):
+        return np.asarray([["0", "%d_%d" % (101 + i, 101 + i)] for i in range(8)])
 
     def read_field(self, path, indices):
         self.calls.append((path, np.asarray(indices).copy()))
@@ -55,7 +59,7 @@ def portable(tmp_path):
     raw = np.asarray([[0, 1, 2, 3], [4, 0, 5, 1], [0, 0, 0, 0],
                       [2, 1, 4, 0], [1, 5, 0, 3], [0, 1, 1, 0]], dtype=np.uint8)
     cache = tmp_path / "cache"
-    writer = store.Writer(cache, {"source": "unavailable-source.gds"}, source_rows, 6, source_bytes=10**8)
+    writer = store.Writer(cache, {"source": "unavailable-source.genotype"}, source_rows, 6, source_bytes=10**8)
     offsets, rows, states = sparse_codec_fast.compact(raw)
     counts = sparse_codec_fast.integer_counts(offsets, rows, states, *raw.shape)
     writer.append(raw, counts)
@@ -67,12 +71,13 @@ def portable(tmp_path):
     return native, cache, metadata, manifest, raw, source_rows
 
 
-def test_normalization_is_explicit_bijective_and_rejects_ambiguous_identifiers():
-    np.testing.assert_array_equal(canonical_numeric_ids(["101", "102_102"]), [101, 102])
-    for values in (["101_102"], ["00101"], ["101.0"], ["prefix101"], ["0"],
-                   ["101", "101_101"], [str(2**63)]):
+def test_family_and_individual_identity_is_lossless_and_pair_unique():
+    values = np.asarray([["0", "00101"], ["0", "101_102"], ["a", "same"], ["b", "same"]])
+    np.testing.assert_array_equal(validate_sample_pairs(values), values)
+    assert len(np.unique(sample_keys(values))) == 4
+    for values in ([["0", ""]], [["", "a"]], [["0", "a b"]], [["0", "a"], ["0", "a"]]):
         with pytest.raises(ValueError):
-            canonical_numeric_ids(values)
+            validate_sample_pairs(values)
 
 
 def test_metadata_chunked_roundtrip_fixed_ragged_missing_and_multiallelic(portable):
@@ -82,8 +87,8 @@ def test_metadata_chunked_roundtrip_fixed_ragged_missing_and_multiallelic(portab
     assert all(len(indices) <= 2 for _, indices in native.calls)
     with PortableMetadataReader(metadata, cache) as reader:
         assert reader.n_samples == 4 and reader.n_variants == 6
-        np.testing.assert_array_equal(reader.sample_ids(), ["108", "102", "106", "104"])
-        np.testing.assert_array_equal(reader.sample_indices(["106", "108"]), [2, 0])
+        np.testing.assert_array_equal(reader.sample_ids(), native.sample_ids()[source_rows])
+        np.testing.assert_array_equal(reader.sample_indices(sample_keys([["0", "106_106"], ["0", "108_108"]])), [2, 0])
         selected = np.asarray([5, 1, 3, 0], dtype=np.int64)
         for name, expected in native.fields.items():
             for indices in (None, selected, np.asarray([], dtype=np.int64)):
@@ -101,7 +106,7 @@ def test_metadata_chunked_roundtrip_fixed_ragged_missing_and_multiallelic(portab
         np.testing.assert_array_equal(alt, ["T,G", "A"])
         np.testing.assert_array_equal(reader.read_field("$num_allele", [1, 3]), [3, 2])
         np.testing.assert_array_equal(reader._array(manifest["source_sample_rows"]), source_rows)
-        assert reader.reader_metadata["original_gds_required"] is False
+        assert reader.reader_metadata["original_genotype_required"] is False
     with pytest.raises(ValueError, match="closed"):
         reader.read_field("position")
 
@@ -110,18 +115,18 @@ def test_cache_only_adapter_never_imports_sdk_or_stats_original_source(portable,
     _, cache, _, _, raw, _ = portable
     original_import = builtins.__import__
     def checked_import(name, *args, **kwargs):
-        if name == "pygds" or name.startswith("pygds."):
+        if name == "pygenotype" or name.startswith("pygenotype."):
             raise AssertionError("cache-only runtime imported native SDK")
         return original_import(name, *args, **kwargs)
     monkeypatch.setattr(builtins, "__import__", checked_import)
     original_stat = Path.stat
     def checked_stat(path, *args, **kwargs):
-        if path.suffix == ".gds":
+        if path.suffix == ".genotype":
             raise AssertionError("cache-only runtime statted original source")
         return original_stat(path, *args, **kwargs)
     monkeypatch.setattr(Path, "stat", checked_stat)
-    with PortableCachedGDS(cache, device="cpu") as reader:
-        np.testing.assert_array_equal(reader.sample_indices(["106", "108", "102"]), [2, 0, 1])
+    with PortableGenotypeReader(cache, device="cpu") as reader:
+        np.testing.assert_array_equal(reader.sample_indices(sample_keys([["0", "106_106"], ["0", "108_108"], ["0", "102_102"]])), [2, 0, 1])
         variants, samples = np.asarray([5, 1, 3, 0]), np.asarray([2, 0, 1])
         actual = reader.minor_block(variants, samples)
         offsets, rows, states = sparse_codec_fast.compact(raw)

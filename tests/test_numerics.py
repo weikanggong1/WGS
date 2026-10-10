@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import pytest
 import torch
-from staar_phewas.numerics import reference_crossprod, extended_variance
+from fudan_wgs_toolkit.numerics import reference_crossprod, extended_variance
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])

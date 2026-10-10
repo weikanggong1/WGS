@@ -8,13 +8,13 @@ import torch
 from scipy.special import gammaincc
 from scipy.stats import chi2, t
 
-from staar_phewas.statistics import (
+from fudan_wgs_toolkit.statistics import (
     DegenerateTestError,
     annotation_weights,
     cct,
     quadratic_form_sf,
     score_covariance,
-    staar_test,
+    association_test,
     _student_t_two_sided,
 )
 
@@ -97,7 +97,7 @@ def test_cct_exact_boundaries_and_extreme_tail():
 def test_saddlepoint_equal_spectrum_has_valid_monotone_tail(statistic):
     probability = quadratic_form_sf(statistic, [1.0, 1.0])
     assert 0 <= probability <= 1
-    # STAAR uses a saddlepoint approximation away from its moment switch.
+    # WGS uses a saddlepoint approximation away from its moment switch.
     assert probability == pytest.approx(chi2.sf(statistic, 2), abs=0.003)
 
 
@@ -117,7 +117,7 @@ def test_saddlepoint_at_mean_uses_fourth_moment_fallback():
 @pytest.mark.parametrize("device", ["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
 def test_saddle_negative_bound_preserves_original_scalar_division(device):
     # A small arithmetic fixture, unrelated to any private study data.
-    # Original STAAR 0.9.9 Bisection/Saddle gives the values below. With
+    # Original WGS 0.9.9 Bisection/Saddle gives the values below. With
     # scalar/Tensor reverse division, reciprocal*m changes this bound by
     # one ulp and the resulting near-mean tail by about 3.66e-6.
     eigenvalues = torch.tensor([1/3, 2/3, 1.], dtype=torch.float64, device=device)
@@ -133,7 +133,7 @@ def test_burden_and_acat_very_rare_collapse_match_manual_calculation():
     covariance = np.array([[1.0, 0.2, 0.1], [0.2, 1.2, 0.3], [0.1, 0.3, 0.9]])
     maf = np.array([0.001, 0.005, 0.009])
     mac = np.array([2, 11, 4])
-    result = staar_test(score, covariance, maf, mac)
+    result = association_test(score, covariance, maf, mac)
     assert result["Burden(1,1)"] == pytest.approx(chi2.sf(score.sum() ** 2 / covariance.sum(), 1), rel=1e-13)
     rare = np.array([0, 2])
     collapsed = chi2.sf(score[rare].sum() ** 2 / covariance[np.ix_(rare, rare)].sum(), 1)
@@ -151,7 +151,7 @@ def test_gaussian_acat_uses_student_t_only_for_common_mac():
     covariance = np.diag([1.0, 1.2, 0.9])
     maf = np.array([0.001, 0.005, 0.009])
     mac = np.array([11, 12, 13])
-    result = staar_test(score, covariance, maf, mac, acat_calibration="gaussian_glm", dof=30)
+    result = association_test(score, covariance, maf, mac, acat_calibration="gaussian_glm", dof=30)
     q = score ** 2 / covariance.diagonal()
     common = 2 * t.sf(np.sqrt(q / (30 - q) * 29), 29)
     wa = math.pi ** 2 * maf * (1 - maf)
@@ -160,16 +160,16 @@ def test_gaussian_acat_uses_student_t_only_for_common_mac():
 
 
 def test_output_names_annotation_shape_filtering_and_rejections():
-    result = staar_test([0.4, 0.6, 0.8], np.eye(3), [0.001, 0.003, 0.1], [1, 3, 100],
+    result = association_test([0.4, 0.6, 0.8], np.eye(3), [0.001, 0.003, 0.1], [1, 3, 100],
                         [[10], [20], [30]], ["functional"], cmac=4.25)
     assert result["num_variant"] == 2
     assert result["cMAC"] == 4.25
     assert "SKAT(1,25)-functional" in result
-    assert "STAAR-O" in result
+    assert "WGS-O" in result
     with pytest.raises(ValueError, match="residual dof"):
-        staar_test([1, 2], np.eye(2), [0.001, 0.002], [20, 20], acat_calibration="gaussian_glm")
+        association_test([1, 2], np.eye(2), [0.001, 0.002], [20, 20], acat_calibration="gaussian_glm")
     with pytest.raises(ValueError, match="rare-variant count"):
-        staar_test([1], [[1]], [0.001], [2])
+        association_test([1], [[1]], [0.001], [2])
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
@@ -181,8 +181,8 @@ def test_cuda_matches_cpu_float64_for_score_and_final_columns():
     gpu_u, gpu_v = score_covariance(genotype.cuda(), residual.cuda(), covariates=covariates.cuda())
     torch.testing.assert_close(gpu_u.cpu(), cpu_u, rtol=1e-12, atol=1e-12)
     torch.testing.assert_close(gpu_v.cpu(), cpu_v, rtol=1e-12, atol=1e-12)
-    cpu = staar_test(cpu_u, cpu_v, [0.001, 0.005], [2, 10])
-    gpu = staar_test(gpu_u, gpu_v, [0.001, 0.005], [2, 10])
+    cpu = association_test(cpu_u, cpu_v, [0.001, 0.005], [2, 10])
+    gpu = association_test(gpu_u, gpu_v, [0.001, 0.005], [2, 10])
     for name in cpu:
         assert gpu[name] == pytest.approx(cpu[name], rel=1e-11, abs=1e-13)
 
@@ -214,7 +214,7 @@ def test_cuda_small_spectra_use_real_weight_batch_and_preserve_large_route(monke
         return original(matrix, **kwargs)
 
     monkeypatch.setattr(torch.linalg, "eigvalsh", record)
-    result = staar_test(score, covariance, maf, torch.full_like(maf, 20),
+    result = association_test(score, covariance, maf, torch.full_like(maf, 20),
                         annotations, ["functional"])
     if size <= 32:
         assert [tuple(matrix.shape) for matrix in calls] == [(4, size, size)]

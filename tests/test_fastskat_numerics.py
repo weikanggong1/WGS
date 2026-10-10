@@ -6,7 +6,7 @@ import unittest
 
 import torch
 
-from staar_phewas._fastskat_numerics import (FastSKATNumericsError,
+from fudan_wgs_toolkit._fastskat_numerics import (FastSKATNumericsError,
                               refine_spectrum_and_moments,
                               scaled_residual_cumulants)
 

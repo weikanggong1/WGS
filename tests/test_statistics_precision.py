@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-import staar_phewas.statistics as statistics
+import fudan_wgs_toolkit.statistics as statistics
 
 
 class _RejectTorchProducts(TorchDispatchMode):
@@ -26,7 +26,7 @@ def test_all_burden_columns_route_through_backend_once(monkeypatch, mac, product
     skat_pvalues = torch.linspace(.1, .6, 6, dtype=torch.float64)
     payload = dict(score=score, covariance=covariance, maf=maf, mac=mac,
                    annotations=annotation, _skat_pvalues=skat_pvalues)
-    expected = statistics.staar_test(**payload)
+    expected = statistics.association_test(**payload)
     calls = []
 
     def mock_backend(left, right, **kwargs):
@@ -36,11 +36,11 @@ def test_all_burden_columns_route_through_backend_once(monkeypatch, mac, product
         calls.append((tuple(left.shape), tuple(right.shape), mode))
         return torch.as_tensor(np.matmul(left.numpy(), right.numpy()), dtype=torch.float32)
 
-    from staar_phewas import _burden
+    from fudan_wgs_toolkit import _burden
     monkeypatch.setattr(_burden, 'ieee_burden_product', mock_backend)
     statistics.statistics_execution_metadata(reset=True)
     with _RejectTorchProducts():
-        actual = statistics.staar_test(**payload, matmul_mode='tf32')
+        actual = statistics.association_test(**payload, matmul_mode='tf32')
     assert len(calls) == products
     assert all(shape[1][1] == 6 and shape[2] == 'ieee_fp32' for shape in calls)
     assert actual.keys() == expected.keys()
@@ -78,5 +78,5 @@ def test_forced_mode_rejects_sparse_projector_without_densifying():
 
 def test_forced_mode_on_cpu_does_not_fall_back():
     with pytest.raises(ValueError, match='same CUDA device'):
-        statistics.staar_test([.1, .2], [[1., 0.], [0., 1.]], [.001, .002], [2., 4.],
+        statistics.association_test([.1, .2], [[1., 0.], [0., 1.]], [.001, .002], [2., 4.],
                               _skat_pvalues=[.1, .2], matmul_mode='tf32')

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from staar_phewas.cpu_budget import allocate_cpu_budget, detect_cpu_capacity
+from fudan_wgs_toolkit.cpu_budget import allocate_cpu_budget, detect_cpu_capacity
 
 
 def write(path, value):
@@ -276,7 +276,7 @@ def test_insufficient_cpu_budget_fails_before_worker_launch():
 
 def test_capacity_is_refreshed_instead_of_cached_between_launches(monkeypatch):
     capacities = iter([capacity(40), capacity(32)])
-    monkeypatch.setattr("staar_phewas.cpu_budget.detect_cpu_capacity", lambda: next(capacities))
+    monkeypatch.setattr("fudan_wgs_toolkit.cpu_budget.detect_cpu_capacity", lambda: next(capacities))
     assert allocate_cpu_budget(8)["prepare_process_total"] == 16
     assert allocate_cpu_budget(8)["prepare_process_total"] == 8
 

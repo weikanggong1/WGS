@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.gds import SparseMinorBlock
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
-import staar_phewas.pipeline as pipeline_module
-import staar_phewas.batch_statistics as batch_module
+from fudan_wgs_toolkit.genotype import SparseMinorBlock
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline
+import fudan_wgs_toolkit.pipeline as pipeline_module
+import fudan_wgs_toolkit.batch_statistics as batch_module
 
 
 def sparse_block(genotype, ref_af, indices=None):
@@ -72,7 +72,7 @@ def test_base_groups_stably_reorder_genotype_frequency_and_annotations(monkeypat
     pipeline.trait_rows = [np.arange(100)]
     pipeline.union_rows = np.arange(100)
     pipeline.annotation_names = ["marker"]
-    pipeline.gds = SimpleNamespace(iter_minor_blocks=lambda *args, **kwargs: iter(blocks))
+    pipeline.genotype = SimpleNamespace(iter_minor_blocks=lambda *args, **kwargs: iter(blocks))
     pipeline.annotations = lambda *args, **kwargs: SimpleNamespace(annotations={})
     pipeline._limit = lambda *args: None
     monkeypatch.setattr(pipeline_module, "annotation_phred_matrix",
@@ -114,7 +114,7 @@ def test_batch_identical_indices_prepare_once_and_preserve_aliases(monkeypatch, 
         return [dict(tag=item["tag"]) for item in items], {"masks": len(items)}
 
     pipeline._prepare_test_set = prepare
-    monkeypatch.setattr(batch_module, "staar_test_batch", statistics)
+    monkeypatch.setattr(batch_module, "association_test_batch", statistics)
     a, b, empty = np.asarray([1, 3]), np.asarray([2]), np.asarray([], dtype=np.int64)
     if cache_existing:
         pipeline._cache_set(pipeline._set_key(b), [dict(tag=((2,), 0)), dict(tag=((2,), 1))])

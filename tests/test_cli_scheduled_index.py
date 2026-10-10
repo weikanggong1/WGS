@@ -1,69 +1,82 @@
-"""Exercise scheduled index preparation through the real CLI job loop."""
+"""Shared-runtime scheduled indexes retain order and avoid unused inputs."""
+from types import SimpleNamespace
+import numpy as np
 import pytest
-from staar_phewas import cli
-from staar_phewas.masks import NONCODING_CATEGORIES
-
+import torch
+from fudan_wgs_toolkit import cli
+from fudan_wgs_toolkit.masks import NONCODING_CATEGORIES
+from fudan_wgs_toolkit.phewas_runtime import runtime
 
 @pytest.mark.parametrize('specs,expected', [
-    ([('individual', {}), ('singlevariant', {}), ('coding', {'start': 1, 'end': 3})], []),
+    ([('individual', {}), ('coding', {'start': 1, 'end': 3})], []),
     ([('noncoding', {'start': 1, 'end': 3}), ('ncrna', {'start': 1, 'end': 3})], []),
     ([('ncrna', {}), ('ncrna', {})], ['ncRNA']),
     ([('noncoding', {'category': 'upstream'}), ('noncoding', {'category': 'UTR'}),
       ('noncoding', {'category': 'upstream', 'include_ncrna': True})], ['upstream', 'UTR', 'ncRNA']),
-    ([('coding', {'start': 1, 'end': 3}), ('noncoding', {}), ('ncrna', {}),
-      ('individual', {})], [*NONCODING_CATEGORIES, 'ncRNA']),
+    ([('coding', {'start': 1, 'end': 3}), ('noncoding', {}), ('ncrna', {}), ('individual', {})], [*NONCODING_CATEGORIES, 'ncRNA']),
 ])
-@pytest.mark.parametrize('packed_directory', [None, 'local-reader-build'])
-def test_cli_prepares_only_scheduled_index_once_and_preserves_order(tmp_path, monkeypatch, specs, expected, packed_directory):
-    events = []
-    class Model:
-        n = 3; n_pheno = 1; family = 'gaussian'; matmul_mode = 'fp64'
-        def set_matmul_mode(self, mode): self.matmul_mode = mode
+def test_shared_runtime_prepares_scheduled_index_once_in_order(tmp_path, monkeypatch, specs, expected):
+    events=[]
     class Reader:
-        reader_metadata = {}
-        def __init__(self, *args, **kwargs):
-            assert kwargs == ({} if packed_directory is None else {'packed_reader_directory': packed_directory})
+        n_samples=3
+        n_variants=3
+        reader_metadata={}
+        def __init__(self,*args,**kwargs):
+            assert kwargs=={'container_directory':str(tmp_path/'container')}
             events.append(('open',))
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def read_field(self,field,rows=None):return np.arange(3) if field=='position' else np.full(3,'PASS')
+    class Container:
+        def __init__(self,*args):pass
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+    class Broker(Container):
+        metrics={}
+        def __init__(self,reader,*args,**kwargs):self.reader=reader
+        def reader_view(self,rows):return self.reader
     class Pipeline:
-        def __init__(self, *args, **kwargs): events.append(('pipeline',))
-        def prepare_annotation_index(self, chromosome, **kwargs):
-            events.append(('index', kwargs['categories']))
+        def __init__(self,*args,**kwargs):
+            events.append(('pipeline',))
+            self._base_masks={};self._category_codes=None;self._annotation_indexes={};self._coding_masks_cache={}
+            self.skipped_sets=[];self.local_mask_reuse_counters={}
+        def prepare_annotation_index(self,chromosome,**kwargs):
+            events.append(('index',kwargs['categories']))
             assert kwargs['include_ncrna'] is False
-        def __getattr__(self, name):
-            if name in {'coding', 'noncoding', 'ncrna', 'individual', 'singlevariant'}:
+        def __getattr__(self,name):
+            if name in {'coding','noncoding','ncrna'}:
                 def job(**kwargs):
-                    events.append(('job', name, kwargs))
-                    return [[]]
+                    events.append(('job',name));return [[]]
                 return job
             raise AttributeError(name)
-    monkeypatch.setattr(cli, 'GaussianNullModel', Model)
-    monkeypatch.setattr(cli, 'load_null_model', lambda *args, **kwargs: Model())
-    monkeypatch.setattr(cli, 'SeqArrayGDS', Reader)
-    monkeypatch.setattr(cli, 'PheWASPipeline', Pipeline)
-    monkeypatch.setattr(cli, '_bind_gds_samples', lambda *args: None)
-    # A missing file detects accidental promoter input I/O in non-promoter jobs.
-    promoter = tmp_path / 'promoters.tsv'
-    if any(c.startswith('promoter_') for c in expected): promoter.write_text('1\t1\t3\n')
-    jobs = [dict(kind=kind, arguments=arguments, output=str(tmp_path / f'{i}.Rdata'))
-            for i, (kind, arguments) in enumerate(specs)]
-    config = dict(matmul_mode='fp64', precision_control=True,
-        phenotypes=[dict(name='trait', model='cache.npz')],
-        chromosomes=[dict(name=1, gds='input.gds', jobs=jobs,
-            annotation_index=dict(promoter_intervals_file=str(promoter), include_ncrna=True))])
-    if packed_directory is not None: config['packed_reader_directory'] = packed_directory
-    report = cli.run_configuration(config, device='cpu')
-    assert [e for e in events if e[0] == 'index'] == ([('index', expected)] if expected else [])
-    assert [e[1] for e in events if e[0] == 'job'] == [kind for kind, _ in specs]
-    assert len([e for e in events if e[0] == 'open']) == 1
-    assert len([e for e in events if e[0] == 'pipeline']) == 1
-    assert [job['kind'] for job in report['jobs']] == [kind for kind, _ in specs]
-    if not expected: assert report['index_preparation_seconds'] == 0
-
-
-@pytest.mark.parametrize('value', ['', ' ', True, 0, [], {}])
-def test_packed_reader_directory_rejects_invalid_configuration_before_inputs(value):
-    with pytest.raises(ValueError, match='packed_reader_directory'):
-        cli.run_configuration(dict(matmul_mode='fp64', precision_control=True,
-            phenotypes=[], chromosomes=[], packed_reader_directory=value), device='cpu')
+    for name in ('init','is_available','reset_peak_memory_stats','synchronize','max_memory_allocated','max_memory_reserved'):
+        monkeypatch.setattr(torch.cuda,name,(lambda *args:True) if name=='is_available' else (lambda *args:0))
+    model=SimpleNamespace(n=3,x=torch.ones((3,1)),family='gaussian',use_spa=False)
+    monkeypatch.setattr(runtime,'_load_models',lambda *args:([model],[None]))
+    monkeypatch.setattr(runtime,'PortableMetadataReader',Reader)
+    monkeypatch.setattr(runtime,'Container',Container)
+    monkeypatch.setattr(runtime,'SharedStateBroker',Broker)
+    monkeypatch.setattr(runtime,'LimitedMaskPipeline',Pipeline)
+    monkeypatch.setattr(cli,'_bind_genotype_samples',lambda *args:np.arange(3))
+    def single(*args,**kwargs):events.append(('job','individual'));return [[[]]]
+    monkeypatch.setattr(runtime,'_single',single)
+    monkeypatch.setattr(runtime,'write_association_batch',lambda *args,**kwargs:{'rows':0})
+    promoter=tmp_path/'promoters.tsv'
+    if any(category.startswith('promoter_') for category in expected):promoter.write_text('1\t1\t3\n')
+    jobs=[]
+    for i,(kind,arguments) in enumerate(specs):
+        args=dict(arguments)
+        if kind!='individual':args['gene_name']='GENE_A'
+        if kind=='coding':args.update(start=1,end=3)
+        jobs.append(dict(kind=kind,arguments=args,output=str(tmp_path/f'{i}.csv')))
+    source=str(tmp_path/'metadata')
+    config=dict(weighted_eigensolver='torch',phenotypes=[dict(model='state.npz')],
+        chromosomes=[dict(name='1',genotype=source,jobs=jobs,
+                          annotation_index=dict(promoter_intervals_file=str(promoter)))])
+    spec=SimpleNamespace(directory=str(tmp_path/'container'),expected_binding={},source_proof=lambda:{},expected_samples=None)
+    report=runtime.run_configuration([config],cache_specs={source:spec},device='cuda:0')
+    assert [event for event in events if event[0]=='index']==([('index',expected)] if expected else [])
+    assert [event[1] for event in events if event[0]=='job']==[kind for kind,_ in specs]
+    assert events.count(('open',))==events.count(('pipeline',))==1
+    assert [job['kind'] for job in report['jobs']]==[kind for kind,_ in specs]
+    if not expected:assert report['annotation_seconds']==0

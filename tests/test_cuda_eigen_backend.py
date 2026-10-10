@@ -8,7 +8,7 @@ import threading
 from types import SimpleNamespace
 import unittest
 
-from staar_phewas.cuda_eigen import _backend as m
+from fudan_wgs_toolkit.cuda_eigen import _backend as m
 
 REGISTRY={}
 

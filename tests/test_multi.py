@@ -4,9 +4,9 @@ import pytest
 import torch
 from scipy.stats import chi2
 
-from staar_phewas.multi import (JointGaussianNullModel, fit_joint_gaussian_null,
+from fudan_wgs_toolkit.multi import (JointGaussianNullModel, fit_joint_gaussian_null,
                                joint_chi_square, joint_rank_inverse_normal,
-                               multi_staar_test, _ai_score_information, _components,
+                               joint_association_test, _ai_score_information, _components,
                                _gls_state)
 
 
@@ -47,7 +47,7 @@ def test_joint_burden_matches_explicit_two_trait_score():
     model = fit_joint_gaussian_null(y, x, device="cpu")
     u, v = model.score_covariance(g)
     maf = torch.tensor([.001, .002, .003], dtype=torch.float64)
-    result = multi_staar_test(u, v, maf, [3, 3, 4], cmac=float(g.sum()))
+    result = joint_association_test(u, v, maf, [3, 3, 4], cmac=float(g.sum()))
     total_score = u.reshape(2, 3).sum(1)
     total_covariance = v.reshape(2, 3, 2, 3).sum((1, 3))
     assert result["Burden(1,1)"] == pytest.approx(float(joint_chi_square(total_score, total_covariance)), rel=1e-13)
@@ -112,7 +112,7 @@ def test_diagonal_joint_ai_matches_explicit_reml_derivatives():
 
 
 def test_joint_individual_determinant_zero_and_log_underflow():
-    from staar_phewas.multi import joint_individual_logp
+    from fudan_wgs_toolkit.multi import joint_individual_logp
     from scipy.special import erfcx
     score=torch.tensor([1.,2.],dtype=torch.float64)
     assert float(joint_individual_logp(score,torch.zeros((2,2),dtype=torch.float64)))==0

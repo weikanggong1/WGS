@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from staar_phewas import sparse_numerics
-from staar_phewas.sparse_numerics import (
+from fudan_wgs_toolkit import sparse_numerics
+from fudan_wgs_toolkit.sparse_numerics import (
     _ordered_rows, _ordered_rows_torch, reference_sparse_score_covariance,
     sparse_execution_metadata,
 )
@@ -75,7 +75,7 @@ def test_single_kernel_retains_sequential_addition_and_strided_tails():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
 @pytest.mark.parametrize("message", ["Triton Error [CUDA]: device kernel image is invalid", "unrelated analysis error"])
 def test_only_kernel_load_errors_select_exact_torchscript(monkeypatch, message):
-    from staar_phewas import _ordered_cuda
+    from fudan_wgs_toolkit import _ordered_cuda
     monkeypatch.setattr(sparse_numerics, "_cuda_backend_disabled", None)
     monkeypatch.setattr(sparse_numerics, "_ordered_addition_counts",
                         {"triton_cuda": 0, "torchscript_cuda": 0, "torchscript_cpu": 0})

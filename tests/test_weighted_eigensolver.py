@@ -4,9 +4,10 @@ import threading
 import pytest
 import torch
 
-from staar_phewas import cli, _weighted_spectra as weighted
-from staar_phewas.cuda_eigen import FP32SmallSpectrumSolver
-from staar_phewas.cuda_eigen import _backend as backend_module
+from fudan_wgs_toolkit import cli, _weighted_spectra as weighted
+from fudan_wgs_toolkit.phewas_runtime import runtime
+from fudan_wgs_toolkit.cuda_eigen import FP32SmallSpectrumSolver
+from fudan_wgs_toolkit.cuda_eigen import _backend as backend_module
 from test_cuda_eigen_backend import API, Torch, Tensor
 
 
@@ -31,9 +32,9 @@ def test_config_selection_has_explicit_control_and_cpu_policy(requested,mode,dev
 
 @pytest.mark.parametrize('value',[None,True,[],{},'jacobi','CUDA'])
 def test_bad_config_rejected_before_gpu(value,monkeypatch):
-    monkeypatch.setattr(cli,'_run_configuration',lambda *args,**kwargs:pytest.fail('analysis entered'))
+    monkeypatch.setattr(torch.cuda,'init',lambda:pytest.fail('GPU initialized'))
     with pytest.raises(ValueError,match='weighted_eigensolver'):
-        cli.run_configuration({'weighted_eigensolver':value},device='cuda')
+        cli._weighted_eigensolver_settings({'weighted_eigensolver':value},'tf32','cuda')
 
 
 def mock_solver_factory(monkeypatch,api=None):
@@ -126,7 +127,7 @@ def test_other_thread_cannot_enter_or_use_active_pipeline_context(monkeypatch):
 
 def test_cpu_native_values_preserved_inside_selected_context_without_backend_load(monkeypatch):
     _,api,instances,_=mock_solver_factory(monkeypatch)
-    from staar_phewas import statistics
+    from fudan_wgs_toolkit import statistics
     covariance=torch.tensor([[2.,.25],[.25,3.]],dtype=torch.float32)
     weights=torch.tensor([[1.,2.,1.,3.],[2.,4.,3.,6.]],dtype=torch.float32)
     expected=weighted.native_weighted_spectra(covariance,weights)
@@ -138,7 +139,7 @@ def test_cpu_native_values_preserved_inside_selected_context_without_backend_loa
 
 
 def test_successful_selected_route_never_calls_original_torch_shape_recorder(monkeypatch):
-    from staar_phewas import statistics
+    from fudan_wgs_toolkit import statistics
     original=torch.linalg.eigvalsh
     def actual_api_boundary(matrices):
         return original(matrices,UPLO='U'),'cusolverDnSsyevjBatched'
@@ -152,52 +153,52 @@ def test_successful_selected_route_never_calls_original_torch_shape_recorder(mon
     assert torch.equal(result,torch.ones((1,2),dtype=torch.float64))
 
 
-def test_cli_owns_whole_run_and_post_close_report(monkeypatch):
+def test_shared_runtime_context_returns_post_close_eigen_report(monkeypatch):
     _,api,instances,_=mock_solver_factory(monkeypatch)
-    def analysis(config,**kwargs):
-        for _ in range(3):weighted._complete_eigvalsh(Tensor((1,33,33)))
-        return {'total_seconds':1.}
-    monkeypatch.setattr(cli,'_run_configuration',analysis)
-    report=cli.run_configuration({'weighted_eigensolver':'cusolver_batched'},device='cuda:0')
+    def analysis(*args,**kwargs):
+        with weighted.eigensolver_context('cusolver_batched') as state:
+            for _ in range(3):weighted._complete_eigvalsh(Tensor((1,33,33)))
+        return {'weighted_eigensolver_execution':state,
+                'weighted_spectrum_execution':weighted.execution_metadata()}
+    monkeypatch.setattr(runtime,'_run',analysis)
+    report=runtime.run_configuration([],cache_specs={},device='cuda:0')
     state=report['weighted_eigensolver_execution']
-    assert state['requested']=='cusolver_batched' and state['effective']=='cusolver_batched'
     assert state['selector']['backend']['closed'] and state['selector']['backend']['cleanup_completed']
     assert state['selector']['backend']['successful_calls']==3
     assert report['weighted_spectrum_execution']['actual_backend_calls']=={'cusolverDnSsyevjBatched':3}
-    assert report['total_seconds']>=1.
     assert len(instances)==1 and sum(call[0]=='destroy' for call in api.seen)==1
 
 
-def test_cli_body_failure_always_closes_and_restores(monkeypatch):
+def test_shared_runtime_failure_closes_solver_and_restores_threads(monkeypatch):
     _,api,instances,_=mock_solver_factory(monkeypatch)
-    def analysis(config,**kwargs):
-        weighted._complete_eigvalsh(Tensor((1,33,33)))
-        raise KeyboardInterrupt()
-    monkeypatch.setattr(cli,'_run_configuration',analysis)
-    with pytest.raises(KeyboardInterrupt):cli.run_configuration({},device='cuda')
+    previous=torch.get_num_threads()
+    def analysis(*args,**kwargs):
+        with weighted.eigensolver_context('cusolver_batched'):
+            weighted._complete_eigvalsh(Tensor((1,33,33)))
+            raise KeyboardInterrupt()
+    monkeypatch.setattr(runtime,'_run',analysis)
+    with pytest.raises(KeyboardInterrupt):runtime.run_configuration([],cache_specs={},cpu_threads=1)
     assert instances[0].backend.closed and weighted._SOLVER is None
     assert sum(call[0]=='destroy' for call in api.seen)==1
+    assert torch.get_num_threads()==previous and not runtime._LOCK.locked()
 
 
-def test_cli_reference_torch_does_not_create_selector(monkeypatch):
+def test_shared_runtime_torch_context_does_not_create_selector(monkeypatch):
     monkeypatch.setattr(weighted,'_make_solver',lambda _:pytest.fail('CPU/control loaded selector'))
-    monkeypatch.setattr(cli,'_run_configuration',lambda *args,**kwargs:{})
-    report=cli.run_configuration({'matmul_mode':'fp64','precision_control':True,
-        'weighted_eigensolver':'cusolver_batched'},device='cpu')
-    state=report['weighted_eigensolver_execution']
-    assert state['effective']=='torch' and state['selector'] is None
+    def analysis(*args,**kwargs):
+        with weighted.eigensolver_context('torch') as state:
+            torch.testing.assert_close(weighted._complete_eigvalsh(torch.eye(2)[None])[0],torch.ones((1,2)))
+        return {'weighted_eigensolver_execution':state}
+    monkeypatch.setattr(runtime,'_run',analysis)
+    report=runtime.run_configuration([],cache_specs={})
+    assert report['weighted_eigensolver_execution']['selector'] is None
 
 
-def test_cli_flag_explicitly_overrides_config(tmp_path,monkeypatch,capsys):
-    import json,sys
-    filename=tmp_path/'config.json'
-    filename.write_text(json.dumps({'weighted_eigensolver':'auto'}))
-    captured=[]
-    monkeypatch.setattr(cli,'run_configuration',lambda config,**kwargs:captured.append(config) or {})
-    monkeypatch.setattr(sys,'argv',['staar-phewas-torch',str(filename),'--weighted-eigensolver','torch'])
-    cli.main();capsys.readouterr()
-    assert captured==[{'weighted_eigensolver':'torch'}]
-    assert json.loads(filename.read_text())=={'weighted_eigensolver':'auto'}
+def test_solver_selection_is_independent_of_configuration_mutation():
+    configuration={'weighted_eigensolver':'auto'}
+    assert cli._weighted_eigensolver_settings(configuration,'tf32','cuda:0')['effective']=='cusolver_batched'
+    assert cli._weighted_eigensolver_settings(dict(configuration,weighted_eigensolver='torch'),'tf32','cuda:0')['effective']=='torch'
+    assert configuration=={'weighted_eigensolver':'auto'}
 
 
 def test_failed_context_factory_restores_scope_before_next_run(monkeypatch):

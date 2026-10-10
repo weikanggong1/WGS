@@ -1,7 +1,7 @@
 """CPU correctness units for compact Single packing; never a benchmark.
 
 The fake reader uses the actual six-state allele meanings, including partial
-calls. The materializer creates only tiny CPU tensors; no GPU or GDS is opened.
+calls. The materializer creates only tiny CPU tensors; no GPU or genotype is opened.
 """
 from collections import defaultdict
 from types import SimpleNamespace
@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.cache_runtime.single_batches import iter_effective_minor_blocks
-from staar_phewas.gds import _allele_frequency_summary
-from staar_phewas.gds_device import DeviceMinorBlock
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
+from fudan_wgs_toolkit.cache_runtime.single_batches import iter_effective_minor_blocks
+from fudan_wgs_toolkit.genotype import _allele_frequency_summary
+from fudan_wgs_toolkit.genotype_device import DeviceMinorBlock
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline
 
 
 class FakeMaterializer:
@@ -237,7 +237,7 @@ def test_large_sample_geometry_rejected_before_any_device_allocation():
     # No large tensor is constructed. Test the actual core estimate by shape.
     pipeline = PheWASPipeline.__new__(PheWASPipeline)
     pipeline.options = AnalysisOptions(memory_limit_gib=20.)
-    pipeline.gds = SimpleNamespace(genotype_raw_memory_bytes=256*2**20)
+    pipeline.genotype = SimpleNamespace(genotype_raw_memory_bytes=256*2**20)
     model = SimpleNamespace(n=339013, n_pheno=1, matmul_mode='tf32',
                             device='cpu', x=SimpleNamespace(shape=(339013, 23)))
     pipeline._limit(model, 2048, individual=True)
@@ -262,7 +262,7 @@ def pipeline_records(blocks, samples, n_variants, mac_cutoff=2):
     pipeline._minor_blocks = lambda *args, **kwargs: iter(blocks)
     pipeline._limit = lambda *args, **kwargs: None
     labels = np.asarray(['T', 'A', 'CG', 'G'])
-    pipeline.gds = SimpleNamespace(n_variants=n_variants,
+    pipeline.genotype = SimpleNamespace(n_variants=n_variants,
         read_field=lambda name, selected: np.full(len(selected), '1'),
         read_ref_alt=lambda selected: (labels[selected % 4], labels[(selected+1) % 4]))
     return [row for _, rows in pipeline.iter_individual_records('1', mac_cutoff=mac_cutoff,

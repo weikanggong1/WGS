@@ -3,9 +3,9 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.batch_statistics import _saddle_batch, staar_test_batch
-from staar_phewas.null_model import GaussianNullModel, KinshipSpectrum
-from staar_phewas.statistics import DegenerateTestError, annotation_weights, quadratic_form_sf, staar_test
+from fudan_wgs_toolkit.batch_statistics import _saddle_batch, association_test_batch
+from fudan_wgs_toolkit.null_model import GaussianNullModel, KinshipSpectrum
+from fudan_wgs_toolkit.statistics import DegenerateTestError, annotation_weights, quadratic_form_sf, association_test
 
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -19,19 +19,19 @@ def test_batched_masks_preserve_filtering_fields_order_and_workspace_fallback(de
                  annotations=[[10.], [20.], [30.]], names=["functional"], cmac=17.25)
     filtered = dict(three, maf=[.001, .005, .1], acat_calibration="gaussian_glm", dof=30)
     items = [three, filtered, three]
-    expected = [staar_test(**item) for item in items]
-    actual, info = staar_test_batch(items, return_diagnostics=True)
+    expected = [association_test(**item) for item in items]
+    actual, info = association_test_batch(items, return_diagnostics=True)
     assert info["weighted_matrices"] == 12
     assert info["eigen_batches"] == 2
     for result, reference in zip(actual, expected):
         assert list(result) == list(reference)
         for field in result:
             assert result[field] == pytest.approx(reference[field], rel=1e-7, abs=1e-10)
-    fallback, info = staar_test_batch(items, max_workspace_bytes=1, return_diagnostics=True)
+    fallback, info = association_test_batch(items, max_workspace_bytes=1, return_diagnostics=True)
     assert info["workspace_serial_masks"] == 3
     assert info["eigen_batches"] == 0
     assert fallback == expected
-    assert staar_test_batch([]) == []
+    assert association_test_batch([]) == []
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -57,7 +57,7 @@ def test_batched_negative_bound_matches_original_scalar_division(device):
     statistic = eigenvalues.new_tensor([1.9996])
     probability, compatibility = _saddle_batch(statistic, eigenvalues)
     assert bool(compatibility[0])
-    expected = 0.39548257230568734  # Original STAAR 0.9.9 Saddle.
+    expected = 0.39548257230568734  # Original WGS 0.9.9 Saddle.
     assert float(probability[0]) == pytest.approx(expected, abs=1e-10, rel=1e-7)
     assert quadratic_form_sf(statistic[0], eigenvalues[0]) == pytest.approx(expected, abs=1e-10, rel=1e-7)
 
@@ -88,7 +88,7 @@ def test_cpu_near_mean_fallback_preserves_original_route_and_zero_reference_rows
     diagonal = torch.tensor([.2, 1., 2.], dtype=torch.float64)
     item = dict(score=torch.sqrt(diagonal * .995), covariance=torch.diag(diagonal),
                 maf=[.001, .005, .009], mac=[20., 20., 20.])
-    expected = staar_test(**item)
+    expected = association_test(**item)
     original = torch.linalg.eigvalsh
     calls = []
 
@@ -97,7 +97,7 @@ def test_cpu_near_mean_fallback_preserves_original_route_and_zero_reference_rows
         return original(matrix, **kwargs)
 
     monkeypatch.setattr(torch.linalg, "eigvalsh", record)
-    actual, info = staar_test_batch([item], return_diagnostics=True)
+    actual, info = association_test_batch([item], return_diagnostics=True)
     assert info["compatibility_rows"] == 2
     assert info["precision_reference_rows"] == 0
     assert calls == [((2, 3, 3), torch.float64, "U"),
@@ -129,7 +129,7 @@ def test_small_cuda_compatibility_tail_reuses_batched_spectrum(monkeypatch):
         return value
 
     monkeypatch.setattr(torch.linalg, "eigvalsh", record)
-    results, info = staar_test_batch([item], return_diagnostics=True)
+    results, info = association_test_batch([item], return_diagnostics=True)
     assert info["compatibility_rows"] == 2
     assert calls == [(2, 3, 3)]
     for column, field in enumerate(["SKAT(1,25)", "SKAT(1,1)"]):
@@ -150,7 +150,7 @@ def test_small_cuda_workspace_singletons_use_natural_serial_mask(monkeypatch, ma
     item = dict(score=score, covariance=torch.diag(diagonal), maf=maf,
                 mac=torch.full_like(maf, 20), annotations=[[10.], [20.], [30.]],
                 names=["functional"])
-    reference = staar_test(**item)
+    reference = association_test(**item)
     original = torch.linalg.eigvalsh
     calls = []
 
@@ -159,7 +159,7 @@ def test_small_cuda_workspace_singletons_use_natural_serial_mask(monkeypatch, ma
         return original(matrix, **kwargs)
 
     monkeypatch.setattr(torch.linalg, "eigvalsh", record)
-    results, info = staar_test_batch([item], max_workspace_bytes=matrix_capacity * 4 * 8 * 3**2,
+    results, info = association_test_batch([item], max_workspace_bytes=matrix_capacity * 4 * 8 * 3**2,
                                     return_diagnostics=True)
     assert info["workspace_serial_masks"] == 1
     assert info["eigen_batches"] == 0

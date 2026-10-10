@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.gds import SparseMinorBlock
-from staar_phewas.null_model import GaussianNullModel
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
+from fudan_wgs_toolkit.genotype import SparseMinorBlock
+from fudan_wgs_toolkit.null_model import GaussianNullModel
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline
 
 
 class SourceFailure(RuntimeError):
@@ -124,7 +124,7 @@ def analysis(reader, monkeypatch, *, fail_score=False):
         monkeypatch.setattr(torch, "as_tensor", on_cpu)
 
     pipeline = PheWASPipeline.__new__(PheWASPipeline)
-    pipeline.models, pipeline.gds = [model], reader
+    pipeline.models, pipeline.genotype = [model], reader
     pipeline.options = AnalysisOptions(wrapper_semantics="base", annotation_block_size=3)
     pipeline.trait_rows, pipeline.union_rows = [np.arange(4)], np.arange(4)
     pipeline.resident_genotypes, pipeline.single_batch_optimization = True, True
@@ -134,7 +134,7 @@ def analysis(reader, monkeypatch, *, fail_score=False):
     pipeline._limit = lambda *args, **kwargs: None
     pipeline.region_indices = lambda *args: np.arange(reader.n_variants)
     pipeline.annotations = lambda *args, **kwargs: None
-    monkeypatch.setattr("staar_phewas.pipeline.variant_filter",
+    monkeypatch.setattr("fudan_wgs_toolkit.pipeline.variant_filter",
                         lambda *args: np.ones(reader.n_variants, dtype=bool))
     return pipeline
 

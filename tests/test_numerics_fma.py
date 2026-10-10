@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.numerics import reference_crossprod, reference_dot_execution_metadata
+from fudan_wgs_toolkit.numerics import reference_crossprod, reference_dot_execution_metadata
 
 
 def rational_fma(a, b, accumulator):
@@ -81,7 +81,7 @@ def test_ordinary_multiple_left_columns_keep_matrix_multiplication():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='Requires CUDA')
 @pytest.mark.parametrize('error_type', [RuntimeError, torch.OutOfMemoryError])
 def test_fma_preserves_other_execution_failures(monkeypatch, error_type):
-    from staar_phewas import _fma_cuda
+    from fudan_wgs_toolkit import _fma_cuda
     error = error_type('diagnostic execution failure')
 
     class FailingKernel:
@@ -101,7 +101,7 @@ def test_fma_preserves_other_execution_failures(monkeypatch, error_type):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='Requires CUDA')
 def test_fma_reports_incompatible_toolchain_without_fallback(monkeypatch):
-    from staar_phewas import _fma_cuda
+    from fudan_wgs_toolkit import _fma_cuda
     error = RuntimeError('Triton Error [CUDA]: device kernel image is invalid')
 
     class FailingKernel:

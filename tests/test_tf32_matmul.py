@@ -1,7 +1,7 @@
 """CPU API/layout contracts only; actual native TF32 requires real CUDA audit."""
 import pytest
 import torch
-from staar_phewas import tf32
+from fudan_wgs_toolkit import tf32
 
 
 def test_fp64_control_is_explicit_and_preserves_double_products():

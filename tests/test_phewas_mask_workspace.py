@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.binary_null import BinaryNullModel
-from staar_phewas.null_model import GaussianNullModel, KinshipSpectrum
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
-from staar_phewas.phewas_runtime.mask_limit import LimitedMaskPipeline
+from fudan_wgs_toolkit.binary_null import BinaryNullModel
+from fudan_wgs_toolkit.null_model import GaussianNullModel, KinshipSpectrum
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline
+from fudan_wgs_toolkit.phewas_runtime.mask_limit import LimitedMaskPipeline
 
 
 def gaussian_model(*, n=64, mode="tf32", rotations=False, n_pheno=1):

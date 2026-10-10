@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from staar_phewas.cache_runtime.prepared_prefetch import _prepared_nbytes, iter_prepared
+from fudan_wgs_toolkit.cache_runtime.prepared_prefetch import _prepared_nbytes, iter_prepared
 
 
 def wait_for(predicate, timeout=3.0):
@@ -238,8 +238,8 @@ class PreparedPrefetchContracts(unittest.TestCase):
         self.assertEqual(_prepared_nbytes(prepared, self.samples, variants), len(immutable))
 
     def test_actual_cpu_adapter_matches_synchronous_six_state_preparation(self):
-        from staar_phewas.cache_runtime.adapter_fast import CachedGDSAdapter
-        from staar_phewas.cache_runtime import sparse_codec_fast
+        from fudan_wgs_toolkit.cache_runtime.adapter_fast import CachedGenotypeAdapter
+        from fudan_wgs_toolkit.cache_runtime import sparse_codec_fast
 
         class Reader:
             n_variants = 7
@@ -266,8 +266,8 @@ class PreparedPrefetchContracts(unittest.TestCase):
         for samples in (np.arange(6), np.array([5, 1, 3]), np.empty(0, dtype=np.int64)):
             for cutoff in (None, 0, 2, 20):
                 with self.subTest(samples=samples, cutoff=cutoff):
-                    adapter = CachedGDSAdapter(Reader(), Frames(), own_reader=False)
-                    synchronous = CachedGDSAdapter(Reader(), Frames(), own_reader=False)
+                    adapter = CachedGenotypeAdapter(Reader(), Frames(), own_reader=False)
+                    synchronous = CachedGenotypeAdapter(Reader(), Frames(), own_reader=False)
                     blocks = [np.array([6, 0, 3]), np.array([4, 1, 5, 2]), np.empty(0, dtype=np.int64)]
                     actual = list(iter_prepared(adapter, blocks, samples, cutoff, max_bytes=64))
                     expected = [synchronous._prepare(block, samples, cutoff) for block in blocks]

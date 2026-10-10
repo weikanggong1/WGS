@@ -4,7 +4,7 @@ import struct
 import warnings
 import pytest
 import torch
-from staar_phewas import statistics as stats
+from fudan_wgs_toolkit import statistics as stats
 
 
 def outcome(function):
@@ -38,7 +38,7 @@ def test_cct_flags_preserve_bits_validation_priority_and_final_nan(p,w):
 
 
 def test_cct_validation_uses_one_six_flag_transfer(monkeypatch):
-    import staar_phewas._statistics_sync as sync
+    import fudan_wgs_toolkit._statistics_sync as sync
     calls=[];original=sync.host_flags
     def tracked(*flags):calls.append(len(flags));return original(*flags)
     monkeypatch.setattr(sync,'host_flags',tracked)
@@ -52,27 +52,27 @@ def test_w26_all_output_keys_types_bits_and_warnings(tail,special):
     labels=[f'annotation_{i}' for i in range(12)]
     p=torch.linspace(.01,.99,78,dtype=torch.float64).reshape(3,26)
     if special is not None:p[0,0]=special
-    reference=outcome(lambda:stats._staar_probability_fields(p,labels,tail_optimization=tail,batch_copy=False))
-    candidate=outcome(lambda:stats._staar_probability_fields(p,labels,tail_optimization=tail,batch_copy=True))
+    reference=outcome(lambda:stats._association_probability_fields(p,labels,tail_optimization=tail,batch_copy=False))
+    candidate=outcome(lambda:stats._association_probability_fields(p,labels,tail_optimization=tail,batch_copy=True))
     assert candidate==reference
     if special is None:
-        fields=stats._staar_probability_fields(p,labels,tail_optimization=tail)
+        fields=stats._association_probability_fields(p,labels,tail_optimization=tail)
         expected=[]
-        for method,combined in [('SKAT','STAAR-S'),('Burden','STAAR-B'),('ACAT-V','STAAR-A')]:
+        for method,combined in [('SKAT','WGS-S'),('Burden','WGS-B'),('ACAT-V','WGS-A')]:
             for beta in ('1,25','1,1'):
                 expected.extend([f'{method}({beta})']+[f'{method}({beta})-{label}' for label in labels]+[f'{combined}({beta})'])
-        assert list(fields)==expected+['ACAT-O','STAAR-O']
+        assert list(fields)==expected+['ACAT-O','WGS-O']
         assert len(fields)==86 and all(type(value) is float for value in fields.values())
         assert fields['SKAT(1,25)']==float(p[0,0])
-        assert fields['STAAR-S(1,25)']==stats.cct(p[0,:13],sync_light=tail)
-        assert fields['STAAR-O']==stats.cct(p.reshape(-1),sync_light=tail)
+        assert fields['WGS-S(1,25)']==stats.cct(p[0,:13],sync_light=tail)
+        assert fields['WGS-O']==stats.cct(p.reshape(-1),sync_light=tail)
 
 
 @pytest.mark.parametrize('shape',[(3,0),(0,26),(3,25),(2,26)])
 def test_empty_or_incomplete_probability_rows_fail(shape):
     for batch in (False,True):
         with pytest.raises(ValueError,match='complete FP64'):
-            stats._staar_probability_fields(torch.zeros(shape,dtype=torch.float64),
+            stats._association_probability_fields(torch.zeros(shape,dtype=torch.float64),
                 [f'a{i}' for i in range(12)],batch_copy=batch)
 
 
@@ -80,15 +80,15 @@ def test_empty_or_incomplete_probability_rows_fail(shape):
 @pytest.mark.parametrize('cct_flags',[False,True])
 @pytest.mark.parametrize('mac',[[2.,4.,6.],[20.,30.,40.],[2.,20.,30.]])
 def test_native_w26_whole_statistics_switches_match(monkeypatch,output_batch,cct_flags,mac):
-    from staar_phewas import _burden
+    from fudan_wgs_toolkit import _burden
     monkeypatch.setattr(_burden,'ieee_burden_product',lambda a,b,**kwargs:a@b)
     generator=torch.Generator().manual_seed(928)
     payload=dict(score=torch.tensor([.2,-.4,.7]),covariance=torch.eye(3),
         maf=[.001,.003,.006],mac=mac,
         annotations=10+30*torch.rand((3,12),generator=generator),
         names=[f'a{i}' for i in range(12)],matmul_mode='tf32',tail_optimization=True)
-    original=stats.staar_test(**payload,output_batch_optimization=False,cct_validation_optimization=False)
-    actual=stats.staar_test(**payload,output_batch_optimization=output_batch,cct_validation_optimization=cct_flags)
+    original=stats.association_test(**payload,output_batch_optimization=False,cct_validation_optimization=False)
+    actual=stats.association_test(**payload,output_batch_optimization=output_batch,cct_validation_optimization=cct_flags)
     assert list(actual)==list(original)
     assert len(actual)==88
     for key in actual:

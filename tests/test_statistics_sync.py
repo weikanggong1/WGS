@@ -3,8 +3,8 @@ import warnings
 import struct
 import pytest
 import torch
-from staar_phewas.statistics import _cct_tensor, _quadratic_form_sf_tensor, staar_test
-from staar_phewas._statistics_sync import bisection_root
+from fudan_wgs_toolkit.statistics import _cct_tensor, _quadratic_form_sf_tensor, association_test
+from fudan_wgs_toolkit._statistics_sync import bisection_root
 
 
 def reference_root(scaled, q):
@@ -70,8 +70,8 @@ def test_whole_statistics_cpu_exact_values():
     score=torch.tensor([.2,-.1,.5],dtype=torch.float64)
     covariance=torch.tensor([[2.,.1,.3],[.1,1.,.2],[.3,.2,3.]],dtype=torch.float64)
     payload=dict(score=score,covariance=covariance,maf=[.001,.002,.004],mac=[2.,4.,30.],annotations=[[10.,20.],[20.,40.],[30.,50.]])
-    reference=staar_test(**payload)
-    actual=staar_test(**payload,tail_optimization=True)
+    reference=association_test(**payload)
+    actual=association_test(**payload,tail_optimization=True)
     assert list(actual)==list(reference)
     assert actual==reference
     assert all(struct.pack("d",float(actual[key]))==struct.pack("d",float(value)) for key,value in reference.items())
@@ -119,7 +119,7 @@ def test_scaled_extremes_preserve_original_outcome(q,raw):
 
 
 def test_batch_tail_groups_validation_and_branch_host_transfers(monkeypatch):
-    import staar_phewas._statistics_sync as sync
+    import fudan_wgs_toolkit._statistics_sync as sync
     calls = []
     original = sync.host_flags
     def tracked(*flags):
@@ -141,8 +141,8 @@ def test_batch_tail_groups_validation_and_branch_host_transfers(monkeypatch):
     ([0.], [[0.]], RuntimeError),
 ])
 def test_batch_tail_validation_failure_priority(q, eigenvalues, error):
-    from staar_phewas._statistics_sync import quadratic_form_sf_batch
-    from staar_phewas.statistics import DegenerateTestError
+    from fudan_wgs_toolkit._statistics_sync import quadratic_form_sf_batch
+    from fudan_wgs_toolkit.statistics import DegenerateTestError
     expected = DegenerateTestError if error is RuntimeError else error
     with pytest.raises(expected):
         quadratic_form_sf_batch(torch.tensor(q, dtype=torch.float64),

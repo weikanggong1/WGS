@@ -1,6 +1,6 @@
 import copy,importlib.util,unittest
 import numpy as np
-from staar_phewas.cache_runtime import sparse_codec_fast as c
+from fudan_wgs_toolkit.cache_runtime import sparse_codec_fast as c
 ZSTD=importlib.util.find_spec('zstandard') is not None
 class Contracts(unittest.TestCase):
  def compare(self,s):

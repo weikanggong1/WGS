@@ -3,9 +3,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from staar_phewas.gds import SeqArrayGDS
-from staar_phewas.pipeline import PheWASPipeline, AnalysisOptions
-from staar_phewas.masks import VariantAnnotations, noncoding_masks, ncRNA_mask, promoter_overlaps
+from fudan_wgs_toolkit.pipeline import PheWASPipeline, AnalysisOptions
+from fudan_wgs_toolkit.masks import VariantAnnotations, noncoding_masks, ncRNA_mask, promoter_overlaps
 
 
 class MetadataFile:
@@ -35,27 +34,27 @@ class MetadataFile:
 
 
 def make_pipeline():
-    gds = MetadataFile()
+    genotype = MetadataFile()
     model = SimpleNamespace(n=1, sample_ids=np.asarray(["sample"]), family="gaussian", n_pheno=1, use_spa=False)
     names = ("GENCODE.Category", "GENCODE.Info", "GeneHancer", "CAGE", "DHS")
-    pipeline = PheWASPipeline(gds, [model], qc_path="qc", annotation_catalog={name:name for name in names},
+    pipeline = PheWASPipeline(genotype, [model], qc_path="qc", annotation_catalog={name:name for name in names},
                              options=AnalysisOptions(annotation_block_size=3))
-    return pipeline, gds
+    return pipeline, genotype
 
 
 def test_index_matches_selectors_and_utr_does_not_read_signal_fields():
-    pipeline, gds = make_pipeline()
+    pipeline, genotype = make_pipeline()
     index = pipeline.prepare_annotation_index("21", categories=["UTR"], include_ncrna=False)
     assert index.indices("A", "UTR").tolist() == [2]
-    assert not set(("CAGE", "DHS", "GeneHancer")) & set(gds.calls)
-    calls = len(gds.calls)
+    assert not set(("CAGE", "DHS", "GeneHancer")) & set(genotype.calls)
+    calls = len(genotype.calls)
     assert pipeline.prepare_annotation_index("21", categories=["UTR"], include_ncrna=False) is index
-    assert len(gds.calls) == calls
+    assert len(genotype.calls) == calls
     intervals = [("21", 15, 45), ("chr21", 40, 75)]
     index = pipeline.prepare_annotation_index("21", promoter_intervals=intervals)
-    a = VariantAnnotations(gds.data["position"], gds.data["qc"],
-                           {name:gds.data[name] for name in pipeline.annotation_catalog},
-                           ref=gds.data["ref"], alt=gds.data["alt"], chromosome=gds.data["chromosome"])
+    a = VariantAnnotations(genotype.data["position"], genotype.data["qc"],
+                           {name:genotype.data[name] for name in pipeline.annotation_catalog},
+                           ref=genotype.data["ref"], alt=genotype.data["alt"], chromosome=genotype.data["chromosome"])
     overlaps = promoter_overlaps(a.position, a.chromosome, intervals)
     for gene in ("A", "B", "C", "D"):
         expected = noncoding_masks(a, gene, promoter_overlap=overlaps, chromosome="21")
@@ -64,20 +63,3 @@ def test_index_matches_selectors_and_utr_does_not_read_signal_fields():
             np.testing.assert_array_equal(index.indices(gene, category), rows)
     with pytest.raises(ValueError, match="different promoter"):
         pipeline.prepare_annotation_index("21", promoter_intervals=[("21", 1, 100)])
-
-
-def test_bounded_metadata_reader_preserves_requested_order_and_axis():
-    class Node:
-        def __init__(self):
-            self.values = np.arange(400_002).reshape(200_001, 2)
-            self.calls = []
-        def description(self): return {"dim": self.values.shape}
-        def read(self, start, count):
-            self.calls.append((start, count))
-            return self.values[start[0]:start[0]+count[0], start[1]:start[1]+count[1]]
-    node = Node()
-    reader = SeqArrayGDS.__new__(SeqArrayGDS)
-    rows = np.asarray([199_999, 2, 65_000, 1, 131_111])
-    actual = reader._read_axis(node, rows, 200_001)
-    np.testing.assert_array_equal(actual, node.values[rows])
-    assert all(count[0] <= 65_536 for _, count in node.calls)

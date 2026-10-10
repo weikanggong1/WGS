@@ -2,8 +2,8 @@
 import threading
 import unittest
 
-from staar_phewas.cuda_eigen import FP32SmallSpectrumSolver
-from staar_phewas.cuda_eigen import _backend as backend_module
+from fudan_wgs_toolkit.cuda_eigen import FP32SmallSpectrumSolver
+from fudan_wgs_toolkit.cuda_eigen import _backend as backend_module
 from test_cuda_eigen_backend import API, Torch, Tensor
 
 

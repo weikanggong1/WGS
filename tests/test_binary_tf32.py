@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.binary_null import BinaryNullModel, binary_prefitted_state
-from staar_phewas.io import load_null_model, save_null_model
+from fudan_wgs_toolkit.binary_null import BinaryNullModel, binary_prefitted_state
+from fudan_wgs_toolkit.io import load_null_model, save_null_model
 
 
 def state(*, mode="fp64", device="cpu", use_spa=False, sparse=False):
@@ -87,7 +87,7 @@ def test_binary_mode_conversion_preserves_fitted_state():
 @pytest.mark.parametrize("sparse", [False, True])
 def test_binary_typed_load_roundtrip(tmp_path, mode, sparse):
     model = state(sparse=sparse)
-    model.gds_sample_ids = np.asarray([f"raw_{i}" for i in range(model.n)])
+    model.genotype_sample_ids = np.asarray([f"raw_{i}" for i in range(model.n)])
     model.set_matmul_mode(mode)
     path = tmp_path / "model.npz"
     save_null_model(model, path)
@@ -100,7 +100,7 @@ def test_binary_typed_load_roundtrip(tmp_path, mode, sparse):
     assert loaded.family == "binomial" and not loaded.use_spa
     assert loaded.matmul_mode == mode and loaded.source_matmul_mode == "fp64"
     assert loaded.has_kinship
-    np.testing.assert_array_equal(loaded.gds_sample_ids, model.gds_sample_ids)
+    np.testing.assert_array_equal(loaded.genotype_sample_ids, model.genotype_sample_ids)
     for field in ("x", "scaled_residuals", "precision_x", "fixed_effect_covariance",
                   "phenotype", "working_phenotype", "precision"):
         original, restored = getattr(model, field), getattr(loaded, field)
@@ -155,7 +155,7 @@ def test_binary_tf32_core_calls_selected_products(monkeypatch):
     def selected_product(a, b, *, mode):
         calls.append((mode, a.dtype, b.dtype))
         return a @ b
-    monkeypatch.setattr("staar_phewas.binary_null.matmul", selected_product)
+    monkeypatch.setattr("fudan_wgs_toolkit.binary_null.matmul", selected_product)
     g = torch.tensor([[0., 1.], [1., 0.], [0., 0.], [2., 0.], [0., 1.], [1., 1.]])
     score, covariance = model.score_covariance(g)
     single_score, variance = model.individual_score_variance(g)

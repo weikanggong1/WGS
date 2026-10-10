@@ -3,11 +3,11 @@ from collections import OrderedDict
 import numpy as np
 import pytest
 import torch
-from staar_phewas.local_mask_reuse import ordered_mask_columns, valid_index_sets
-from staar_phewas.pipeline import PheWASPipeline, AnalysisOptions
-from staar_phewas.null_model import fit_gaussian_null
-from staar_phewas.masks import VariantAnnotations
-from staar_phewas.profiling import StageProfiler
+from fudan_wgs_toolkit.local_mask_reuse import ordered_mask_columns, valid_index_sets
+from fudan_wgs_toolkit.pipeline import PheWASPipeline, AnalysisOptions
+from fudan_wgs_toolkit.null_model import fit_gaussian_null
+from fudan_wgs_toolkit.masks import VariantAnnotations
+from fudan_wgs_toolkit.profiling import StageProfiler
 
 
 def pipeline_fixture(*, mode="tf32", max_count=100, max_prefilter=100):
@@ -167,12 +167,12 @@ def test_original_semantic_rare_count_error_is_not_swallowed():
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_weight_batch_flag_forwarded_to_independent_mask_statistics(monkeypatch, enabled):
-    import staar_phewas.pipeline as module
+    import fudan_wgs_toolkit.pipeline as module
     candidate = pipeline_fixture()
     candidate.weight_batch_optimization = enabled
     candidate.statistics_tail_optimization = False
     captured = {}
-    monkeypatch.setattr(module, "staar_test", lambda **kwargs: captured.update(kwargs) or {})
+    monkeypatch.setattr(module, "association_test", lambda **kwargs: captured.update(kwargs) or {})
     # Use the original evaluator instead of the index-contract mock.
     PheWASPipeline._evaluate_prepared(candidate, {}, candidate.models[0])
     assert captured["weight_batch_optimization"] is enabled
@@ -258,7 +258,7 @@ def test_union_gpu_guard_uses_actual_eligible_rare_not_raw_candidates(monkeypatc
 
 
 def test_covariance_geometry_rejects_disjoint_but_accepts_nested_rare_masks():
-    from staar_phewas.local_mask_reuse import union_covariance_geometry
+    from fudan_wgs_toolkit.local_mask_reuse import union_covariance_geometry
     disjoint = union_covariance_geometry([0, 1, 2, 3], [[0, 1], [2, 3]], minimum_variants=2)
     assert disjoint == {"union_covariance_cells": 16, "mask_covariance_cells": 8, "beneficial": False}
     nested = union_covariance_geometry([0, 1, 2], [[0, 1, 2], [1, 2]], minimum_variants=2)
@@ -350,7 +350,7 @@ def test_union_recovery_does_not_retry_a_failing_individual_mask():
 def test_cuda_recovery_cleanup_order_without_initializing_cuda(monkeypatch):
     import gc
     from contextlib import nullcontext
-    from staar_phewas.local_mask_reuse import release_failed_union
+    from fudan_wgs_toolkit.local_mask_reuse import release_failed_union
     events = []
     monkeypatch.setattr(gc, "collect", lambda: events.append("gc"))
     monkeypatch.setattr(torch.cuda, "synchronize", lambda device: events.append(("sync", device)))
@@ -361,7 +361,7 @@ def test_cuda_recovery_cleanup_order_without_initializing_cuda(monkeypatch):
 
 
 def test_nonallocation_union_exception_propagates_without_cleanup(monkeypatch):
-    from staar_phewas import local_mask_reuse
+    from fudan_wgs_toolkit import local_mask_reuse
     monkeypatch.setattr(local_mask_reuse, "release_failed_union", lambda device: pytest.fail("numerical error cleanup"))
     def invalid():
         raise ValueError("invalid score data")
@@ -385,7 +385,7 @@ def test_geometry_fallback_reuses_host_preparation_and_matches_per_mask():
 
 @pytest.mark.parametrize('fallback', ['none', 'memory', 'geometry'])
 def test_direct_host_fp32_gene_and_union_fallback_match_old_preparation(monkeypatch, fallback):
-    from staar_phewas.gds import SparseMinorBlock
+    from fudan_wgs_toolkit.genotype import SparseMinorBlock
     genotype = (np.arange(48).reshape(8, 6) % 3).astype(float)
     genotype[[1, 4, 7], [0, 2, 3]] = np.nan
     def make_pipeline():
@@ -433,26 +433,43 @@ def test_direct_host_fp32_gene_and_union_fallback_match_old_preparation(monkeypa
     assert all(item[0]['score'].dtype == torch.float32 for item in actual)
 
 
+
+
 def resident_family_fixture(*, resident):
-    from tests.test_gds_allele_summary import fake_reader
-    from staar_phewas.gds_cuda import native_minor_block
-    calls = np.zeros((6,8,2),dtype=np.int64)
-    calls[:,0,1] = 1; calls[1:4,1,1] = 1
-    calls[0,6] = [0,3];calls[2,7] = [3,3]
-    calls[4,:,1] = 1  # Source/common-frequency column must not enter rare UV.
-    calls[5] = 3  # all-missing
-    reader = fake_reader(calls,[1]*6)
+    """Equivalent sparse and device dosage views, independent of source SDKs."""
+    from fudan_wgs_toolkit.genotype import SparseMinorBlock, _allele_frequency_summary
+    from fudan_wgs_toolkit.genotype_device import DeviceMinorBlock
+    calls = np.zeros((6, 8, 2), dtype=np.int64)
+    calls[:, 0, 1] = 1
+    calls[1:4, 1, 1] = 1
+    calls[0, 6] = [0, 3]
+    calls[2, 7] = [3, 3]
+    calls[4, :, 1] = 1
+    calls[5] = 3
     pipeline = pipeline_fixture()
-    pipeline.trait_rows = [np.array([5,2,0,6,1,4,3,7])]
-    pipeline._resident_gene_reader_options = lambda indices: dict(device='cpu',resident=True) if resident else {}
+    pipeline.trait_rows = [np.array([5, 2, 0, 6, 1, 4, 3, 7])]
+    pipeline._resident_gene_reader_options = lambda indices: dict(device='cpu', resident=True) if resident else {}
+
     def blocks(indices, rows, block_size, **kwargs):
         pipeline.reads.append(np.asarray(indices).copy())
-        for offset in range(0,len(indices),block_size):
+        for offset in range(0, len(indices), block_size):
             columns = np.asarray(indices)[offset:offset+block_size]
+            values = calls[columns][:, rows, :]
+            reference = (values == 0).sum(axis=(1, 2), dtype=np.int64)
+            called = (values != 3).sum(axis=(1, 2), dtype=np.int64)
+            af, missing, mac, ref_ac, called_ac = _allele_frequency_summary(reference, called, len(rows))
+            alt = (values == 1).sum(axis=2).T
+            dosage = np.where(af >= .5, alt, 2-alt).astype(np.uint8)
+            dosage[(values == 3).any(axis=2).T] = 3
             if resident:
-                yield native_minor_block(reader,columns,rows,device='cpu',resident=True)
+                yield DeviceMinorBlock(torch.as_tensor(dosage), np.asarray(rows), columns,
+                                       af, mac, missing, ref_ac, called_ac)
             else:
-                yield reader.minor_block(columns,rows)
+                dense = dosage.astype(np.float64)
+                dense[dosage == 3] = np.nan
+                row, col = np.nonzero((dense != 0) | np.isnan(dense))
+                yield SparseMinorBlock(row, col, dense[row, col], np.asarray(rows), columns,
+                                       af, mac, missing, ref_ac, called_ac)
     pipeline._minor_blocks = blocks
     return pipeline
 
@@ -462,7 +479,7 @@ def resident_family_fixture(*, resident):
 @pytest.mark.parametrize('fallback', ['none','geometry','memory','oom'])
 def test_resident_gene_matches_host_masks_and_never_rereads(monkeypatch, semantics, imputation, fallback):
     from dataclasses import replace
-    from staar_phewas.gds_device import DeviceMinorBlock
+    from fudan_wgs_toolkit.genotype_device import DeviceMinorBlock
     masks = ([np.array([1,0]),np.array([3,2])] if fallback=='geometry'
              else [np.array([2,0,1,4]),np.array([1,3,2,5])])
     host=resident_family_fixture(resident=False);candidate=resident_family_fixture(resident=True)
@@ -513,13 +530,13 @@ def test_resident_decoder_failure_propagates_without_cpu_reread():
 
 @pytest.mark.parametrize('binding',['cap','live','fits'])
 def test_resident_gene_route_guard_uses_storage_and_decoder_before_read(monkeypatch,binding):
-    import staar_phewas.pipeline as module
+    import fudan_wgs_toolkit.pipeline as module
     from types import SimpleNamespace
     pipeline=PheWASPipeline.__new__(PheWASPipeline)
     pipeline.resident_genotypes=True;pipeline.union_rows=np.arange(100)
     pipeline.options=AnalysisOptions(memory_limit_gib=.5)
     pipeline.local_mask_reuse_counters={}
-    pipeline.gds=SimpleNamespace(_flat_reader=object(),genotype_raw_memory_bytes=1024,n_samples=1000)
+    pipeline.genotype=SimpleNamespace(_flat_reader=object(),genotype_raw_memory_bytes=1024,n_samples=1000)
     model=SimpleNamespace(n_pheno=1,use_spa=False,matmul_mode='tf32',device='cuda:0')
     pipeline.models=[model];monkeypatch.setattr(module,'GaussianNullModel',SimpleNamespace)
     monkeypatch.setattr(torch.cuda,'memory_allocated',lambda *a: 400*2**20 if binding=='cap' else 0)
@@ -532,7 +549,7 @@ def test_resident_gene_route_guard_uses_storage_and_decoder_before_read(monkeypa
 
 def test_resident_phewas_subset_rows_match_original_frequency_and_no_dense_early(monkeypatch):
     from dataclasses import replace
-    from staar_phewas.gds_device import DeviceMinorBlock
+    from fudan_wgs_toolkit.genotype_device import DeviceMinorBlock
     host=resident_family_fixture(resident=False);candidate=resident_family_fixture(resident=True)
     for pipeline in (host,candidate):
         pipeline.options=replace(pipeline.options,wrapper_semantics='phewas',rare_maf_cutoff=.4)
@@ -594,8 +611,8 @@ def test_resident_materialization_preserves_old_column_major_score_layout(semant
 
 
 def test_small_tile_real_47_37_10_shape_work_uses_actual_backend(monkeypatch):
-    from staar_phewas.local_mask_reuse import small_native_union_work
-    import staar_phewas.tf32 as backend
+    from fudan_wgs_toolkit.local_mask_reuse import small_native_union_work
+    import fudan_wgs_toolkit.tf32 as backend
     masks=[np.arange(37),np.arange(37,47)]
     cost=small_native_union_work(np.arange(47),masks,minimum_variants=2,samples=42652,covariates=20)
     assert cost['beneficial']
@@ -613,7 +630,7 @@ def test_small_tile_real_47_37_10_shape_work_uses_actual_backend(monkeypatch):
 
 @pytest.mark.parametrize('excluded',['large','zero_covariates','fp64','multiple','rotations','spa'])
 def test_small_tile_gate_excludes_other_model_scopes(monkeypatch,excluded):
-    import staar_phewas.pipeline as module
+    import fudan_wgs_toolkit.pipeline as module
     from types import SimpleNamespace
     pipeline=PheWASPipeline.__new__(PheWASPipeline)
     pipeline.options=AnalysisOptions()
@@ -631,7 +648,7 @@ def test_small_tile_gate_excludes_other_model_scopes(monkeypatch,excluded):
 
 
 def test_small_tile_gate_keeps_old_gate_and_rejects_mixed_vector_routes(monkeypatch):
-    from staar_phewas.local_mask_reuse import small_native_union_work
+    from fudan_wgs_toolkit.local_mask_reuse import small_native_union_work
     # One variant mask changes cross/covariance routes, so unlike compute
     # classes cannot be silently combined into a TF32 lane-cost comparison.
     cost=small_native_union_work(np.arange(4),[[0],[1,2,3]],minimum_variants=1,samples=42652,covariates=20)
@@ -665,8 +682,8 @@ def test_small_tile_accepts_actual_rare_decoded_union_without_second_read():
 
 @pytest.mark.parametrize('product_shape',[(20,47,42652),(47,47,42652),(47,20,20),(47,47,20)])
 def test_small_tile_rejects_if_any_individual_product_cost_increases(monkeypatch,product_shape):
-    from staar_phewas.local_mask_reuse import small_native_union_work
-    import staar_phewas.tf32 as backend
+    from fudan_wgs_toolkit.local_mask_reuse import small_native_union_work
+    import fudan_wgs_toolkit.tf32 as backend
     original=backend._native_geometry
     def geometry(m,n,k):
         bm,bn,bk,warps,stages=original(m,n,k)
@@ -679,7 +696,7 @@ def test_small_tile_rejects_if_any_individual_product_cost_increases(monkeypatch
 
 
 def test_intercept_real_47_case_independent_routes_and_bounded_outer():
-    from staar_phewas.local_mask_reuse import small_native_union_work
+    from fudan_wgs_toolkit.local_mask_reuse import small_native_union_work
     cost=small_native_union_work(np.arange(47),[np.arange(37),np.arange(37,47)],
                                 minimum_variants=2,samples=42652,covariates=1)
     assert cost['beneficial'] and cost['policy']=='intercept_independent_routes'
@@ -699,7 +716,7 @@ def test_intercept_real_47_case_independent_routes_and_bounded_outer():
 
 @pytest.mark.parametrize('size,first,accepted',[(64,37,True),(64,32,False),(65,37,False)])
 def test_intercept_outer_shape_limit_and_strict_mma_saving(size,first,accepted):
-    from staar_phewas.local_mask_reuse import small_native_union_work
+    from fudan_wgs_toolkit.local_mask_reuse import small_native_union_work
     cost=small_native_union_work(np.arange(size),[np.arange(first),np.arange(first,size)],
                                 minimum_variants=2,samples=42652,covariates=1)
     assert cost['beneficial'] is accepted
@@ -712,7 +729,7 @@ def test_intercept_outer_shape_limit_and_strict_mma_saving(size,first,accepted):
 
 
 def test_intercept_rejects_vector_work_increase_despite_covariance_saving():
-    from staar_phewas.local_mask_reuse import small_native_union_work
+    from fudan_wgs_toolkit.local_mask_reuse import small_native_union_work
     cost=small_native_union_work(np.arange(47),[np.arange(37),np.arange(37,42)],
                                 minimum_variants=2,samples=42652,covariates=1)
     assert cost['union']['covariance']['work']<cost['separate']['covariance']
@@ -721,8 +738,8 @@ def test_intercept_rejects_vector_work_increase_despite_covariance_saving():
 
 
 def test_intercept_rejects_changed_backend_route(monkeypatch):
-    import staar_phewas.tf32 as backend
-    from staar_phewas.local_mask_reuse import small_native_union_work
+    import fudan_wgs_toolkit.tf32 as backend
+    from fudan_wgs_toolkit.local_mask_reuse import small_native_union_work
     original=backend._native_route
     monkeypatch.setattr(backend,'_native_route',lambda a,b:'gemv' if a[1]==1 and a[0]==47 and b[1]==47 else original(a,b))
     cost=small_native_union_work(np.arange(47),[np.arange(37),np.arange(37,47)],

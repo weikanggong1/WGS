@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from staar_phewas.cache_runtime.cohort_compact_cache import CohortCompactCache, MAGIC
-from staar_phewas.cache_runtime import cohort_compact_cache, sparse_codec_fast, sparse_decode_fast
+from fudan_wgs_toolkit.cache_runtime.cohort_compact_cache import CohortCompactCache, MAGIC
+from fudan_wgs_toolkit.cache_runtime import cohort_compact_cache, sparse_codec_fast, sparse_decode_fast
 
 
 BINDING = {"population_sha256": "a" * 64, "decoder_sha256": "b" * 64}
@@ -270,7 +270,7 @@ class CohortCompactCacheContracts(unittest.TestCase):
 
     def test_failed_atomic_publish_keeps_budget_reserved_until_recovery(self):
         vv, ss, value = prepared()
-        with patch("staar_phewas.cache_runtime.cohort_compact_cache.os.replace", side_effect=OSError("injected")):
+        with patch("fudan_wgs_toolkit.cache_runtime.cohort_compact_cache.os.replace", side_effect=OSError("injected")):
             with self.assertRaises(OSError):
                 self.cache.store(vv, ss, None, value)
         with sqlite3.connect(self.cache.index) as connection:

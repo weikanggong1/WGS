@@ -3,7 +3,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 import pytest
 import torch
-from staar_phewas import tf32
+from fudan_wgs_toolkit import tf32
 
 
 @pytest.mark.parametrize('ld,rd',[(torch.float32,torch.float32),(torch.float64,torch.float32),(torch.float32,torch.float64),(torch.float64,torch.float64)])

@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.phewas_runtime import runtime
-from torchstaar_phewas import cli
+from fudan_wgs_toolkit.phewas_runtime import runtime
+from fudan_wgs_toolkit import cli
 
 
 @pytest.mark.parametrize('requested', [1, 2, 4])
@@ -96,51 +96,37 @@ def test_effective_setting_must_match_request(monkeypatch):
     assert calls == [3, 7] and not runtime._LOCK.locked()
 
 
-@pytest.mark.parametrize('config_threads,override,expected', [(None, None, None), (3, None, 3), (3, 4, 4), (None, 4, 4)])
-def test_cli_cpu_threads_overrides_shared_option_without_mutating_input(tmp_path, monkeypatch, config_threads, override, expected):
-    config = {'analyses': [], 'caches': [], 'shared_options': {'device_cache_bytes': 123}}
-    if config_threads is not None:
-        config['shared_options']['cpu_threads'] = config_threads
-    original = deepcopy(config)
-    path, report_path = tmp_path / 'configuration.json', tmp_path / 'report.json'
-    path.write_text(json.dumps(config))
-    calls = []
-    monkeypatch.setattr(cli, 'configuration_inputs', lambda value: (['plan'], {'cache': 'spec'}))
-    monkeypatch.setattr(cli, 'run_configuration', lambda analyses, **options: calls.append((analyses, options)) or {'complete': True})
-    arguments = [str(path), '--report', str(report_path)]
-    if override is not None:
-        arguments += ['--cpu-threads', str(override)]
+@pytest.mark.parametrize('requested', [None, 1, 8])
+def test_public_cli_cpu_threads_are_forwarded_without_reading_inputs(tmp_path, monkeypatch, requested):
+    from fudan_wgs_toolkit import run as public
+    calls=[]
+    monkeypatch.setattr(public,'run_WGS_all',lambda **arguments:calls.append(arguments) or {'completed':True})
+    arguments=['phenotypes.csv','covariates.csv','prepared','--output-directory',str(tmp_path/'results')]
+    if requested is not None:arguments+=['--cpu-threads',str(requested)]
     cli.main(arguments)
-    assert calls[0][0] == ['plan'] and calls[0][1]['device_cache_bytes'] == 123
-    if expected is None:
-        assert 'cpu_threads' not in calls[0][1]  # public Python default is the authority
-    else:
-        assert calls[0][1]['cpu_threads'] == expected
-    assert json.loads(path.read_text()) == original
-    assert json.loads(report_path.read_text()) == {'complete': True}
+    assert calls[0]['cpu_threads']==(8 if requested is None else requested)
+    assert calls[0]['prepared_directory']=='prepared'
 
 
-@pytest.mark.parametrize('value', ['0', '-2', '1.5', 'True'])
-def test_cli_rejects_nonpositive_or_noninteger_thread_flags_before_input_read(tmp_path, value):
+@pytest.mark.parametrize('value', ['0','-2','1.5','True'])
+def test_cli_rejects_invalid_threads_before_input_reads(tmp_path,value):
     with pytest.raises(SystemExit) as error:
-        cli.main([str(tmp_path / 'missing.json'), '--report', str(tmp_path / 'report.json'), '--cpu-threads', value])
-    assert error.value.code == 2 and not (tmp_path / 'report.json').exists()
+        cli.main(['missing.csv','missing_covariates.csv','missing_prepared',
+                  '--output-directory',str(tmp_path/'results'),'--cpu-threads',value])
+    assert error.value.code==2 and not (tmp_path/'results').exists()
 
 
-@pytest.mark.parametrize('value', [True, False, 0, -1, 1.5, '2', None])
-def test_json_cpu_threads_use_strict_python_validation(tmp_path, monkeypatch, value):
-    path, report = tmp_path / 'config.json', tmp_path / 'report.json'
-    path.write_text(json.dumps({'analyses': [], 'caches': [], 'shared_options': {'cpu_threads': value}}))
-    monkeypatch.setattr(cli, 'configuration_inputs', lambda config: ([], {}))
-    monkeypatch.setattr(runtime, '_run', lambda *args, **kwargs: pytest.fail('invalid threads must not run'))
-    with pytest.raises(ValueError, match='positive integer'):
-        cli.main([str(path), '--report', str(report)])
-    assert not report.exists()
+@pytest.mark.parametrize('value',[True,False,0,-1,1.5,'2',None])
+def test_public_python_cpu_threads_fail_before_input_read(tmp_path,monkeypatch,value):
+    from fudan_wgs_toolkit.run import run_WGS_all
+    monkeypatch.setattr(runtime,'_run',lambda *args,**kwargs:pytest.fail('invalid threads ran'))
+    with pytest.raises(ValueError,match='positive integer'):
+        run_WGS_all('missing.csv','missing_covariates.csv','missing_prepared',
+                    output_directory=tmp_path/'results',cpu_threads=value)
+    assert not (tmp_path/'results').exists()
 
 
-def test_cpu_workers_remains_an_unknown_option(tmp_path, monkeypatch):
-    path = tmp_path / 'config.json'
-    path.write_text(json.dumps({'analyses': [], 'caches': [], 'shared_options': {'cpu_workers': 4}}))
-    monkeypatch.setattr(cli, 'configuration_inputs', lambda config: ([], {}))
-    with pytest.raises(ValueError, match='unknown shared options'):
-        cli.main([str(path), '--report', str(tmp_path / 'report.json')])
+def test_retired_cpu_worker_flag_is_not_a_public_option(tmp_path):
+    with pytest.raises(SystemExit) as error:
+        cli.main(['a.csv','b.csv','prepared','--output-directory',str(tmp_path/'results'),'--cpu-workers','4'])
+    assert error.value.code==2

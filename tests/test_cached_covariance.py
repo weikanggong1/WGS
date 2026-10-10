@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas._cached_covariance import (
+from fudan_wgs_toolkit._cached_covariance import (
     _release_unused_cuda_blocks, cached_workspace_estimate,
     plan_cached_workspace, score_covariance_cached,
 )
-from staar_phewas.null_model import GaussianNullModel, KinshipSpectrum
+from fudan_wgs_toolkit.null_model import GaussianNullModel, KinshipSpectrum
 
 
 GIB = 2**30
@@ -166,8 +166,8 @@ def test_cache_cleanup_remeasures_selected_device_and_never_assumes_all_fragment
 
 
 def test_long_cached_pipeline_guard_cleans_before_planning_and_uses_fresh_budget(monkeypatch):
-    import staar_phewas._cached_covariance as cached
-    from staar_phewas.pipeline import PheWASPipeline
+    import fudan_wgs_toolkit._cached_covariance as cached
+    from fudan_wgs_toolkit.pipeline import PheWASPipeline
     pipeline = PheWASPipeline.__new__(PheWASPipeline)
     pipeline.options = SimpleNamespace(sample_block_size=None, long_mask_threshold=5000,
         covariance_backend="cached", cached_variant_tile_size=4096,
@@ -298,7 +298,7 @@ def _cuda_model(n):
 @pytest.mark.parametrize("layout", ["C", "F"])
 @pytest.mark.parametrize("m", [513, 4097, 4609])
 def test_cuda_full_and_two4096_panels_match_legacy512_at_tail_boundary(layout, m):
-    from staar_phewas import tf32
+    from fudan_wgs_toolkit import tf32
     if torch.cuda.get_device_capability(0)[0] < 8:
         pytest.skip("native TF32 requires Ampere or newer")
     pytest.importorskip("triton")
@@ -336,7 +336,7 @@ def test_cuda_full_and_two4096_panels_match_legacy512_at_tail_boundary(layout, m
 
 
 def _cuda_binary_model(n):
-    from staar_phewas.binary_null import binary_prefitted_state
+    from fudan_wgs_toolkit.binary_null import binary_prefitted_state
     x = np.column_stack((np.ones(n), np.arange(n) / n, np.arange(n) % 7 / 7)).astype(np.float32)
     precision = (.1 + np.arange(n) % 5 / 25).astype(np.float32)
     sx = precision[:, None] * x
@@ -358,7 +358,7 @@ def _cuda_binary_model(n):
 def test_cuda_budget_reduces_actual_product_width_and_matches_legacy512(
         monkeypatch, family, layout, n, m, effective, full):
     import importlib
-    from staar_phewas import tf32
+    from fudan_wgs_toolkit import tf32
     if torch.cuda.get_device_capability(0)[0] < 8:
         pytest.skip("native TF32 requires Ampere or newer")
     pytest.importorskip("triton")
@@ -418,7 +418,7 @@ def test_cuda_budget_reduces_actual_product_width_and_matches_legacy512(
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA allocator cleanup contract")
 def test_cuda_cleanup_releases_deleted_scratch_and_preserves_live_tensor():
-    from staar_phewas import tf32
+    from fudan_wgs_toolkit import tf32
     tf32.configure_tf32(memory_limit_gib=20, split_k=0)
     device = torch.device("cuda:0")
     live = torch.arange(1025, dtype=torch.float32, device=device)

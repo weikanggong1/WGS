@@ -2,8 +2,8 @@
 from types import SimpleNamespace
 import numpy as np
 import pytest
-from staar_phewas.cli import _bind_gds_samples
-from staar_phewas.pipeline import PheWASPipeline
+from fudan_wgs_toolkit.cli import _bind_genotype_samples
+from fudan_wgs_toolkit.pipeline import PheWASPipeline
 
 
 class Shard:
@@ -23,22 +23,22 @@ def model(ids):
 
 
 def test_cached_identity_remaps_reordered_shard():
-    fitted=model(["101","102"])
-    first=_bind_gds_samples(Shard(["s_101","s_102"]),fitted,np.asarray([0,1]))
-    second=_bind_gds_samples(Shard(["s_102","s_101"]),fitted,np.asarray([0,1]))
+    fitted=model(["s_101","s_102"])
+    first=_bind_genotype_samples(Shard(["s_101","s_102"]),fitted,np.asarray([0,1]))
+    second=_bind_genotype_samples(Shard(["s_102","s_101"]),fitted)
     assert first.tolist()==[0,1]
     assert second.tolist()==[1,0]
-    assert fitted.gds_sample_ids.tolist()==["s_101","s_102"]
+    assert fitted.genotype_sample_ids.tolist()==["s_101","s_102"]
 
 
 def test_prepared_rows_must_match_model_identity():
     with pytest.raises(ValueError,match="do not match"):
-        _bind_gds_samples(Shard(["s_101","s_102"]),model(["101","102"]),np.asarray([1,0]))
+        _bind_genotype_samples(Shard(["s_101","s_102"]),model(["s_101","s_102"]),np.asarray([1,0]))
 
 
 def test_union_uses_one_row_per_physical_sample():
-    models=[model(["101","102"]),model(["s_102","s_103"])]
+    models=[model(["s_101","s_102"]),model(["s_102","s_103"])]
     pipeline=PheWASPipeline(Shard(["s_101","s_102","s_103"]),models,
-                            gds_sample_indices=[np.asarray([0,1]),np.asarray([1,2])])
+                            genotype_sample_indices=[np.asarray([0,1]),np.asarray([1,2])])
     assert pipeline.union_rows.tolist()==[0,1,2]
     assert [rows.tolist() for rows in pipeline.trait_rows]==[[0,1],[1,2]]

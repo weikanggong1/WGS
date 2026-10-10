@@ -5,9 +5,9 @@ import sys
 import tempfile
 import unittest
 import numpy as np
-from staar_phewas.annotation_index import CandidateAnnotationIndex
-from staar_phewas.pipeline import PheWASPipeline
-from staar_phewas.cache_runtime import index_cache as a
+from fudan_wgs_toolkit.annotation_index import CandidateAnnotationIndex
+from fudan_wgs_toolkit.pipeline import PheWASPipeline
+from fudan_wgs_toolkit.cache_runtime import index_cache as a
 
 class Contracts(unittest.TestCase):
     def test_prepare_uses_original_pipeline_then_publishes(self):
@@ -28,8 +28,8 @@ class Contracts(unittest.TestCase):
                        'gene_a':{'upstream':np.array([1,2,17],np.int64),'promoter_CAGE':np.array([3],np.int64)}}
         index.prepared_categories={'upstream','ncRNA','promoter_CAGE'}
         index.promoter_signature=((1,10),(1,10),(12,20))
-        binding=a.make_binding(gds_stat={'device':1,'inode':2,'size':3,'mtime_ns':4},n_variants=100,
-            source_sha256={k:'a'*64 for k in ('annotation_index.py','pipeline.py','masks.py','gds.py')},
+        binding=a.make_binding(genotype_stat={'device':1,'inode':2,'size':3,'mtime_ns':4},n_variants=100,
+            source_sha256={k:'a'*64 for k in ('annotation_index.py','pipeline.py','masks.py','genotype.py')},
             annotation_catalog={'GENCODE.Info':'annotation/info/gene','CAGE':'annotation/info/signal'},qc_path='annotation/filter',
             promoter_manifest={'file_sha256':'b'*64,'normalized_signature':[[1,10],[1,10],[12,20]]},
             chromosome='21',variant_type='SNV',categories=index.prepared_categories)

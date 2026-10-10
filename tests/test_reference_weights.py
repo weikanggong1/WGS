@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas._reference_weights import (
+from fudan_wgs_toolkit._reference_weights import (
     reference_annotation_weights,
     reference_complementary_phred,
     reference_weights_execution_metadata,
 )
-from staar_phewas.masks import annotation_phred_matrix
+from fudan_wgs_toolkit.masks import annotation_phred_matrix
 
 
 @pytest.mark.parametrize('device', ['cpu'] + (['cuda'] if torch.cuda.is_available() else []))

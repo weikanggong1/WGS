@@ -5,9 +5,9 @@ import unittest
 
 import numpy as np
 
-from staar_phewas.cache_runtime import sparse_codec_fast as codec
-from staar_phewas.cache_runtime import sparse_decode, sparse_decode_fast
-from staar_phewas.cache_runtime import fast_container, store
+from fudan_wgs_toolkit.cache_runtime import sparse_codec_fast as codec
+from fudan_wgs_toolkit.cache_runtime import sparse_decode, sparse_decode_fast
+from fudan_wgs_toolkit.cache_runtime import fast_container, store
 
 
 REF = np.array([2, 1, 0, 0, 1, 0], dtype=np.int64)

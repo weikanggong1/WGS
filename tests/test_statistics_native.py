@@ -2,8 +2,8 @@
 import math
 import pytest
 import torch
-from staar_phewas import statistics as stats
-from staar_phewas._statistics_sync import quadratic_form_sf_batch
+from fudan_wgs_toolkit import statistics as stats
+from fudan_wgs_toolkit._statistics_sync import quadratic_form_sf_batch
 
 
 def test_native_weight_families_and_small_phred():
@@ -56,16 +56,16 @@ def test_batch_cct_small_normal_zero_branches():
 
 
 @pytest.mark.parametrize('mac',[ [4.,6.,12.], [2.,4.,5.], [12.,15.,20.] ])
-def test_native_staar_core_and_output_storage(monkeypatch,mac):
+def test_native_association_core_and_output_storage(monkeypatch,mac):
     products=[]
     def cpu_algebra(a,b,**kwargs):
         assert a.dtype==b.dtype==torch.float32
         products.append((a.shape,b.shape))
         return a@b
-    from staar_phewas import _burden
+    from fudan_wgs_toolkit import _burden
     monkeypatch.setattr(_burden,'ieee_burden_product',cpu_algebra)
     monkeypatch.setattr(stats,'_ordered_sum',lambda _:pytest.fail('native called ordered FP64 reduction'))
-    result=stats.staar_test(torch.tensor([.5,1.,.3]),torch.eye(3),[.001,.002,.004],mac,
+    result=stats.association_test(torch.tensor([.5,1.,.3]),torch.eye(3),[.001,.002,.004],mac,
         annotations=[[10.],[20.],[30.]],names=['a'],matmul_mode='tf32',tail_optimization=True)
     assert products and result['num_variant']==3 and result['cMAC']==sum(mac)
     probabilities=[v for k,v in result.items() if k not in ('num_variant','cMAC')]

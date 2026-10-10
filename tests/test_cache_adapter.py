@@ -3,8 +3,8 @@ import sys
 import unittest
 from unittest.mock import patch
 import numpy as np
-from staar_phewas.cache_runtime.adapter_fast import CachedGDSAdapter
-from staar_phewas.cache_runtime import sparse_codec_fast, sparse_decode, store
+from fudan_wgs_toolkit.cache_runtime.adapter_fast import CachedGenotypeAdapter
+from fudan_wgs_toolkit.cache_runtime import sparse_codec_fast, sparse_decode, store
 
 def fixture(raw):
     offsets,indices,states=sparse_codec_fast.compact(raw)
@@ -33,8 +33,8 @@ class Container:
 
 
 def expected(container,variants,samples,minimum_mac):
-    from staar_phewas.cache_runtime.sparse_decode import prepare,dosage_numpy
-    from staar_phewas.gds import SparseMinorBlock
+    from fudan_wgs_toolkit.cache_runtime.sparse_decode import prepare,dosage_numpy
+    from fudan_wgs_toolkit.genotype import SparseMinorBlock
     rows=np.array([np.flatnonzero(container.samples==s)[0] for s in samples],dtype=np.int64)
     p=prepare(*fixture(container.raw),6,np.asarray(variants,dtype=np.int64),rows,minimum_mac=minimum_mac)
     d=dosage_numpy(p).astype(np.float64);d[d==3]=np.nan
@@ -43,7 +43,7 @@ def expected(container,variants,samples,minimum_mac):
 
 
 class Contracts(unittest.TestCase):
-    def setUp(self):self.reader=MetadataReader();self.container=Container();self.a=CachedGDSAdapter(self.reader,self.container)
+    def setUp(self):self.reader=MetadataReader();self.container=Container();self.a=CachedGenotypeAdapter(self.reader,self.container)
     def test_crossframe_reverse_missing_half_subset_and_filter(self):
         for vv in [np.arange(8,-1,-1),np.array([8,0,5,3]),np.empty(0,dtype=np.int64)]:
             for ss in [self.container.samples,self.container.samples[::-1],np.array([3,9,1]),np.empty(0,dtype=np.int64)]:
@@ -63,7 +63,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(self.a.reader_metadata['analysis_cache']['frame_cache_hits'],2)
         self.assertEqual(self.a.reader_metadata['analysis_cache']['genotype_sdk_fallback_count'],0)
     def test_lru_closed_duplicates_unsupported_and_incomplete(self):
-        a=CachedGDSAdapter(MetadataReader(),Container(),compact_cache_bytes=120)
+        a=CachedGenotypeAdapter(MetadataReader(),Container(),compact_cache_bytes=120)
         a.minor_block(np.array([0,8]),self.container.samples)
         self.assertLessEqual(a._lru_bytes,120)
         with self.assertRaises(ValueError):self.a.minor_block(np.array([0,0]),self.container.samples)
@@ -72,7 +72,7 @@ class Contracts(unittest.TestCase):
         self.a.close()
         with self.assertRaises(RuntimeError):self.a.minor_block(np.array([0]),self.container.samples)
         c=Container();c.complete=False
-        with self.assertRaises(RuntimeError):CachedGDSAdapter(MetadataReader(),c)
+        with self.assertRaises(RuntimeError):CachedGenotypeAdapter(MetadataReader(),c)
     def test_real_container_binding_checksum_fail_closed(self):
         import tempfile
         raw=self.container.raw
@@ -83,20 +83,20 @@ class Contracts(unittest.TestCase):
             counts=sparse_codec_fast.integer_counts(off,idx,st,9,6)
             writer.append(raw,counts);writer.finish()
             c=store.open_container(path,expected_source_binding=binding,expected_samples=self.container.samples)
-            a=CachedGDSAdapter(self.reader,c)
+            a=CachedGenotypeAdapter(self.reader,c)
             a.minor_block(np.arange(9),self.container.samples)
             with self.assertRaises(ValueError):store.open_container(path,expected_source_binding={'source':'wrong'})
             # Corrupt compressed payload on a fresh reader, never reuse an LRU.
             with (path/'data.bin').open('r+b') as f:
                 byte=f.read(1);f.seek(0);f.write(bytes([byte[0]^1]))
-            with self.assertRaises(ValueError):CachedGDSAdapter(self.reader,c).minor_block(np.array([0]),self.container.samples)
+            with self.assertRaises(ValueError):CachedGenotypeAdapter(self.reader,c).minor_block(np.array([0]),self.container.samples)
     def test_sparse_host_budget_failure(self):
         p=dict(columns=np.array([0]),summaries=(np.array([0.]),np.array([0.]),np.array([0.]),np.array([0.]),np.array([0])),
                exception_col=np.empty(0,dtype=np.int64),exception_row=np.empty(0,dtype=np.int64),exception_state=np.empty(0,dtype=np.uint8))
-        with self.assertRaises(MemoryError):CachedGDSAdapter._sparse(p,range(400_000_000),np.array([0]))
+        with self.assertRaises(MemoryError):CachedGenotypeAdapter._sparse(p,range(400_000_000),np.array([0]))
 
     def test_resident_seam_and_original_chunk_schedule(self):
-        from staar_phewas.gds_device import DeviceMinorBlock
+        from fudan_wgs_toolkit.genotype_device import DeviceMinorBlock
         import torch
         def materialize(p,ss,vv,device):
             af,miss,mac,R,A=p['summaries']
@@ -117,7 +117,7 @@ class Contracts(unittest.TestCase):
 
 class SampleBindingContracts(unittest.TestCase):
     def setUp(self):
-        self.c=Container();self.a=CachedGDSAdapter(MetadataReader(),self.c)
+        self.c=Container();self.a=CachedGenotypeAdapter(MetadataReader(),self.c)
 
     def compare(self,samples,variants=None):
         if variants is None:variants=np.arange(8,-1,-1,dtype=np.int64)

@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.cache_runtime import fast_container, sparse_codec_fast, store
-from staar_phewas.phewas_runtime.shared_state import RawStateBlock, SharedStateBroker
+from fudan_wgs_toolkit.cache_runtime import fast_container, sparse_codec_fast, store
+from fudan_wgs_toolkit.phewas_runtime.shared_state import RawStateBlock, SharedStateBroker
 
 
 class MetadataReader:

@@ -7,8 +7,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import numpy as np
-from staar_phewas.cache_runtime import store, fast_container
-from staar_phewas.cache_runtime import sparse_codec_fast as csr
+from fudan_wgs_toolkit.cache_runtime import store, fast_container
+from fudan_wgs_toolkit.cache_runtime import sparse_codec_fast as csr
 
 def exact(left, right):
     assert left.keys() == right.keys()

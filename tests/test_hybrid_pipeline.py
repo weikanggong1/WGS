@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline, _cmac_scalar_sum
-from staar_phewas.null_model import GaussianNullModel
-from staar_phewas.precision_audit import (
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline, _cmac_scalar_sum
+from fudan_wgs_toolkit.null_model import GaussianNullModel
+from fudan_wgs_toolkit.precision_audit import (
     DenseProductAudit, explicit_fp64_spectral_refinement,
 )
-from staar_phewas.profiling import StageProfiler
+from fudan_wgs_toolkit.profiling import StageProfiler
 
 
 def _dispatch_fixture(backend="cached"):
@@ -79,7 +79,7 @@ def test_cached_numerical_failure_propagates_without_changing_backend():
 
 
 def test_native_masks_never_enter_generic_fp64_statistics_batch(monkeypatch):
-    import staar_phewas.batch_statistics as batch
+    import fudan_wgs_toolkit.batch_statistics as batch
     analysis, model, _ = _dispatch_fixture()
     analysis.options = AnalysisOptions(long_mask_threshold=2)
     analysis.models = [model]
@@ -98,7 +98,7 @@ def test_native_masks_never_enter_generic_fp64_statistics_batch(monkeypatch):
         pytest.fail("forced TF32 entered generic FP64 statistics batch")
     analysis._prepare_test_set = prepare
     analysis._evaluate_prepared = evaluate
-    monkeypatch.setattr(batch, "staar_test_batch", ordinary_batch)
+    monkeypatch.setattr(batch, "association_test_batch", ordinary_batch)
     masks = [np.array([10, 11]), np.array([0, 1, 2]), np.array([20, 21]), np.array([0, 1, 2])]
     result = analysis._test_sets_batch(masks, max_workspace_bytes=2**20)
     assert [row[0]["route"] for row in result] == ["native_ordinary", "long", "native_ordinary", "long"]
@@ -106,7 +106,7 @@ def test_native_masks_never_enter_generic_fp64_statistics_batch(monkeypatch):
 
 
 def test_explicit_fp64_controls_keep_generic_batch_and_duplicate_alias(monkeypatch):
-    import staar_phewas.batch_statistics as batch
+    import fudan_wgs_toolkit.batch_statistics as batch
     analysis, model, _ = _dispatch_fixture()
     model.matmul_mode = "fp64"
     analysis.models = [model]
@@ -120,7 +120,7 @@ def test_explicit_fp64_controls_keep_generic_batch_and_duplicate_alias(monkeypat
         events.append([len(item["score"]) for item in items])
         return ([{"M": len(item["score"])} for item in items], {})
     analysis._evaluate_prepared = lambda *args: pytest.fail("FP64 mask lost its generic batch route")
-    monkeypatch.setattr(batch, "staar_test_batch", fp64_batch)
+    monkeypatch.setattr(batch, "association_test_batch", fp64_batch)
     masks = [np.array([10, 11]), np.array([0, 1, 2]), np.array([20, 21]), np.array([0, 1, 2])]
     result = analysis._test_sets_batch(masks, max_workspace_bytes=2**20)
     assert [row[0]["M"] for row in result] == [2, 3, 2, 3]

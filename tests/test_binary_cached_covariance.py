@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.binary_null import BinaryNullModel, binary_prefitted_state
-from staar_phewas._cached_covariance import score_covariance_cached
+from fudan_wgs_toolkit.binary_null import BinaryNullModel, binary_prefitted_state
+from fudan_wgs_toolkit._cached_covariance import score_covariance_cached
 
 
 def fitted_state(*, device='cpu', mode='tf32', n=11):
@@ -33,7 +33,7 @@ def _cpu_product(a, b, *, mode):
 @pytest.mark.parametrize('m', [0, 1, 2, 7])
 @pytest.mark.parametrize('tile', [1, 3, 8])
 def test_cpu_tiled_uses_supplied_binary_formula_and_preserves_order(monkeypatch, layout, m, tile):
-    monkeypatch.setattr('staar_phewas.binary_null.matmul', _cpu_product)
+    monkeypatch.setattr('fudan_wgs_toolkit.binary_null.matmul', _cpu_product)
     model = fitted_state()
     generator = np.random.default_rng(33)
     genotype = np.array(generator.integers(0, 3, size=(model.n, m)), dtype=np.float32, order=layout)
@@ -100,7 +100,7 @@ def test_binary_tiled_rejects_invalid_tile_size(tile):
 
 @pytest.mark.parametrize('value', [float('nan'), float('inf')])
 def test_binary_tiled_checks_last_host_column(monkeypatch, value):
-    monkeypatch.setattr('staar_phewas.binary_null.matmul', _cpu_product)
+    monkeypatch.setattr('fudan_wgs_toolkit.binary_null.matmul', _cpu_product)
     genotype = np.ones((11, 7), dtype=np.float32)
     genotype[-1, -1] = value
     with pytest.raises(ValueError, match='genotype must be finite'):
@@ -126,7 +126,7 @@ def test_cached_wrapper_uses_mature_backend_and_keeps_original_model(monkeypatch
     def backend(actual, genotype, **kwargs):
         calls.append((actual, genotype, kwargs))
         return expected
-    monkeypatch.setattr('staar_phewas._cached_covariance.score_covariance_cached', backend)
+    monkeypatch.setattr('fudan_wgs_toolkit._cached_covariance.score_covariance_cached', backend)
     genotype = np.ones((11, 2), dtype=np.float32)
     actual = model.score_covariance_cached(genotype, variant_tile_size=512, panel_variant_size=1024,
                                             memory_limit_gib=20, profile=True)
@@ -144,8 +144,8 @@ def test_cached_backend_rejects_cpu_and_untyped_binary_protocol():
 
 
 def test_pipeline_long_binary_uses_explicit_diagonal_state_without_spectrum(monkeypatch):
-    from staar_phewas.pipeline import PheWASPipeline, AnalysisOptions
-    from staar_phewas.profiling import StageProfiler
+    from fudan_wgs_toolkit.pipeline import PheWASPipeline, AnalysisOptions
+    from fudan_wgs_toolkit.profiling import StageProfiler
     model = fitted_state()
     pipeline = PheWASPipeline.__new__(PheWASPipeline)
     pipeline.options = AnalysisOptions(long_mask_threshold=2, memory_limit_gib=20)
@@ -165,7 +165,7 @@ def test_pipeline_long_binary_uses_explicit_diagonal_state_without_spectrum(monk
 
 @pytest.mark.parametrize('change', ['spa', 'fp64', 'missing_precision'])
 def test_pipeline_rejects_unsupported_binary_before_long_backend(monkeypatch, change):
-    from staar_phewas.pipeline import PheWASPipeline, AnalysisOptions
+    from fudan_wgs_toolkit.pipeline import PheWASPipeline, AnalysisOptions
     model = fitted_state()
     if change == 'spa':model.use_spa = True
     elif change == 'fp64':model.matmul_mode = 'fp64'
@@ -184,7 +184,7 @@ def test_cuda_binary_cached_matches_mature_tiled_geometry(layout, m):
     if torch.cuda.get_device_capability(0)[0] < 8:
         pytest.skip('native TF32 requires Ampere or newer')
     pytest.importorskip('triton')
-    from staar_phewas import tf32
+    from fudan_wgs_toolkit import tf32
     tf32.configure_tf32(memory_limit_gib=20, split_k=0)
     model = fitted_state(device='cuda:0', n=257)
     genotype = np.array(np.random.default_rng(67).integers(0, 3, size=(model.n, m)), dtype=np.float32, order=layout)
@@ -193,7 +193,7 @@ def test_cuda_binary_cached_matches_mature_tiled_geometry(layout, m):
         u, v, report = model.score_covariance_cached(genotype, panel_variant_size=panel,
             memory_limit_gib=20, profile=True)
         assert torch.equal(u, u0) and torch.equal(v, v0)
-        assert report['matmul_module'] == 'staar_phewas.binary_null'
+        assert report['matmul_module'] == 'fudan_wgs_toolkit.binary_null'
         assert report['symmetry'] == 'average' and report['preparation_tile_size'] == 512
         assert report['covariance_d2h_bytes'] == 0
         assert report['max_observed_allocated_bytes'] <= 20 * 2**30

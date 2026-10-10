@@ -1,7 +1,7 @@
 """CPU contract comparisons against the independent original CSR decoder.
 
 These anonymous fixtures validate reader semantics only, not performance or
-scientific equivalence. No GDS, GPU, sample identifiers or site metadata.
+scientific equivalence. No genotype, GPU, sample identifiers or site metadata.
 """
 from dataclasses import FrozenInstanceError
 import unittest
@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from staar_phewas.cache_runtime import sparse_codec_fast, sparse_decode, sparse_decode_fast
-from staar_phewas.cache_runtime.adapter_fast import CachedGDSAdapter
-from staar_phewas.gds import _allele_frequency_summary
+from fudan_wgs_toolkit.cache_runtime import sparse_codec_fast, sparse_decode, sparse_decode_fast
+from fudan_wgs_toolkit.cache_runtime.adapter_fast import CachedGenotypeAdapter
+from fudan_wgs_toolkit.genotype import _allele_frequency_summary
 
 
 def payload(raw):
@@ -249,7 +249,7 @@ class AdapterMapContracts(unittest.TestCase):
                     sample_index=idx, state=states, reference_alleles=ref, called_alleles=called)
 
         container = Container()
-        adapter = CachedGDSAdapter(Reader(), container)
+        adapter = CachedGenotypeAdapter(Reader(), container)
         samples = np.array([29, 0, 15, 22, 28], dtype=np.int64)
         columns = np.array([5, 0, 4, 2])
         for _ in range(3):

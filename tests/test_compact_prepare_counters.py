@@ -8,8 +8,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from staar_phewas.cache_runtime.adapter_fast import CachedGDSAdapter
-from staar_phewas.cache_runtime.single_batches import iter_effective_minor_blocks
+from fudan_wgs_toolkit.cache_runtime.adapter_fast import CachedGenotypeAdapter
+from fudan_wgs_toolkit.cache_runtime.single_batches import iter_effective_minor_blocks
 from test_cache_adapter import Container, MetadataReader
 
 
@@ -23,7 +23,7 @@ class YieldingMetrics(dict):
 
 
 def test_concurrent_prepare_and_pack_accumulation_does_not_lose_updates():
-    adapter = CachedGDSAdapter(MetadataReader(), Container())
+    adapter = CachedGenotypeAdapter(MetadataReader(), Container())
     adapter._metrics = YieldingMetrics(adapter._metrics)
     initial = 17.0
     adapter._metrics['compact_prepare_seconds'] = initial
@@ -42,7 +42,7 @@ def test_concurrent_prepare_and_pack_accumulation_does_not_lose_updates():
 
 
 def test_real_prefetch_and_single_pack_share_atomic_counter():
-    adapter = CachedGDSAdapter(MetadataReader(), Container(), prefetch_depth=2)
+    adapter = CachedGenotypeAdapter(MetadataReader(), Container(), prefetch_depth=2)
     samples = np.array([3, 9, 1], dtype=np.int64)
     variants = np.array([8, 0, 5, 3, 7], dtype=np.int64)
     original = adapter._add_compact_prepare_seconds
@@ -72,7 +72,7 @@ def test_real_prefetch_and_single_pack_share_atomic_counter():
 
 
 def test_single_synchronous_adapter_without_atomic_helper_remains_compatible():
-    original = CachedGDSAdapter(MetadataReader(), Container())
+    original = CachedGenotypeAdapter(MetadataReader(), Container())
     legacy = SimpleNamespace(_closed=False, _device='cpu', _starts=original._starts,
         _sizes=original._sizes, _fast=original._fast, _metrics=original._metrics,
         _prepare=original._prepare, n_variants=original.n_variants, n_samples=original.n_samples)

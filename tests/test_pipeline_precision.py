@@ -2,18 +2,12 @@ import time
 import numpy as np
 import pytest
 import torch
-from staar_phewas.cli import run_configuration
-from staar_phewas.chromosome import chromosome_configuration
-from staar_phewas.null_model import fit_gaussian_null
-from staar_phewas.io import save_null_model, load_null_model
-from staar_phewas.precision_audit import DenseProductAudit
-from staar_phewas.profiling import StageProfiler
+from fudan_wgs_toolkit.cli import run_configuration
+from fudan_wgs_toolkit.null_model import fit_gaussian_null
+from fudan_wgs_toolkit.io import save_null_model, load_null_model
+from fudan_wgs_toolkit.precision_audit import DenseProductAudit
+from fudan_wgs_toolkit.profiling import StageProfiler
 
-def test_forced_cli_cannot_silently_run_cpu_or_unmarked_fp64():
-    with pytest.raises(ValueError, match='Forced TF32 requires CUDA'):
-        run_configuration({}, device='cpu')
-    with pytest.raises(ValueError, match='precision_control=true'):
-        run_configuration({'matmul_mode': 'fp64'}, device='cpu')
 
 def test_cache_mode_survives_save_and_legacy_defaults_fp64(tmp_path):
     model = fit_gaussian_null(np.arange(20.0) ** 0.8, sample_ids=np.arange(20).astype(str))
@@ -61,52 +55,26 @@ def test_profile_cpu_scopes_and_disabled_behavior():
 @pytest.mark.parametrize('enabled', [False, True])
 def test_pipeline_forwards_optional_statistics_tail_flag(monkeypatch, enabled):
     from types import SimpleNamespace
-    import staar_phewas.pipeline as module
+    import fudan_wgs_toolkit.pipeline as module
     pipeline = module.PheWASPipeline.__new__(module.PheWASPipeline)
     pipeline.statistics_tail_optimization = enabled
     captured = {}
 
     def statistic(**kwargs):
         captured.update(kwargs)
-        return {'STAAR-O': 0.5}
-    monkeypatch.setattr(module, 'staar_test', statistic)
+        return {'WGS-O': 0.5}
+    monkeypatch.setattr(module, 'association_test', statistic)
     model = SimpleNamespace(use_spa=False, n_pheno=1, matmul_mode='tf32')
-    assert pipeline._evaluate_prepared({'score': 'private_fake_input_marker'}, model) == {'STAAR-O': 0.5}
+    assert pipeline._evaluate_prepared({'score': 'private_fake_input_marker'}, model) == {'WGS-O': 0.5}
     assert captured['tail_optimization'] is enabled
     assert captured['matmul_mode'] == 'tf32'
     assert getattr(pipeline, 'statistics_tail_optimization_calls', 0) == int(enabled)
 
-def test_statistics_tail_flag_rejects_truthy_strings():
-    with pytest.raises(ValueError, match='JSON boolean'):
-        run_configuration({'matmul_mode': 'fp64', 'precision_control': True, 'statistics_tail_optimization': 'true'}, device='cpu')
-
-@pytest.mark.parametrize('kind', ['sliding', 'window', 'fixed_window', 'multiple_window'])
-def test_pipeline_rejects_removed_window_jobs_before_fitting(kind):
-    config = {'matmul_mode': 'fp64', 'precision_control': True, 'chromosomes': [{'jobs': [{'kind': kind}]}]}
-    with pytest.raises(ValueError, match='Pipeline jobs must be'):
-        run_configuration(config, device='cpu')
-
-@pytest.mark.parametrize('flag', ['local_mask_reuse', 'weight_batch_optimization'])
-def test_reuse_flags_require_json_boolean(flag):
-    with pytest.raises(ValueError, match='JSON boolean'):
-        run_configuration({'matmul_mode': 'fp64', 'precision_control': True, flag: 'false'}, device='cpu')
 
 
-@pytest.mark.parametrize('mode,effective', [('tf32',0),('fp64',None)])
-def test_native_cli_resets_memory_limit_and_reports_unsplit(monkeypatch,mode,effective):
-    from staar_phewas import cli,tf32
-    tf32.configure_tf32(memory_limit_gib=1)
-    monkeypatch.setattr(cli,'_run_configuration',lambda *a,**kw:{})
-    report=cli.run_configuration({'matmul_mode':mode},device='cpu')
-    assert report['tf32_configuration']['tf32_memory_limit_bytes']==20*2**30
-    assert report['tf32_configuration']['effective_split_k']==effective
-    assert not report['tf32_configuration']['split_k_applies']
 
-@pytest.mark.parametrize('settings', [ {'matmul_mode':'tf32_binned'}, {'matmul_mode':'tf32x3'},
-    {'tf32_binned_tile_shape':[32,64]}, {'tf32_binned_fused_small':True}, {'tf32_split_k':1024} ])
-def test_removed_reconstruction_controls_fail_before_gpu(settings):
-    with pytest.raises((ValueError,TypeError)):
-        run_configuration(settings,device='cpu')
+
+
 
 def test_old_cache_is_converted_on_load_before_native_computation(tmp_path):
     model=fit_gaussian_null(np.arange(20.)**.8)
@@ -129,7 +97,7 @@ def test_old_cache_is_converted_on_load_before_native_computation(tmp_path):
 
 def test_native_workspace_linear_single_and_fp32_budget():
     from types import SimpleNamespace
-    from staar_phewas.pipeline import PheWASPipeline,AnalysisOptions
+    from fudan_wgs_toolkit.pipeline import PheWASPipeline,AnalysisOptions
     pipeline=PheWASPipeline.__new__(PheWASPipeline)
     model=SimpleNamespace(n=42652,n_pheno=1,device='cpu',matmul_mode='fp64')
     fp64=pipeline._workspace_estimate(model,1216)
@@ -143,7 +111,7 @@ def test_native_workspace_linear_single_and_fp32_budget():
 
 
 def test_native_model_formula_dtype_and_single_diagonal_cpu_mock(monkeypatch):
-    import staar_phewas.null_model as module
+    import fudan_wgs_toolkit.null_model as module
     seen=[]
     def products(a,b,*,mode):
         assert mode=='tf32' and a.dtype==torch.float32 and b.dtype==torch.float32
@@ -160,17 +128,10 @@ def test_native_model_formula_dtype_and_single_diagonal_cpu_mock(monkeypatch):
     assert seen
 
 
-def test_native_null_serialization_widens_values_only(monkeypatch):
-    from staar_phewas.compat import gaussian_null_r_object
-    model=fit_gaussian_null(np.arange(20.)**.8).set_matmul_mode('tf32')
-    obj=gaussian_null_r_object(model)
-    assert obj.value['theta'].value.dtype==np.float64
-    assert obj.value['X'].value.values.dtype==np.float64
-    assert model.theta.dtype==model.x.dtype==torch.float32
 
 
 def test_native_mixed_model_preserves_last_preupdate_precision_cpu_mock(monkeypatch):
-    import staar_phewas.null_model as module
+    import fudan_wgs_toolkit.null_model as module
     calls=[]
     def product(a,b,*,mode):
         assert mode=='tf32' and a.dtype==b.dtype==torch.float32
@@ -200,7 +161,7 @@ def test_gaussian_cache_preserves_converged_and_legacy_default(tmp_path, converg
 
 
 def test_native_identity_rotation_alias_and_readonly_consumers(monkeypatch):
-    import staar_phewas.null_model as module
+    import fudan_wgs_toolkit.null_model as module
     monkeypatch.setattr(module, 'matmul', lambda a, b, *, mode: a @ b)
     model = module.fit_gaussian_null(np.arange(30.) ** .8, matmul_mode='tf32')
     genotype = (torch.arange(90).reshape(30, 3) % 3).float()
@@ -219,7 +180,7 @@ def test_native_identity_rotation_alias_and_readonly_consumers(monkeypatch):
 
 
 def test_single_tail_uses_fp64_probability_vectors_only():
-    from staar_phewas.pipeline import _individual_log_probabilities
+    from fudan_wgs_toolkit.pipeline import _individual_log_probabilities
     score = torch.tensor([1., 20., 38., 100., 1., 1., 1.], dtype=torch.float32)
     variance = torch.tensor([1., .7, 1., .03, 0., -1., float('nan')], dtype=torch.float32)
     saved_score, saved_variance = score.clone(), variance.clone()
@@ -232,19 +193,3 @@ def test_single_tail_uses_fp64_probability_vectors_only():
     assert torch.isnan(actual[6])
     assert torch.equal(score, saved_score)
     torch.testing.assert_close(variance, saved_variance, equal_nan=True)
-
-
-def test_cached_null_residual_uses_source_dtype_without_changing_native_state(tmp_path):
-    from staar_phewas.compat import gaussian_null_r_object
-    model = fit_gaussian_null(np.arange(20.) ** .8)
-    original = tmp_path / "model.npz"
-    save_null_model(model, original)
-    with np.load(original, allow_pickle=False) as values:
-        expected = np.subtract(values["phenotype"], values["fitted_values"]).astype(np.float64)
-    native = load_null_model(original, matmul_mode="tf32")
-    y_before, fit_before = native.phenotype.clone(), native.fitted_values.clone()
-    result = gaussian_null_r_object(native)
-    np.testing.assert_array_equal(result.value["residuals"].value, expected)
-    assert native.phenotype.dtype == torch.float32
-    torch.testing.assert_close(native.phenotype, y_before, rtol=0, atol=0)
-    torch.testing.assert_close(native.fitted_values, fit_before, rtol=0, atol=0)

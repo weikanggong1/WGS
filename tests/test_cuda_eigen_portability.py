@@ -9,8 +9,8 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from staar_phewas.cuda_eigen import FP32SmallSpectrumSolver
-from staar_phewas.cuda_eigen import library_resolution as r
+from fudan_wgs_toolkit.cuda_eigen import FP32SmallSpectrumSolver
+from fudan_wgs_toolkit.cuda_eigen import library_resolution as r
 
 class Record(str):pass
 class Distribution:
@@ -103,6 +103,6 @@ class Contracts(unittest.TestCase):
     solver.eigvalsh(Matrix(33));raise KeyboardInterrupt()
   self.assertTrue(solver.backend.closed);self.assertTrue(solver.closed)
  def test_import_no_torch_cuda_or_cdll(self):
-  code='import sys,ctypes,torch,staar_phewas; ctypes.CDLL=lambda *a,**k:(_ for _ in ()).throw(AssertionError("no load")); import staar_phewas.cuda_eigen; assert not torch.cuda.is_initialized()'
+  code='import sys,ctypes,torch,fudan_wgs_toolkit; ctypes.CDLL=lambda *a,**k:(_ for _ in ()).throw(AssertionError("no load")); import fudan_wgs_toolkit.cuda_eigen; assert not torch.cuda.is_initialized()'
   subprocess.run([sys.executable,'-c',code],check=True)
 if __name__=='__main__':unittest.main()

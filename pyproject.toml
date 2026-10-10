@@ -3,26 +3,22 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "torchstaar"
-version = "0.7.0"
-description = "Torchstaar: PyTorch GPU STAAR/MultiSTAAR association analysis"
+name = "fudan-wgs-toolkit"
+version = "0.8.0"
+description = "Fudan WGS Toolkit: Python GPU single-variant and gene association analysis"
 requires-python = ">=3.10"
 license = {text = "GPL-3.0-only"}
-dependencies = ["numpy>=1.26,<2", "scipy>=1.13", "torch>=2.4", "rdata==1.1.0", "xarray>=2024.1", "pandas>=1.4", "zstandard>=0.22", "triton>=3.0; platform_system == 'Linux'"]
+dependencies = ["numpy>=1.26,<2", "pandas>=1.4", "scipy>=1.13", "torch>=2.4", "zstandard>=0.22", "triton>=3.0; platform_system == 'Linux'"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+parquet = ["pyarrow>=12"]
+annotations = ["rdata==0.11.2"]
 
 [project.scripts]
-torchstaar = "staar_phewas.run:main"
-torchstaar-run = "staar_phewas.run:main"
-torchstaar-config = "torchstaar.cli:main"
-torchstaar-prepare = "torchstaar.prepare:main"
-torchstaar-chromosome = "torchstaar.chromosome:main"
-torchstaar-phewas = "torchstaar_phewas.cli:main"
+fudan-wgs = "fudan_wgs_toolkit.run:main"
+prepare-WGS-data = "fudan_wgs_toolkit.prepare:main"
+run-WGS-all = "fudan_wgs_toolkit.run:main"
 
 [tool.setuptools.packages.find]
-include = ["torchstaar*", "staar_phewas*"]
-
-[tool.setuptools.package-data]
-staar_phewas = ["_gds_flat.cpp", "_gds_packed.cpp"]
+include = ["fudan_wgs_toolkit*"]

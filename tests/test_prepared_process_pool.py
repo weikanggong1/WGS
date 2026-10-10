@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 
 from test_cache_portable import portable
-from staar_phewas.cache_runtime.portable import PortableCachedGDS
-from staar_phewas.cache_runtime.prepared_process_pool import PreparedProcessPool
+from fudan_wgs_toolkit.cache_runtime.portable import PortableGenotypeReader
+from fudan_wgs_toolkit.cache_runtime.prepared_process_pool import PreparedProcessPool
 
 
 def assert_exact(left, right):
@@ -33,14 +33,14 @@ def requests():
 
 
 def make_reader(cache, derived, budget=2**20, processes=2):
-    return PortableCachedGDS(cache, device="cpu", prepared_cache_directory=derived,
+    return PortableGenotypeReader(cache, device="cpu", prepared_cache_directory=derived,
         prepared_cache_max_bytes=budget, prefetch_depth=2, prefetch_processes=processes)
 
 
 def test_spawn_cold_then_warm_exact_order_no_cuda_or_warm_recompute(portable, tmp_path):
     _, cache, *_ = portable
     samples = np.array([2, 0, 1])
-    with PortableCachedGDS(cache, device="cpu") as control:
+    with PortableGenotypeReader(cache, device="cpu") as control:
         expected = [control._prepare(v, samples, 2) for v in requests()]
     derived = tmp_path / "derived"
     with make_reader(cache, derived) as reader:
@@ -109,7 +109,7 @@ def test_budget_exhaustion_handoff_never_reprepares_same_request(portable, tmp_p
 def test_obviously_full_budget_and_disabled_cache_keep_original_thread(portable, tmp_path):
     _, cache, *_ = portable
     for derived, budget in ((None, 2**20), (tmp_path / "full", 1)):
-        with PortableCachedGDS(cache, device="cpu", prepared_cache_directory=derived,
+        with PortableGenotypeReader(cache, device="cpu", prepared_cache_directory=derived,
                 prepared_cache_max_bytes=budget, prefetch_depth=2, prefetch_processes=2) as reader:
             assert len(list(reader._prepared_requests(requests(), np.arange(4), None))) == 4
             assert reader._metrics.get("prefetch_process_requests_submitted", 0) == 0
@@ -124,7 +124,7 @@ def test_early_close_drains_before_reader_close_and_keeps_mapped_result(portable
     first = next(iterator)
     preserved = first[0]["exception_state"].copy()
     iterator.close()
-    assert not any(t.name == "torchstaar-compact-prefetch" for t in threading.enumerate())
+    assert not any(t.name == "fudan_wgs_toolkit-compact-prefetch" for t in threading.enumerate())
     assert reader._metrics["prefetch_queued_items"] == 0
     pids = list(reader._prepare_pool._executor._processes)
     reader.close()
@@ -161,7 +161,7 @@ def test_zero_requests_does_not_spawn(portable, tmp_path):
 
 def test_estimate_rejects_invalid_raw_header_before_spawn(portable, tmp_path, monkeypatch):
     _, cache, *_ = portable
-    from staar_phewas.cache_runtime import prepared_process_pool
+    from fudan_wgs_toolkit.cache_runtime import prepared_process_pool
     original = prepared_process_pool.json.loads
     def damaged_header(text, *args, **kwargs):
         value = original(text, *args, **kwargs)
@@ -209,7 +209,7 @@ def test_oversized_preparation_is_alone_and_dead_child_does_not_retry(portable, 
 
 def _leave_reserved_write(variant_bytes, marker):
     """Disposable child fixture holding an unfinished atomic write lock."""
-    from staar_phewas.cache_runtime import prepared_process_pool
+    from fudan_wgs_toolkit.cache_runtime import prepared_process_pool
     reader = prepared_process_pool._CHILD
     cache = reader._prepared_cache
     variants = np.frombuffer(variant_bytes, dtype=np.int64)
@@ -281,7 +281,7 @@ def test_owner_sigkill_exits_all_children_and_unfinished_write_recovers(portable
         while any(_same_live_identity(value) for value in children) and time.monotonic() < deadline:
             time.sleep(.05)
         assert not any(_same_live_identity(value) for value in children), "CPU children survived their owning process"
-        from staar_phewas.cache_runtime.cohort_compact_cache import CohortCompactCache
+        from fudan_wgs_toolkit.cache_runtime.cohort_compact_cache import CohortCompactCache
         cache_store = CohortCompactCache(derived, binding, 2**20)
         # The exact key lock is now released: recovery removes the reservation
         # and unfinished bytes; a later exact request can publish normally.

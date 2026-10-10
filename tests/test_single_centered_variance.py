@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.null_model import GaussianNullModel, KinshipSpectrum
-import staar_phewas.null_model as null_module
+from fudan_wgs_toolkit.null_model import GaussianNullModel, KinshipSpectrum
+import fudan_wgs_toolkit.null_model as null_module
 
 
 FIELDS = ("x", "precision_x", "inverse_variance", "fixed_effect_covariance", "scaled_residuals")

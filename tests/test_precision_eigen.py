@@ -1,7 +1,7 @@
 """Complete Torch route metadata; no pinned CPU solver or GPU execution."""
 from types import SimpleNamespace
 import torch
-from staar_phewas import _precision_eigen as precision
+from fudan_wgs_toolkit import _precision_eigen as precision
 
 
 def test_complete_native_route_and_detached_metadata():

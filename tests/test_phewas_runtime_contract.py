@@ -7,10 +7,10 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.gds_device import DeviceMinorBlock
-from staar_phewas.phewas_runtime import runtime
-from staar_phewas.phewas_runtime.buffers import EffectiveBuffer
-from staar_phewas.phewas_runtime.metadata import SharedMetadataReader
+from fudan_wgs_toolkit.genotype_device import DeviceMinorBlock
+from fudan_wgs_toolkit.phewas_runtime import runtime
+from fudan_wgs_toolkit.phewas_runtime.buffers import EffectiveBuffer
+from fudan_wgs_toolkit.phewas_runtime.metadata import SharedMetadataReader
 
 
 def configurations(tmp_path, *, kinds=("individual",)):
@@ -21,12 +21,12 @@ def configurations(tmp_path, *, kinds=("individual",)):
                      "noncoding": dict(gene_name="gene_0001"),
                      "ncrna": dict(gene_name="gene_0001")}
         jobs = [dict(name=f"job_{number}", kind=kind, arguments=deepcopy(arguments[kind]),
-                     output=str(tmp_path / f"trait_{trait}" / f"result_{number}.Rdata"),
+                     output=str(tmp_path / f"trait_{trait}" / f"result_{number}.csv"),
                      object_name=f"object_{kind}", layout="base")
                 for number, kind in enumerate(kinds)]
         configs.append(dict(phenotypes=[dict(name=f"trait_{trait}", model=str(tmp_path / f"state_{trait}.npz"),
                                              sample_indices_file=str(tmp_path / f"rows_{trait}.npy"))],
-                            chromosomes=[dict(name="21", gds=str(tmp_path / "source.gds"), jobs=jobs)],
+                            chromosomes=[dict(name="21", genotype=str(tmp_path / "source.genotype"), jobs=jobs)],
                             analysis_options=dict(memory_limit_gib=20)))
     return configs
 
@@ -83,9 +83,9 @@ def test_phewas_default_budget_remains_twenty_gib_with_larger_standalone_default
 
 
 @pytest.mark.parametrize("change", ["no_phenotype", "two_phenotypes", "fp64", "precision_control", "batched",
-    "host_genotype", "split_k", "wrapper", "layout", "window", "text_output", "mask_limit", "block_size",
+    "host_genotype", "split_k", "wrapper", "layout", "window", "non_csv_output", "mask_limit", "block_size",
     "no_jobs", "different_source", "different_arguments", "different_setting", "trait_output_collision",
-    "null_output_collision", "model_input_collision", "individual_repeated", "gene_kind_collision", "gene_object_collision",
+    "saved_model_format", "model_input_collision", "individual_repeated", "gene_kind_collision", "gene_object_collision",
     "boolean_split_k", "unknown_arguments", "nonboolean_flag", "fit_precision_conflict",
     "fit_split_conflict", "fit_family_conflict", "joint_fit", "obsolete_reconstruction"])
 def test_invalid_production_config_fails_before_any_gpu_use(tmp_path, change):
@@ -107,8 +107,8 @@ def test_invalid_production_config_fails_before_any_gpu_use(tmp_path, change):
         jobs[0]["layout"] = "phewas"
     elif change == "window":
         jobs[0]["kind"] = "sliding"
-    elif change == "text_output":
-        jobs[0]["output"] = str(tmp_path / "result.csv")
+    elif change == "non_csv_output":
+        jobs[0]["output"] = str(tmp_path / "result.txt")
     elif change == "mask_limit":
         config["maximum_mask_variants"] = 0
     elif change == "block_size":
@@ -116,15 +116,15 @@ def test_invalid_production_config_fails_before_any_gpu_use(tmp_path, change):
     elif change == "no_jobs":
         config["chromosomes"][0]["jobs"] = []
     elif change == "different_source":
-        config["chromosomes"][0]["gds"] = str(tmp_path / "other_source.gds")
+        config["chromosomes"][0]["genotype"] = str(tmp_path / "other_source.genotype")
     elif change == "different_arguments":
         jobs[0]["arguments"]["mac_cutoff"] = 21
     elif change == "different_setting":
         config["weight_batch_optimization"] = False
     elif change == "trait_output_collision":
         configs[1]["chromosomes"][0]["jobs"][0]["output"] = jobs[0]["output"]
-    elif change == "null_output_collision":
-        config["phenotypes"][0]["output_null"] = jobs[0]["output"]
+    elif change == "saved_model_format":
+        config["phenotypes"][0]["save_model"] = jobs[0]["output"]
     elif change == "model_input_collision":
         config["phenotypes"][0]["save_model"] = configs[1]["phenotypes"][0]["model"]
     elif change == "individual_repeated":
@@ -157,15 +157,15 @@ def test_invalid_production_config_fails_before_any_gpu_use(tmp_path, change):
         runtime.validate_analyses(configs)
 
 
-def test_compatible_gene_batches_share_file_but_native_writer_runs_only_at_last_job(tmp_path, monkeypatch):
+def test_compatible_gene_batches_share_file_but_csv_writer_runs_only_at_last_job(tmp_path, monkeypatch):
     configs = configurations(tmp_path, kinds=("coding", "coding"))
     for config in configs:
         config["chromosomes"][0]["jobs"][1]["output"] = config["chromosomes"][0]["jobs"][0]["output"]
     configs = runtime.validate_analyses(configs)
-    output = runtime._NativeOutputs(configs[0])
+    output = runtime._CSVOutputs(configs[0])
     writes = []
     monkeypatch.setattr(runtime, "write_association_batch", lambda path, results, **options:
-                        writes.append((path, list(results), options)))
+                        writes.append((path, list(results), options)) or {"rows":2})
     first, last = configs[0]["chromosomes"][0]["jobs"]
     result_a, result_b = [[{"first": 1}]], [[{"second": 2}]]
     output.append(first, result_a)
@@ -176,7 +176,7 @@ def test_compatible_gene_batches_share_file_but_native_writer_runs_only_at_last_
     output.check()
     assert output.files == 1
     assert writes[0][1] == [result_a, result_b]
-    assert writes[0][2] == dict(kind="coding", object_name="object_coding", layout="base")
+    assert writes[0][2] == dict(kind="coding", layout="base", exclude_columns=(), empty_columns=None)
 
 
 def block(samples, variants):
@@ -325,19 +325,19 @@ def test_changed_source_proof_closes_broker_container_reader_and_contexts(tmp_pa
     monkeypatch.setattr(runtime, "_load_models", lambda *args: ([model], [None]))
     monkeypatch.setattr(runtime.cli, "_weighted_eigensolver_settings", lambda *args: {"effective": "torch"})
     monkeypatch.setattr(runtime.cli, "_scheduled_index_categories", lambda jobs: [])
-    monkeypatch.setattr(runtime.cli, "_bind_gds_samples", lambda *args: np.arange(4))
+    monkeypatch.setattr(runtime.cli, "_bind_genotype_samples", lambda *args: np.arange(4))
     monkeypatch.setattr(runtime.cli, "_association_result_row_count", lambda *args, **kwargs: 1)
-    monkeypatch.setattr(runtime, "SeqArrayGDS", lambda *args, **kwargs: Reader())
+    monkeypatch.setattr(runtime, "PortableMetadataReader", lambda *args, **kwargs: Reader())
     monkeypatch.setattr(runtime, "Container", Container)
     monkeypatch.setattr(runtime, "SharedStateBroker", Broker)
     monkeypatch.setattr(runtime, "LimitedMaskPipeline", Pipeline)
     monkeypatch.setattr(runtime, "write_association_batch", lambda *args, **kwargs: None)
-    from staar_phewas import _weighted_spectra
+    from fudan_wgs_toolkit import _weighted_spectra
     monkeypatch.setattr(_weighted_spectra, "eigensolver_context", solver)
     spec = SimpleNamespace(expected_binding={"verified": 1}, source_proof=proof,
                            directory=tmp_path / "verified_cache", expected_samples=np.arange(4))
     with pytest.raises(ValueError, match="source changed"):
-        runtime.run_configuration(configs, cache_specs={tmp_path / "source.gds": spec})
+        runtime.run_configuration(configs, cache_specs={tmp_path / "source.genotype": spec})
     assert states == dict(reader_closed=True, container_closed=True, broker_closed=True,
                           solver_closed=True, proof_calls=2)
     assert not runtime._LOCK.locked()

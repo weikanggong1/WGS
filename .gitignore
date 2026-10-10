@@ -6,10 +6,6 @@ __pycache__/
 private/
 runs/
 logs/
-*.gds
-*.[Rr][Dd][Aa][Tt][Aa]
-*.[Rr][Dd][Aa]
-*.[Rr][Dd][Ss]
 *.npz
 *.npy
 *.pyc
@@ -33,3 +29,13 @@ dist/
 *.sqlite-*
 .cohort_compact_v1/
 .cpu-prepared-*/
+*.bin
+*.zst
+*.utf8
+results/
+prepared/
+downloads/
+*.csv
+*.tsv
+*.tar.gz
+*.tgz

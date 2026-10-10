@@ -10,10 +10,10 @@ from unittest.mock import Mock, patch
 import numpy as np
 import torch
 
-from staar_phewas.binary_null import BinaryNullModel
-from staar_phewas.null_model import GaussianNullModel
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
-from staar_phewas.profiling import StageProfiler
+from fudan_wgs_toolkit.binary_null import BinaryNullModel
+from fudan_wgs_toolkit.null_model import GaussianNullModel
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline
+from fudan_wgs_toolkit.profiling import StageProfiler
 
 
 class EmptyReader:
@@ -56,7 +56,7 @@ def make_pipeline(model, *, optimized=True, resident=True,
                                        annotation_block_size=3,
                                        wrapper_semantics="base")
     pipeline.union_rows = np.asarray([4, 1, 3], dtype=np.int64)
-    pipeline.gds = EffectiveEmptyReader() if effective_reader else EmptyReader()
+    pipeline.genotype = EffectiveEmptyReader() if effective_reader else EmptyReader()
     pipeline.single_batch_optimization = optimized
     pipeline.resident_genotypes = resident
     pipeline.individual_effective_block_size = 11
@@ -77,11 +77,11 @@ class SingleEffectiveModelGateTests(unittest.TestCase):
                 "1", mac_cutoff=23)), [])
         initialize.assert_not_called()
         pipeline._prepare_individual_block.assert_not_called()
-        self.assertEqual(len(pipeline.gds.calls), 2)
+        self.assertEqual(len(pipeline.genotype.calls), 2)
         expected_variants = ([0, 2], [3])
         device = next((model.device for model in pipeline.models
                        if str(model.device).startswith("cuda")), None)
-        for call, variants in zip(pipeline.gds.calls, expected_variants):
+        for call, variants in zip(pipeline.genotype.calls, expected_variants):
             kind, selected, rows, options = call
             self.assertEqual(kind, "effective" if effective else "ordinary")
             np.testing.assert_array_equal(selected, variants)

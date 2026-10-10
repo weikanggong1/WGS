@@ -10,12 +10,12 @@ import numpy as np
 import pytest
 import torch
 
-from staar_phewas.gds import _allele_frequency_summary
-from staar_phewas.gds_device import DeviceMinorBlock
-from staar_phewas.binary_null import BinaryNullModel
-from staar_phewas.null_model import fit_gaussian_null
-from staar_phewas.pipeline import AnalysisOptions, PheWASPipeline
-from staar_phewas.phewas_runtime import single
+from fudan_wgs_toolkit.genotype import _allele_frequency_summary
+from fudan_wgs_toolkit.genotype_device import DeviceMinorBlock
+from fudan_wgs_toolkit.binary_null import BinaryNullModel
+from fudan_wgs_toolkit.null_model import fit_gaussian_null
+from fudan_wgs_toolkit.pipeline import AnalysisOptions, PheWASPipeline
+from fudan_wgs_toolkit.phewas_runtime import single
 
 
 def states_fixture():
@@ -69,7 +69,7 @@ def make_pipeline(samples, blocks, *, model=None, family="gaussian", device="cpu
     pipeline._minor_blocks = lambda *args, **kwargs: iter(blocks)
     pipeline._limit = lambda *args, **kwargs: None
     ref = np.asarray(["A", "C", "G", "T"])
-    pipeline.gds = SimpleNamespace(n_variants=10,
+    pipeline.genotype = SimpleNamespace(n_variants=10,
         read_field=lambda name, selected: np.full(len(selected), "1"),
         read_ref_alt=lambda selected: (ref[selected % 4], ref[(selected + 1) % 4]))
     return pipeline
@@ -192,7 +192,7 @@ def test_resident_gene_binary_guard_admits_only_complete_native_diagonal_state(m
     pipeline.resident_genotypes = True
     pipeline.union_rows = np.arange(256)
     pipeline.options = AnalysisOptions()
-    pipeline.gds = SimpleNamespace(_flat_reader=object(), n_samples=256, genotype_raw_memory_bytes=1024)
+    pipeline.genotype = SimpleNamespace(_flat_reader=object(), n_samples=256, genotype_raw_memory_bytes=1024)
     pipeline.local_mask_reuse_counters = {}
     queried = []
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device: queried.append("allocated") or 0)

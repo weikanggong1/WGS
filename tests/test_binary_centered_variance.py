@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import torch
 
-import staar_phewas.binary_null as binary_module
-from staar_phewas.binary_null import BinaryNullModel
+import fudan_wgs_toolkit.binary_null as binary_module
+from fudan_wgs_toolkit.binary_null import BinaryNullModel
 
 
 FIELDS = ("x", "precision_x", "precision", "fixed_effect_covariance",

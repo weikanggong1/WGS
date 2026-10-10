@@ -1,7 +1,7 @@
 """Binary SPA numerical rules; small matrices are not scientific benchmarks."""
 import pytest
 import torch
-from staar_phewas.binary import binary_spa, individual_score_test_spa
+from fudan_wgs_toolkit.binary import binary_spa, individual_score_test_spa
 
 
 def test_spa_degenerate_projection_explicitly_reports_original_failure_policy():
